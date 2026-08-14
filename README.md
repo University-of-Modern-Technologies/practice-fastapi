@@ -1,3 +1,121 @@
-# practice-fastapi
+# Навчальна CRM API — FastAPI
 
-FastAPI backend mirroring practice-expressjs.
+Друга кодова база курсу. Функціонально еквівалентна Express-реалізації в
+`project/nodejs-backend`: ті самі ендпоїнти, ті самі коди помилок, той самий
+формат відповідей — тож обидві працюють з одним і тим самим клієнтом.
+
+## Вимоги
+
+- Python 3.13
+- [uv](https://docs.astral.sh/uv/) 0.11+
+- PostgreSQL 17, Redis 7, MongoDB 8 (через Docker Compose)
+
+## Запуск локально
+
+```bash
+cp .env.example .env      # заповнити секрети
+uv sync
+uv run uvicorn app.main:app --reload
+```
+
+API — на `http://localhost:8000`, документація — `/docs`, схема — `/openapi.json`.
+
+## База даних
+
+Міграції й seed виконуються проти запущеної PostgreSQL. Найпростіше — підняти стек:
+
+```bash
+docker compose up -d postgres redis mongo
+uv run alembic upgrade head
+uv run python -m scripts.seed
+```
+
+`DATABASE_URL` у `.env.example` уже вказує на `localhost:5433` — порт, який compose
+пробрасує назовні. `docker compose up --build` піднімає все разом: сервіс `migrate`
+сам застосує міграції та seed перед стартом API.
+
+Щоб побачити SQL міграції без підключення до бази:
+
+```bash
+uv run alembic upgrade head --sql
+```
+
+## Перевірки
+
+```bash
+uv run ruff format --check .   # форматування
+uv run ruff check .            # статичний аналіз
+uv run mypy                    # типи, strict
+uv run pytest                  # тести
+```
+
+## Структура
+
+```
+app/
+  core/          налаштування, помилки, обробники, серіалізація, безпека
+  middleware/    correlation id, логування запитів, заголовки, ліміт тіла, rate limit
+  db/            підключення, базовий клас моделей, типи колонок, моделі
+  cache/         фасад Redis: get / set / remember / delete / invalidate_prefix
+  events/        журнал подій у MongoDB (append-only, TTL-індекс)
+  realtime/      WebSocket-шлюз із RBAC на підписках
+  observability/ реєстр метрик і /metrics під токеном
+  health/        проби живучості й готовності
+  container.py   композиційний корінь: увесь граф об'єктів
+  lifespan.py    підключення/відключення, публікація графа на app.state
+  factory.py     create_app(): middleware, обробники помилок, роутери, OpenAPI
+  modules/       13 доменних модулів (по одному пакету на домен)
+tests/
+  unit/          тести без зовнішніх залежностей
+  integration/   тести проти справжніх PostgreSQL, Redis і MongoDB
+```
+
+Кожен доменний модуль має однаковий набір файлів: `router.py`, `service.py`,
+`schemas.py`, `types.py`, за потреби `dependencies.py`.
+
+## Модулі
+
+Усе під префіксом `/api/v1`; 70 операцій разом.
+
+| Модуль | Операцій | Про що |
+|---|---|---|
+| `auth` | 4 | вхід, оновлення токена, вихід, поточний користувач |
+| `users` | 7 | користувачі та їхні сесії |
+| `rbac` | 4 | ролі, дозволи, перевірка доступу |
+| `contacts` | 5 | CRUD контактів із soft delete |
+| `deals` | 6 | угоди й машина станів стадій |
+| `products` | 5 | каталог товарів |
+| `orders` | 9 | замовлення, позиції, переходи статусів, резерв стоку |
+| `warehouse` | 12 | склади, залишки, 5 операцій зі стоком, рухи |
+| `audit` | 3 | журнал аудиту |
+| `settings` | 4 | реєстр налаштувань із типами |
+| `analytics` | 5 | агрегатні звіти з кешуванням |
+| `integrations` | 4 | доставка: тарифи, відправлення, стан інтеграції |
+| `ai` | 2 | стислий переказ угоди, класифікація звернення |
+
+Поза контрактом: `/health/{live,ready,startup,info}`, `/docs`, `/openapi.json`,
+`/metrics` (лише коли задано `METRICS_TOKEN`) і WebSocket на `WS_PATH`.
+
+## Зовнішні служби
+
+`integrations` і `ai` працюють без жодного налаштування: без `DELIVERY_BASE_URL`
+модуль доставки використовує вбудований stub-транспорт, без `AI_ENDPOINT_URL`
+асистент відповідає офлайн-моком із шаблонними відповідями. Обидва варіанти
+детерміновані, тож свіжий checkout проходить наскрізний сценарій без жодного
+зовнішнього акаунта. Решта змінних (таймаути, пороги circuit breaker'а, ліміти
+токенів) — у `.env.example`.
+
+Клієнт доставки й провайдер асистента створюються один раз на процес у
+`app/container.py` і публікуються на `app.state`: стан circuit breaker'а мусить
+жити довше за один запит, інакше він не breaker.
+
+## Порти
+
+Стек навмисно зсунуто, щоб дві бази могли працювати одночасно на одній машині:
+
+| Сервіс | Порт |
+|---|---|
+| API | 8000 |
+| PostgreSQL | 5433 |
+| Redis | 6380 |
+| MongoDB | 27018 |
