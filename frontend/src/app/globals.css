@@ -1,0 +1,47 @@
+@layer theme, base, components, utilities;
+
+/*
+ * Preflight is deliberately not imported. The component library owns the base
+ * styles; a second reset on top of it fights with every button and input.
+ * Tailwind is here for layout utilities only.
+ */
+@import 'tailwindcss/theme.css' layer(theme);
+@import 'tailwindcss/utilities.css' layer(utilities);
+
+@source '../';
+
+@theme {
+  --color-primary: #4f46e5;
+  --color-success: #16a34a;
+  --color-warning: #d97706;
+  --color-danger: #dc2626;
+  --color-info: #0ea5e9;
+
+  --color-surface: #ffffff;
+  --color-canvas: #f7f7fb;
+  --color-hairline: #e6e6ef;
+
+  --font-sans: 'Inter Variable', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --font-mono: 'JetBrains Mono Variable', ui-monospace, monospace;
+
+  --radius-crm: 8px;
+}
+
+/* The dark surfaces mirror SURFACE.dark in shared/constants/theme.ts. */
+.dark {
+  --color-surface: #1e1e27;
+  --color-canvas: #16161d;
+  --color-hairline: #2c2c38;
+}
+
+html,
+body {
+  height: 100%;
+  font-family: var(--font-sans);
+}
+
+/* Identifiers, quantities and money are read digit by digit — never proportional. */
+.numeric {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
