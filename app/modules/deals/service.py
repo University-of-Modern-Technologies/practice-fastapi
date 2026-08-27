@@ -12,7 +12,6 @@ back as missing instead of as forbidden.
 
 from __future__ import annotations
 
-import contextlib
 import uuid
 from collections.abc import Sequence
 from datetime import UTC, datetime
@@ -30,6 +29,7 @@ from app.core.serializers import quantize_money
 from app.db.enums import DealStage
 from app.db.models.contact import Contact
 from app.db.models.deal import Deal
+from app.events.dispatch import announcer, publish_after_commit
 from app.events.types import DomainEvent, DomainEventPublisher, NoopPublisher
 from app.modules.audit import AuditEvent, AuditService
 from app.modules.deals.schemas import (
@@ -428,19 +428,24 @@ class DealsService:
     def _announce(
         self, event_type: str, deal_id: uuid.UUID, access: DealAccess, payload: Any
     ) -> None:
-        """Tells the secondary consumers what happened, and nothing more.
+        """Tells the secondary consumers what happened, once it has happened.
 
-        A change that is already written must be reported as a success even if
-        the event stream is unreachable, so a misbehaving publisher is contained
-        here. Diagnostics are the publisher's own responsibility.
+        Delivery waits for the session's commit: the request transaction closes
+        after the handler returns, so announcing here would report a change that
+        a later failure could still undo. A change that is written must then be
+        reported as a success even if the event stream is unreachable, so a
+        misbehaving publisher stays contained.
         """
-        with contextlib.suppress(Exception):
-            self._events.publish(
+        publish_after_commit(
+            self._session,
+            announcer(
+                self._events,
                 DomainEvent(
                     event_type=event_type,
                     entity_type=DEAL_ENTITY_TYPE,
                     entity_id=str(deal_id),
                     actor_id=str(access.actor_id),
                     payload=payload,
-                )
-            )
+                ),
+            ),
+        )

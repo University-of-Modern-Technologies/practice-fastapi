@@ -38,6 +38,7 @@ from app.db.models.contact import Contact
 from app.db.models.deal import Deal
 from app.db.models.order import Order, OrderItem
 from app.db.models.product import Product
+from app.events.dispatch import announcer, publish_after_commit
 from app.events.types import DomainEvent, DomainEventPublisher, NoopPublisher
 from app.modules.audit import AuditEvent, AuditService
 from app.modules.orders.money import (
@@ -762,24 +763,28 @@ class OrdersService:
     def _announce(
         self, access: OrderAccess, event_type: str, order_id: uuid.UUID, payload: Any
     ) -> None:
-        """Tells the secondary consumers what changed.
+        """Tells the secondary consumers what changed, once the change is real.
 
-        The publisher contract forbids throwing, but the primary path is guarded
-        anyway: a change the caller is about to see as successful must not be
-        reported as a failure because a listener misbehaved.
+        Delivery waits for the session's commit: the request transaction closes
+        after the handler returns, so announcing here would report a change that
+        a later failure could still undo. The publisher contract forbids
+        throwing, but delivery is guarded anyway — a change the caller sees as
+        successful must not be reported as a failure because a listener
+        misbehaved.
         """
-        try:
-            self._events.publish(
+        publish_after_commit(
+            self._session,
+            announcer(
+                self._events,
                 DomainEvent(
                     event_type=event_type,
                     entity_type=ORDER_ENTITY_TYPE,
                     entity_id=str(order_id),
                     actor_id=str(access.actor_id),
                     payload=payload,
-                )
-            )
-        except Exception:
-            return
+                ),
+            ),
+        )
 
 
 def _totals(totals: OrderTotals) -> dict[str, Decimal]:
