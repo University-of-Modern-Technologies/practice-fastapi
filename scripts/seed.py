@@ -63,6 +63,11 @@ PRODUCT_IDS = {
     "licence": uuid.UUID("40000000-0000-4000-8000-000000000001"),
     "workshop": uuid.UUID("40000000-0000-4000-8000-000000000002"),
     "support": uuid.UUID("40000000-0000-4000-8000-000000000003"),
+    # Neither carries real business meaning — they exist so a change that
+    # reads "may this product be archived" has one case that says yes
+    # without any preparation and one closed-order-only case to read.
+    "unblocked": uuid.UUID("40000000-0000-4000-8000-000000000004"),
+    "closed_order_only": uuid.UUID("40000000-0000-4000-8000-000000000005"),
 }
 WAREHOUSE_IDS = {
     "central": uuid.UUID("50000000-0000-4000-8000-000000000001"),
@@ -71,11 +76,13 @@ WAREHOUSE_IDS = {
 ORDER_IDS = {
     "confirmed": uuid.UUID("60000000-0000-4000-8000-000000000001"),
     "draft": uuid.UUID("60000000-0000-4000-8000-000000000002"),
+    "fulfilled": uuid.UUID("60000000-0000-4000-8000-000000000003"),
 }
 ORDER_ITEM_IDS = {
     "confirmed_licence": uuid.UUID("70000000-0000-4000-8000-000000000001"),
     "confirmed_support": uuid.UUID("70000000-0000-4000-8000-000000000002"),
     "draft_workshop": uuid.UUID("70000000-0000-4000-8000-000000000003"),
+    "fulfilled_closed_order_only": uuid.UUID("70000000-0000-4000-8000-000000000004"),
 }
 
 PERMISSIONS: Sequence[tuple[str, str]] = (
@@ -452,6 +459,22 @@ async def seed_catalogue(connection: AsyncConnection) -> None:
             "Support",
             Decimal("600.00"),
         ),
+        (
+            PRODUCT_IDS["unblocked"],
+            "LIC-LEGACY-04",
+            "Legacy licence, discontinued",
+            "Superseded by the team licence; nothing open references it.",
+            "Licences",
+            Decimal("900.00"),
+        ),
+        (
+            PRODUCT_IDS["closed_order_only"],
+            "SRV-PILOT-05",
+            "One-time pilot engagement",
+            "A single delivered engagement; its only order is fulfilled.",
+            "Services",
+            Decimal("450.00"),
+        ),
     )
 
     await upsert(
@@ -505,6 +528,8 @@ async def seed_catalogue(connection: AsyncConnection) -> None:
                 ("CENTRAL", "LIC-TEAM-01", 120, 10),
                 ("CENTRAL", "SUP-PRIO-03", 80, 0),
                 ("REGIONAL", "SRV-WS-02", 15, 3),
+                ("CENTRAL", "LIC-LEGACY-04", 6, 0),
+                ("CENTRAL", "SRV-PILOT-05", 4, 0),
             )
         ],
         conflict=["warehouse_id", "product_id"],
@@ -547,6 +572,22 @@ async def seed_orders(connection: AsyncConnection) -> None:
                 "total": Decimal("2400.00"),
                 "version": 1,
                 "placed_at": None,
+                "deleted_at": None,
+            },
+            {
+                "id": ORDER_IDS["fulfilled"],
+                "order_number": "ORD-2026-0003",
+                "owner_id": USER_IDS["manager"],
+                "contact_id": CONTACT_IDS["blue_peak"],
+                "deal_id": None,
+                "status": OrderStatus.FULFILLED,
+                "currency": "USD",
+                "subtotal": Decimal("450.00"),
+                "discount_total": Decimal("0.00"),
+                "tax_total": Decimal("0.00"),
+                "total": Decimal("450.00"),
+                "version": 1,
+                "placed_at": datetime(2026, 1, 15, 9, 0, tzinfo=UTC),
                 "deleted_at": None,
             },
         ],
@@ -599,6 +640,16 @@ async def seed_orders(connection: AsyncConnection) -> None:
                 "quantity": 1,
                 "unit_price": Decimal("2400.00"),
                 "line_total": Decimal("2400.00"),
+            },
+            {
+                "id": ORDER_ITEM_IDS["fulfilled_closed_order_only"],
+                "order_id": ORDER_IDS["fulfilled"],
+                "product_id": PRODUCT_IDS["closed_order_only"],
+                "sku": "SRV-PILOT-05",
+                "name": "One-time pilot engagement",
+                "quantity": 1,
+                "unit_price": Decimal("450.00"),
+                "line_total": Decimal("450.00"),
             },
         ],
         conflict=["order_id", "product_id"],
