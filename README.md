@@ -40,6 +40,16 @@ uv run python -m scripts.seed
 uv run alembic upgrade head --sql
 ```
 
+Нову міграцію після зміни моделей генерує сам Alembic — проти запущеної бази:
+
+```bash
+uv run alembic revision --autogenerate -m "короткий опис зміни"
+```
+
+Згенероване завжди варто прочитати: автогенерація ловить зміни колонок і
+таблиць, але не бачить намірів — перейменування поля вона запише як
+видалення старого й додавання нового.
+
 ## Перевірки
 
 ```bash
@@ -47,6 +57,18 @@ uv run ruff format --check .   # форматування
 uv run ruff check .            # статичний аналіз
 uv run mypy                    # типи, strict
 uv run pytest                  # тести
+```
+
+`pytest` збирає всі рівні одразу, але інтеграційні тести пропускаються, поки не
+піднято сховища: у підсумку прогону вони видні як `skipped`. Піднятого стека
+самого по собі не досить — тести читають адреси сховищ зі змінних середовища
+процесу, а не з `.env`, тому їх треба задати явно в тому самому терміналі:
+
+```powershell
+$env:DATABASE_URL = 'postgresql://practice_crm:<POSTGRES_PASSWORD з .env>@localhost:5433/practice_crm'
+$env:REDIS_URL = 'redis://localhost:6380'
+$env:MONGODB_URL = 'mongodb://practice_crm:<MONGO_PASSWORD з .env>@localhost:27018/practice_events?authSource=admin'
+uv run pytest
 ```
 
 ## Структура

@@ -47,8 +47,8 @@ FROM = "2026-01-01T00:00:00.000Z"
 TO = "2026-01-31T00:00:00.000Z"
 
 EMPTY_SALES_SUMMARY = SalesSummaryReport(
-    from_=FROM,  # type: ignore[arg-type]
-    to=TO,  # type: ignore[arg-type]
+    from_=FROM,
+    to=TO,
     period=AnalyticsPeriod.DAY,
     totals=SalesSummaryTotals(order_count=0, revenue="0.00", average_order_value="0.00"),
     series=[],
@@ -57,9 +57,9 @@ EMPTY_SALES_SUMMARY = SalesSummaryReport(
 SALES_SUMMARY_WITH_ROWS = EMPTY_SALES_SUMMARY.model_copy(
     update={
         "series": [
-            SalesSummaryBucket(bucket_start=FROM, order_count=2, revenue="1234.50"),  # type: ignore[arg-type]
+            SalesSummaryBucket(bucket_start=FROM, order_count=2, revenue="1234.50"),
             SalesSummaryBucket(
-                bucket_start="2026-01-02T00:00:00.000Z",  # type: ignore[arg-type]
+                bucket_start="2026-01-02T00:00:00.000Z",
                 order_count=1,
                 revenue="0.00",
             ),
@@ -68,8 +68,8 @@ SALES_SUMMARY_WITH_ROWS = EMPTY_SALES_SUMMARY.model_copy(
 )
 
 DEAL_FUNNEL_REPORT = DealFunnelReport(
-    from_=FROM,  # type: ignore[arg-type]
-    to=TO,  # type: ignore[arg-type]
+    from_=FROM,
+    to=TO,
     stages=[
         DealFunnelStage(stage=DealStage.LEAD, count=3, amount="900.00"),
         DealFunnelStage(stage=DealStage.QUALIFIED, count=2, amount="600.00"),
@@ -85,8 +85,8 @@ DEAL_FUNNEL_REPORT = DealFunnelReport(
 )
 
 TOP_PRODUCTS_REPORT = TopProductsReport(
-    from_=FROM,  # type: ignore[arg-type]
-    to=TO,  # type: ignore[arg-type]
+    from_=FROM,
+    to=TO,
     limit=10,
     items=[
         TopProductRow(
@@ -101,8 +101,8 @@ TOP_PRODUCTS_REPORT = TopProductsReport(
 )
 
 OWNER_PERFORMANCE_REPORT = OwnerPerformanceReport(
-    from_=FROM,  # type: ignore[arg-type]
-    to=TO,  # type: ignore[arg-type]
+    from_=FROM,
+    to=TO,
     items=[
         OwnerPerformanceRow(
             owner_id=uuid.UUID("30000000-0000-4000-8000-000000000001"),
