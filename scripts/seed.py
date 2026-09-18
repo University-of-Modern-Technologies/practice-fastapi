@@ -11,6 +11,7 @@ Run with ``python -m scripts.seed``.
 from __future__ import annotations
 
 import asyncio
+import os
 import uuid
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
@@ -162,13 +163,18 @@ GRANTS: Mapping[str, Sequence[tuple[str, PermissionScope]]] = {
 
 
 def read_seed_password() -> str:
-    """Reads and validates the demo password from the configuration."""
+    """Reads and validates the demo password from the environment.
+
+    The value is read here rather than through application settings: nothing the
+    application serves needs it, and a fixture that only this script uses has no
+    business widening the configuration the application validates on startup.
+    """
     settings = get_settings()
     if settings.is_production:
         message = "The training seed is local-only and cannot run in production."
         raise RuntimeError(message)
 
-    password = settings.seed_user_password or ""
+    password = os.environ.get("SEED_USER_PASSWORD", "")
     if len(password) < MIN_PASSWORD_LENGTH or password == PLACEHOLDER_PASSWORD:
         message = "SEED_USER_PASSWORD must contain at least 12 non-placeholder characters."
         raise RuntimeError(message)
