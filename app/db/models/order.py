@@ -26,6 +26,7 @@ from app.db.types import CreatedAt, DeletedAt, LongText, Money, UpdatedAt, UuidF
 if TYPE_CHECKING:
     from app.db.models.contact import Contact
     from app.db.models.deal import Deal
+    from app.db.models.finance import BankTransaction
     from app.db.models.product import Product
     from app.db.models.user import User
 
@@ -73,6 +74,9 @@ class Order(Base):
     deal: Mapped[Deal | None] = relationship(back_populates="orders", lazy="raise")
     items: Mapped[list[OrderItem]] = relationship(
         back_populates="order", lazy="raise", passive_deletes=True
+    )
+    bank_transactions: Mapped[list[BankTransaction]] = relationship(
+        back_populates="matched_order", lazy="raise"
     )
 
     __table_args__ = (

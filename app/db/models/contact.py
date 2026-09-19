@@ -11,8 +11,10 @@ from app.db.base import Base
 from app.db.types import CreatedAt, DeletedAt, LongText, UpdatedAt, UuidFk, UuidPk
 
 if TYPE_CHECKING:
+    from app.db.models.call import Call
     from app.db.models.deal import Deal
     from app.db.models.order import Order
+    from app.db.models.ticket import Ticket
     from app.db.models.user import User
 
 
@@ -38,6 +40,8 @@ class Contact(Base):
     owner: Mapped[User] = relationship(back_populates="contacts", lazy="raise")
     deals: Mapped[list[Deal]] = relationship(back_populates="contact", lazy="raise")
     orders: Mapped[list[Order]] = relationship(back_populates="contact", lazy="raise")
+    tickets: Mapped[list[Ticket]] = relationship(back_populates="contact", lazy="raise")
+    calls: Mapped[list[Call]] = relationship(back_populates="contact", lazy="raise")
 
     __table_args__ = (
         Index(None, "owner_id", "deleted_at"),
