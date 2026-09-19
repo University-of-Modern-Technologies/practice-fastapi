@@ -1,0 +1,36 @@
+{
+  "seed": 20260919,
+  "horizon": {
+    "from": "2025-09-19T00:00:00.000Z",
+    "to": "2026-09-19T00:00:00.000Z",
+    "days": 365
+  },
+  "idRange": {
+    "from": "a0000000-0000-0000-0000-000000000000",
+    "to": "b0000000-0000-0000-0000-000000000000"
+  },
+  "counts": {
+    "users": 6,
+    "contacts": 400,
+    "deals": 250,
+    "products": 60,
+    "warehouses": 2,
+    "stock-levels": 51,
+    "stock-movements": 1843,
+    "orders": 900,
+    "order-items": 2136,
+    "audit-logs": 4646
+  },
+  "checksums": {
+    "users.ndjson": "431359d9050ab18b29fa27701f6a9dad75b27d2f12ed7a8060ad61964969ad05",
+    "contacts.ndjson": "f28a0b0b3ba7b95bc178024287a5720151f9df68fce2994040ce76bbe35e5b73",
+    "deals.ndjson": "75f19c7c52abaaef47176cfb01f8e2ef84d9f4c0be1595433dfc65c4ea1f50dd",
+    "products.ndjson": "d22e66e4cfdaf712bdcfa1ee3e622580a46a7803d4d97a1f3bea99a759b27b99",
+    "warehouses.ndjson": "cba6df902464f47f2f36a546515ceaef92b7a9985f781d05c9efbd48c66cb471",
+    "stock-levels.ndjson": "e853c339b5a53c9790d85d80529e4f8d6d9f786606b35a9bd029414baa6ffa59",
+    "stock-movements.ndjson": "fbcaed51709d0524ab1e08b05c88b47e6819658e88f81ffc01051138a63245e1",
+    "orders.ndjson": "43eb9281c506a4b034118546242b315b06b906a85d5fc196500647008ab6a58a",
+    "order-items.ndjson": "b5a1053d9ce20dca9d1a9e5946203d5d9ae7714645e50ac8f6d78c64724f7156",
+    "audit-logs.ndjson": "e35dbb36ccff28999b003106f6d32e9bd31f5f6719457e9367e4193dd8ca7f7d"
+  }
+}
