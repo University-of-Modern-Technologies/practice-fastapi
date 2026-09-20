@@ -44,6 +44,7 @@ from app.modules.auth import AuthService, auth_config_from_settings, create_auth
 from app.modules.calls import CallProviderConfig, create_calls_router
 from app.modules.contacts import create_contacts_router
 from app.modules.deals import create_deals_router
+from app.modules.finance import create_finance_router
 from app.modules.helpdesk import create_helpdesk_router
 from app.modules.integrations import DeliveryClient, create_integrations_router
 from app.modules.orders import create_orders_router
@@ -272,6 +273,7 @@ def build_container(settings: Settings) -> Container:
             (f"{API_PREFIX}/audit", create_audit_router()),
             (f"{API_PREFIX}/helpdesk", create_helpdesk_router()),
             (f"{API_PREFIX}/calls", create_calls_router()),
+            (f"{API_PREFIX}/finance", create_finance_router()),
             (f"{API_PREFIX}/contacts", create_contacts_router()),
             (f"{API_PREFIX}/deals", create_deals_router()),
             (f"{API_PREFIX}/products", create_products_router()),
