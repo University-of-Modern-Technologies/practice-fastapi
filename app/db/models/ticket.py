@@ -17,11 +17,14 @@ if TYPE_CHECKING:
     from app.db.models.contact import Contact
     from app.db.models.user import User
 
-#: A ticket is resolved exactly when it carries a resolution time, so the two
-#: cannot drift apart into a state no reader would know how to interpret.
+#: An open ticket has no resolution time and a resolved one always has it.
+#: Closed is deliberately unconstrained: a ticket can be closed without ever
+#: being answered, and one that was answered first keeps the moment it was —
+#: erasing that on close would take the time-to-resolution report with it.
 RESOLVED_CONSISTENCY_RULE = (
-    "(status IN ('RESOLVED', 'CLOSED') AND resolved_at IS NOT NULL) OR "
-    "(status NOT IN ('RESOLVED', 'CLOSED') AND resolved_at IS NULL)"
+    "(status = 'RESOLVED' AND resolved_at IS NOT NULL) OR "
+    "(status IN ('NEW', 'OPEN', 'PENDING') AND resolved_at IS NULL) OR "
+    "status = 'CLOSED'"
 )
 
 

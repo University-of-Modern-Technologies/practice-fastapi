@@ -32,8 +32,9 @@ ENUM_TYPES = (
 
 #: A ticket is resolved exactly when it carries a resolution time.
 RESOLVED_CONSISTENCY_RULE = (
-    "(status IN ('RESOLVED', 'CLOSED') AND resolved_at IS NOT NULL) OR "
-    "(status NOT IN ('RESOLVED', 'CLOSED') AND resolved_at IS NULL)"
+    "(status = 'RESOLVED' AND resolved_at IS NOT NULL) OR "
+    "(status IN ('NEW', 'OPEN', 'PENDING') AND resolved_at IS NULL) OR "
+    "status = 'CLOSED'"
 )
 
 #: A transaction names an order exactly when it claims to be matched to one.
@@ -84,20 +85,22 @@ def upgrade() -> None:
             nullable=False,
         ),
         sa.CheckConstraint(
-            "btrim(external_id) <> ''", name="bank_statements_external_id_nonempty_check"
+            "btrim(external_id) <> ''", name=op.f("bank_statements_external_id_nonempty_check")
         ),
-        sa.CheckConstraint("currency ~ '^[A-Z]{3}$'", name="bank_statements_currency_format_check"),
         sa.CheckConstraint(
-            "period_end >= period_start", name="bank_statements_period_ordered_check"
+            "currency ~ '^[A-Z]{3}$'", name=op.f("bank_statements_currency_format_check")
+        ),
+        sa.CheckConstraint(
+            "period_end >= period_start", name=op.f("bank_statements_period_ordered_check")
         ),
         sa.ForeignKeyConstraint(
             ["imported_by_id"],
             ["users.id"],
-            name="bank_statements_imported_by_id_fkey",
+            name=op.f("bank_statements_imported_by_id_fkey"),
             ondelete="SET NULL",
         ),
-        sa.PrimaryKeyConstraint("id", name="bank_statements_pkey"),
-        sa.UniqueConstraint("external_id", name="bank_statements_external_id_key"),
+        sa.PrimaryKeyConstraint("id", name=op.f("bank_statements_pkey")),
+        sa.UniqueConstraint("external_id", name=op.f("bank_statements_external_id_key")),
     )
     op.create_index(
         "bank_statements_period_start_period_end_idx",
@@ -113,18 +116,18 @@ def upgrade() -> None:
         sa.Column("body", sa.Text(), nullable=False),
         sa.Column(
             "channel",
-            sa.Enum("EMAIL", "PHONE", "CHAT", "WEB", name="TicketChannel"),
+            sa.Enum("EMAIL", "PHONE", "CHAT", "WEB", name=op.f("TicketChannel")),
             nullable=False,
         ),
         sa.Column(
             "status",
-            sa.Enum("NEW", "OPEN", "PENDING", "RESOLVED", "CLOSED", name="TicketStatus"),
+            sa.Enum("NEW", "OPEN", "PENDING", "RESOLVED", "CLOSED", name=op.f("TicketStatus")),
             server_default=sa.text("'NEW'"),
             nullable=False,
         ),
         sa.Column(
             "priority",
-            sa.Enum("LOW", "NORMAL", "HIGH", "URGENT", name="TicketPriority"),
+            sa.Enum("LOW", "NORMAL", "HIGH", "URGENT", name=op.f("TicketPriority")),
             server_default=sa.text("'NORMAL'"),
             nullable=False,
         ),
@@ -154,35 +157,35 @@ def upgrade() -> None:
         sa.Column("deleted_at", postgresql.TIMESTAMP(timezone=True, precision=3), nullable=True),
         sa.CheckConstraint(
             RESOLVED_CONSISTENCY_RULE,
-            name="tickets_resolved_at_consistency_check",
+            name=op.f("tickets_resolved_at_consistency_check"),
         ),
-        sa.CheckConstraint("btrim(number) <> ''", name="tickets_number_nonempty_check"),
-        sa.CheckConstraint("btrim(subject) <> ''", name="tickets_subject_nonempty_check"),
+        sa.CheckConstraint("btrim(number) <> ''", name=op.f("tickets_number_nonempty_check")),
+        sa.CheckConstraint("btrim(subject) <> ''", name=op.f("tickets_subject_nonempty_check")),
         sa.CheckConstraint(
-            "deleted_at IS NULL OR deleted_at >= created_at", name="tickets_deleted_at_check"
+            "deleted_at IS NULL OR deleted_at >= created_at", name=op.f("tickets_deleted_at_check")
         ),
         sa.CheckConstraint(
             "resolved_at IS NULL OR resolved_at >= opened_at",
-            name="tickets_resolved_at_check",
+            name=op.f("tickets_resolved_at_check"),
         ),
-        sa.CheckConstraint("version > 0", name="tickets_version_positive_check"),
+        sa.CheckConstraint("version > 0", name=op.f("tickets_version_positive_check")),
         sa.ForeignKeyConstraint(
             ["assignee_id"],
             ["users.id"],
-            name="tickets_assignee_id_fkey",
+            name=op.f("tickets_assignee_id_fkey"),
             ondelete="SET NULL",
         ),
         sa.ForeignKeyConstraint(
             ["contact_id"],
             ["contacts.id"],
-            name="tickets_contact_id_fkey",
+            name=op.f("tickets_contact_id_fkey"),
             ondelete="SET NULL",
         ),
         sa.ForeignKeyConstraint(
-            ["owner_id"], ["users.id"], name="tickets_owner_id_fkey", ondelete="RESTRICT"
+            ["owner_id"], ["users.id"], name=op.f("tickets_owner_id_fkey"), ondelete="RESTRICT"
         ),
-        sa.PrimaryKeyConstraint("id", name="tickets_pkey"),
-        sa.UniqueConstraint("number", name="tickets_number_key"),
+        sa.PrimaryKeyConstraint("id", name=op.f("tickets_pkey")),
+        sa.UniqueConstraint("number", name=op.f("tickets_number_key")),
     )
     op.create_index("tickets_assignee_id_idx", "tickets", ["assignee_id"], unique=False)
     op.create_index("tickets_contact_id_idx", "tickets", ["contact_id"], unique=False)
@@ -199,11 +202,13 @@ def upgrade() -> None:
         sa.Column("id", sa.Uuid(), nullable=False),
         sa.Column("external_id", sa.String(length=64), nullable=False),
         sa.Column(
-            "direction", sa.Enum("INBOUND", "OUTBOUND", name="CallDirection"), nullable=False
+            "direction", sa.Enum("INBOUND", "OUTBOUND", name=op.f("CallDirection")), nullable=False
         ),
         sa.Column(
             "disposition",
-            sa.Enum("ANSWERED", "NO_ANSWER", "BUSY", "FAILED", "VOICEMAIL", name="CallDisposition"),
+            sa.Enum(
+                "ANSWERED", "NO_ANSWER", "BUSY", "FAILED", "VOICEMAIL", name=op.f("CallDisposition")
+            ),
             nullable=False,
         ),
         sa.Column("from_number", sa.String(length=32), nullable=False),
@@ -229,25 +234,29 @@ def upgrade() -> None:
             nullable=False,
         ),
         sa.Column("deleted_at", postgresql.TIMESTAMP(timezone=True, precision=3), nullable=True),
-        sa.CheckConstraint("btrim(external_id) <> ''", name="calls_external_id_nonempty_check"),
-        sa.CheckConstraint("btrim(from_number) <> ''", name="calls_from_number_nonempty_check"),
-        sa.CheckConstraint("btrim(to_number) <> ''", name="calls_to_number_nonempty_check"),
         sa.CheckConstraint(
-            "deleted_at IS NULL OR deleted_at >= created_at", name="calls_deleted_at_check"
+            "btrim(external_id) <> ''", name=op.f("calls_external_id_nonempty_check")
         ),
-        sa.CheckConstraint("duration_seconds >= 0", name="calls_duration_nonnegative_check"),
-        sa.CheckConstraint("version > 0", name="calls_version_positive_check"),
+        sa.CheckConstraint(
+            "btrim(from_number) <> ''", name=op.f("calls_from_number_nonempty_check")
+        ),
+        sa.CheckConstraint("btrim(to_number) <> ''", name=op.f("calls_to_number_nonempty_check")),
+        sa.CheckConstraint(
+            "deleted_at IS NULL OR deleted_at >= created_at", name=op.f("calls_deleted_at_check")
+        ),
+        sa.CheckConstraint("duration_seconds >= 0", name=op.f("calls_duration_nonnegative_check")),
+        sa.CheckConstraint("version > 0", name=op.f("calls_version_positive_check")),
         sa.ForeignKeyConstraint(
-            ["contact_id"], ["contacts.id"], name="calls_contact_id_fkey", ondelete="SET NULL"
+            ["contact_id"], ["contacts.id"], name=op.f("calls_contact_id_fkey"), ondelete="SET NULL"
         ),
         sa.ForeignKeyConstraint(
-            ["deal_id"], ["deals.id"], name="calls_deal_id_fkey", ondelete="SET NULL"
+            ["deal_id"], ["deals.id"], name=op.f("calls_deal_id_fkey"), ondelete="SET NULL"
         ),
         sa.ForeignKeyConstraint(
-            ["owner_id"], ["users.id"], name="calls_owner_id_fkey", ondelete="SET NULL"
+            ["owner_id"], ["users.id"], name=op.f("calls_owner_id_fkey"), ondelete="SET NULL"
         ),
-        sa.PrimaryKeyConstraint("id", name="calls_pkey"),
-        sa.UniqueConstraint("external_id", name="calls_external_id_key"),
+        sa.PrimaryKeyConstraint("id", name=op.f("calls_pkey")),
+        sa.UniqueConstraint("external_id", name=op.f("calls_external_id_key")),
     )
     op.create_index("calls_contact_id_idx", "calls", ["contact_id"], unique=False)
     op.create_index("calls_deal_id_idx", "calls", ["deal_id"], unique=False)
@@ -265,12 +274,12 @@ def upgrade() -> None:
         sa.Column("ticket_id", sa.Uuid(), nullable=False),
         sa.Column(
             "from_status",
-            sa.Enum("NEW", "OPEN", "PENDING", "RESOLVED", "CLOSED", name="TicketStatus"),
+            sa.Enum("NEW", "OPEN", "PENDING", "RESOLVED", "CLOSED", name=op.f("TicketStatus")),
             nullable=True,
         ),
         sa.Column(
             "to_status",
-            sa.Enum("NEW", "OPEN", "PENDING", "RESOLVED", "CLOSED", name="TicketStatus"),
+            sa.Enum("NEW", "OPEN", "PENDING", "RESOLVED", "CLOSED", name=op.f("TicketStatus")),
             nullable=False,
         ),
         sa.Column("changed_by_id", sa.Uuid(), nullable=True),
@@ -283,21 +292,21 @@ def upgrade() -> None:
         ),
         sa.CheckConstraint(
             "from_status IS NULL OR from_status <> to_status",
-            name="ticket_status_logs_status_changed_check",
+            name=op.f("ticket_status_logs_status_changed_check"),
         ),
         sa.ForeignKeyConstraint(
             ["changed_by_id"],
             ["users.id"],
-            name="ticket_status_logs_changed_by_id_fkey",
+            name=op.f("ticket_status_logs_changed_by_id_fkey"),
             ondelete="SET NULL",
         ),
         sa.ForeignKeyConstraint(
             ["ticket_id"],
             ["tickets.id"],
-            name="ticket_status_logs_ticket_id_fkey",
+            name=op.f("ticket_status_logs_ticket_id_fkey"),
             ondelete="CASCADE",
         ),
-        sa.PrimaryKeyConstraint("id", name="ticket_status_logs_pkey"),
+        sa.PrimaryKeyConstraint("id", name=op.f("ticket_status_logs_pkey")),
     )
     op.create_index(
         "ticket_status_logs_ticket_id_changed_at_idx",
@@ -314,14 +323,18 @@ def upgrade() -> None:
         sa.Column("amount", sa.Numeric(precision=14, scale=2), nullable=False),
         sa.Column("currency", sa.CHAR(length=3), server_default=sa.text("'USD'"), nullable=False),
         sa.Column(
-            "direction", sa.Enum("CREDIT", "DEBIT", name="TransactionDirection"), nullable=False
+            "direction",
+            sa.Enum("CREDIT", "DEBIT", name=op.f("TransactionDirection")),
+            nullable=False,
         ),
         sa.Column("counterparty_name", sa.String(length=200), nullable=False),
         sa.Column("counterparty_account", sa.String(length=64), nullable=True),
         sa.Column("reference", sa.String(length=300), nullable=False),
         sa.Column(
             "match_status",
-            sa.Enum("UNMATCHED", "SUGGESTED", "MATCHED", "IGNORED", name="PaymentMatchStatus"),
+            sa.Enum(
+                "UNMATCHED", "SUGGESTED", "MATCHED", "IGNORED", name=op.f("PaymentMatchStatus")
+            ),
             server_default=sa.text("'UNMATCHED'"),
             nullable=False,
         ),
@@ -343,40 +356,40 @@ def upgrade() -> None:
         ),
         sa.CheckConstraint(
             MATCH_CONSISTENCY_RULE,
-            name="bank_transactions_match_consistency_check",
+            name=op.f("bank_transactions_match_consistency_check"),
         ),
         sa.CheckConstraint(
             "btrim(counterparty_name) <> ''",
-            name="bank_transactions_counterparty_nonempty_check",
+            name=op.f("bank_transactions_counterparty_nonempty_check"),
         ),
         sa.CheckConstraint(
-            "btrim(external_id) <> ''", name="bank_transactions_external_id_nonempty_check"
+            "btrim(external_id) <> ''", name=op.f("bank_transactions_external_id_nonempty_check")
         ),
         sa.CheckConstraint(
-            "currency ~ '^[A-Z]{3}$'", name="bank_transactions_currency_format_check"
+            "currency ~ '^[A-Z]{3}$'", name=op.f("bank_transactions_currency_format_check")
         ),
-        sa.CheckConstraint("amount >= 0", name="bank_transactions_amount_nonnegative_check"),
-        sa.CheckConstraint("version > 0", name="bank_transactions_version_positive_check"),
+        sa.CheckConstraint("amount >= 0", name=op.f("bank_transactions_amount_nonnegative_check")),
+        sa.CheckConstraint("version > 0", name=op.f("bank_transactions_version_positive_check")),
         sa.ForeignKeyConstraint(
             ["matched_by_id"],
             ["users.id"],
-            name="bank_transactions_matched_by_id_fkey",
+            name=op.f("bank_transactions_matched_by_id_fkey"),
             ondelete="SET NULL",
         ),
         sa.ForeignKeyConstraint(
             ["matched_order_id"],
             ["orders.id"],
-            name="bank_transactions_matched_order_id_fkey",
+            name=op.f("bank_transactions_matched_order_id_fkey"),
             ondelete="SET NULL",
         ),
         sa.ForeignKeyConstraint(
             ["statement_id"],
             ["bank_statements.id"],
-            name="bank_transactions_statement_id_fkey",
+            name=op.f("bank_transactions_statement_id_fkey"),
             ondelete="CASCADE",
         ),
-        sa.PrimaryKeyConstraint("id", name="bank_transactions_pkey"),
-        sa.UniqueConstraint("external_id", name="bank_transactions_external_id_key"),
+        sa.PrimaryKeyConstraint("id", name=op.f("bank_transactions_pkey")),
+        sa.UniqueConstraint("external_id", name=op.f("bank_transactions_external_id_key")),
     )
     op.create_index(
         "bank_transactions_booked_at_idx", "bank_transactions", ["booked_at"], unique=False
@@ -402,27 +415,33 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_index("bank_transactions_statement_id_booked_at_idx", table_name="bank_transactions")
-    op.drop_index("bank_transactions_matched_order_id_idx", table_name="bank_transactions")
-    op.drop_index("bank_transactions_match_status_booked_at_idx", table_name="bank_transactions")
-    op.drop_index("bank_transactions_booked_at_idx", table_name="bank_transactions")
+    op.drop_index(
+        "bank_transactions_statement_id_booked_at_idx", table_name=op.f("bank_transactions")
+    )
+    op.drop_index("bank_transactions_matched_order_id_idx", table_name=op.f("bank_transactions"))
+    op.drop_index(
+        "bank_transactions_match_status_booked_at_idx", table_name=op.f("bank_transactions")
+    )
+    op.drop_index("bank_transactions_booked_at_idx", table_name=op.f("bank_transactions"))
     op.drop_table("bank_transactions")
-    op.drop_index("ticket_status_logs_ticket_id_changed_at_idx", table_name="ticket_status_logs")
+    op.drop_index(
+        "ticket_status_logs_ticket_id_changed_at_idx", table_name=op.f("ticket_status_logs")
+    )
     op.drop_table("ticket_status_logs")
-    op.drop_index("calls_started_at_idx", table_name="calls")
-    op.drop_index("calls_owner_id_started_at_idx", table_name="calls")
-    op.drop_index("calls_direction_disposition_idx", table_name="calls")
-    op.drop_index("calls_deleted_at_idx", table_name="calls")
-    op.drop_index("calls_deal_id_idx", table_name="calls")
-    op.drop_index("calls_contact_id_idx", table_name="calls")
+    op.drop_index("calls_started_at_idx", table_name=op.f("calls"))
+    op.drop_index("calls_owner_id_started_at_idx", table_name=op.f("calls"))
+    op.drop_index("calls_direction_disposition_idx", table_name=op.f("calls"))
+    op.drop_index("calls_deleted_at_idx", table_name=op.f("calls"))
+    op.drop_index("calls_deal_id_idx", table_name=op.f("calls"))
+    op.drop_index("calls_contact_id_idx", table_name=op.f("calls"))
     op.drop_table("calls")
-    op.drop_index("tickets_status_priority_idx", table_name="tickets")
-    op.drop_index("tickets_owner_id_status_deleted_at_idx", table_name="tickets")
-    op.drop_index("tickets_deleted_at_idx", table_name="tickets")
-    op.drop_index("tickets_contact_id_idx", table_name="tickets")
-    op.drop_index("tickets_assignee_id_idx", table_name="tickets")
+    op.drop_index("tickets_status_priority_idx", table_name=op.f("tickets"))
+    op.drop_index("tickets_owner_id_status_deleted_at_idx", table_name=op.f("tickets"))
+    op.drop_index("tickets_deleted_at_idx", table_name=op.f("tickets"))
+    op.drop_index("tickets_contact_id_idx", table_name=op.f("tickets"))
+    op.drop_index("tickets_assignee_id_idx", table_name=op.f("tickets"))
     op.drop_table("tickets")
-    op.drop_index("bank_statements_period_start_period_end_idx", table_name="bank_statements")
+    op.drop_index("bank_statements_period_start_period_end_idx", table_name=op.f("bank_statements"))
     op.drop_table("bank_statements")
     for enum_name in ENUM_TYPES:
         op.execute(f'DROP TYPE IF EXISTS "{enum_name}"')
