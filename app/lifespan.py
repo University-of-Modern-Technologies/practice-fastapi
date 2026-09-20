@@ -42,6 +42,8 @@ def build_lifespan(container: Container) -> Callable[[FastAPI], Any]:
         app.state.delivery_client = container.delivery_client
         app.state.ai_config = container.ai_config
         app.state.ai_provider = container.ai_provider
+        app.state.call_provider_config = container.call_provider_config
+        app.state.call_sync_batch_size = container.call_sync_batch_size
 
         # Never raises: a missing document store degrades history, not the API.
         await container.event_store.connect()

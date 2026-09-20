@@ -96,6 +96,15 @@ class Settings(BaseSettings):
     ai_max_input_chars: int = Field(default=4_000, ge=100, le=1_000_000)
     ai_cache_ttl_seconds: int = Field(default=300, ge=1, le=86_400)
 
+    # Telephony. Absent base URL means the built-in offline stub, so a fresh
+    # checkout imports a journal without a carrier account.
+    call_provider_base_url: str | None = None
+    call_provider_api_key: str | None = None
+    call_provider_timeout_ms: int = Field(default=5_000, ge=100, le=120_000)
+    call_provider_max_attempts: int = Field(default=3, ge=1, le=10)
+    call_provider_backoff_ms: int = Field(default=200, ge=0, le=60_000)
+    call_sync_batch_size: int = Field(default=100, ge=1, le=1_000)
+
     # Absent means the scrape endpoint is not exposed at all.
     metrics_token: str | None = Field(default=None, min_length=16)
 
