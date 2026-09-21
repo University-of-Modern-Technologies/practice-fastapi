@@ -32,10 +32,11 @@ from app.modules.finance.matching import (
 )
 
 BOOKED_AT = datetime(2026, 3, 10, 12, 0, tzinfo=UTC)
-ORDER_CREATED_AT = datetime(2026, 3, 1, 9, 0, tzinfo=UTC)
+ORDER_PLACED_AT = datetime(2026, 3, 1, 9, 0, tzinfo=UTC)
 
 ORDER_ID = uuid.UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
 OTHER_ORDER_ID = uuid.UUID("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")
+CONTACT_ID = uuid.UUID("cccccccc-cccc-4ccc-8ccc-cccccccccccc")
 
 
 def make_candidate(**overrides: object) -> MatchCandidate:
@@ -44,7 +45,9 @@ def make_candidate(**overrides: object) -> MatchCandidate:
         "order_number": "ORD-2026-0001",
         "status": OrderStatus.CONFIRMED,
         "total": Decimal("1800.00"),
-        "created_at": ORDER_CREATED_AT,
+        "currency": "USD",
+        "contact_id": CONTACT_ID,
+        "placed_at": ORDER_PLACED_AT,
         "contact_name": "Alex North",
         "contact_company": "Northwind Workshop",
     }
@@ -107,21 +110,21 @@ def test_an_amount_is_compared_as_an_exact_decimal() -> None:
 
 
 def test_a_payment_on_the_day_the_order_was_raised_is_inside_the_window() -> None:
-    assert within_window(ORDER_CREATED_AT, ORDER_CREATED_AT)
+    assert within_window(ORDER_PLACED_AT, ORDER_PLACED_AT)
 
 
 def test_the_last_day_of_the_window_still_counts() -> None:
-    assert within_window(ORDER_CREATED_AT + timedelta(days=MATCH_WINDOW_DAYS), ORDER_CREATED_AT)
+    assert within_window(ORDER_PLACED_AT + timedelta(days=MATCH_WINDOW_DAYS), ORDER_PLACED_AT)
 
 
 def test_a_second_past_the_window_does_not() -> None:
-    late = ORDER_CREATED_AT + timedelta(days=MATCH_WINDOW_DAYS, seconds=1)
+    late = ORDER_PLACED_AT + timedelta(days=MATCH_WINDOW_DAYS, seconds=1)
 
-    assert not within_window(late, ORDER_CREATED_AT)
+    assert not within_window(late, ORDER_PLACED_AT)
 
 
 def test_money_that_arrived_before_the_order_existed_cannot_be_paying_it() -> None:
-    assert not within_window(ORDER_CREATED_AT - timedelta(seconds=1), ORDER_CREATED_AT)
+    assert not within_window(ORDER_PLACED_AT - timedelta(seconds=1), ORDER_PLACED_AT)
 
 
 # --- the reference ---------------------------------------------------------
@@ -228,7 +231,7 @@ def test_an_order_in_no_state_to_be_paid_is_never_a_candidate(status: OrderStatu
 
 def test_a_right_amount_outside_the_window_is_not_a_candidate() -> None:
     """The line the twelfth row of the bank fixture exists to exercise."""
-    stale = make_candidate(created_at=BOOKED_AT - timedelta(days=MATCH_WINDOW_DAYS + 1))
+    stale = make_candidate(placed_at=BOOKED_AT - timedelta(days=MATCH_WINDOW_DAYS + 1))
 
     assert select_candidates(make_subject(), [stale]) == []
 

@@ -27,7 +27,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Annotated, Self
 
-from pydantic import AwareDatetime, Field, PrivateAttr, StringConstraints, model_validator
+from pydantic import AwareDatetime, Field, StringConstraints, model_validator
 
 from app.core.pagination import DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, SortOrder
 from app.core.responses import CamelModel
@@ -128,6 +128,10 @@ class MatchCandidateOut(CamelModel):
     order_number: str
     status: OrderStatus
     total: Money
+    currency: str
+    contact_id: uuid.UUID | None
+    #: The field the rule compared against, so a reader can check the answer.
+    placed_at: UtcDatetime | None
 
 
 class BankTransactionDetailOut(BankTransactionOut):
@@ -157,16 +161,18 @@ class ImportStatementOut(CamelModel):
 class ReconcileOut(CamelModel):
     """Outcome of one batch reconciliation.
 
-    ``examined`` counts the lines the rule was applied to; the other three
-    count where they ended up, and they add up to it. ``unmatched`` is
-    reported rather than hidden because it is the honest measure of how well
-    the rule is working.
+    ``examined`` counts the lines the batch took in; the other four count
+    where they ended up, and they add up to it. ``unmatched`` is reported
+    rather than hidden because it is the honest measure of how well the rule
+    is working, and ``ignored`` is the outgoing money, which is examined and
+    filed rather than left out of the count.
     """
 
     examined: int = Field(ge=0)
     matched: int = Field(ge=0)
     suggested: int = Field(ge=0)
     unmatched: int = Field(ge=0)
+    ignored: int = Field(ge=0)
 
 
 class MatchStatusShare(CamelModel):
@@ -276,45 +282,43 @@ def _as_utc(value: datetime) -> datetime:
 class FinanceSummaryParams(CamelModel):
     """Query string of ``GET /finance/summary``.
 
-    Both bounds stay optional on the wire and are resolved during validation,
-    so the service is never handed a half-specified window.
+    Both bounds stay optional, and neither is filled in here.
+
+    They used to be resolved at validation time against the clock: ``to``
+    became "now" and ``from`` a month before it. That made the answer to a
+    question with no parameters depend on the day it was asked — a ledger of
+    March, read in September, reported an empty period for ever. What the
+    window should default to is a fact about the data, not about the calendar,
+    so the decision belongs to the service, which can see the data.
+
+    The checks below therefore apply only to a window the caller actually
+    named. A caller who names one bound, or none, is making no claim to
+    contradict.
     """
 
     from_: datetime | None = Field(default=None, alias="from")
     to: datetime | None = None
 
-    #: The resolved window, held privately rather than written back over the
-    #: optional fields, so the published schema keeps saying "optional" while
-    #: the rest of the module reads a bound that is always there.
-    _range_from: datetime = PrivateAttr()
-    _range_to: datetime = PrivateAttr()
-
     @model_validator(mode="after")
-    def _resolve_range(self) -> Self:
-        to = _as_utc(self.to if self.to is not None else datetime.now(tz=UTC))
-        from_ = (
-            _as_utc(self.from_)
-            if self.from_ is not None
-            else to - timedelta(days=DEFAULT_SUMMARY_DAYS)
-        )
+    def _check_named_range(self) -> Self:
+        if self.from_ is None or self.to is None:
+            return self
 
+        from_, to = _as_utc(self.from_), _as_utc(self.to)
         if from_ >= to:
             message = "from must be earlier than to"
             raise ValueError(message)
         if to - from_ > timedelta(days=MAX_SUMMARY_DAYS):
             message = f"The date range must not exceed {MAX_SUMMARY_DAYS} days"
             raise ValueError(message)
-
-        self._range_from = from_
-        self._range_to = to
         return self
 
     @property
-    def range_from(self) -> datetime:
-        """Resolved lower bound of the half-open interval."""
-        return self._range_from
+    def range_from(self) -> datetime | None:
+        """Lower bound as the caller gave it, normalised to UTC."""
+        return None if self.from_ is None else _as_utc(self.from_)
 
     @property
-    def range_to(self) -> datetime:
-        """Resolved upper bound of the half-open interval."""
-        return self._range_to
+    def range_to(self) -> datetime | None:
+        """Upper bound as the caller gave it, normalised to UTC."""
+        return None if self.to is None else _as_utc(self.to)

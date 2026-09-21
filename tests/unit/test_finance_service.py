@@ -9,7 +9,7 @@ write, record and announce.
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from typing import Any, cast
 
@@ -52,13 +52,14 @@ from app.modules.finance.types import (
 
 NOW = datetime(2026, 3, 1, 8, 0, 0, 123_000, tzinfo=UTC)
 BOOKED_AT = datetime(2026, 3, 10, 12, 0, tzinfo=UTC)
-ORDER_CREATED_AT = datetime(2026, 3, 1, 9, 0, tzinfo=UTC)
+ORDER_PLACED_AT = datetime(2026, 3, 1, 9, 0, tzinfo=UTC)
 
 ACTOR_ID = uuid.UUID("11111111-1111-4111-8111-111111111111")
 TRANSACTION_ID = uuid.UUID("22222222-2222-4222-8222-222222222222")
 STATEMENT_ID = uuid.UUID("33333333-3333-4333-8333-333333333333")
 ORDER_ID = uuid.UUID("44444444-4444-4444-8444-444444444444")
 OTHER_ORDER_ID = uuid.UUID("55555555-5555-4555-8555-555555555555")
+CONTACT_ID = uuid.UUID("66666666-6666-4666-8666-666666666666")
 
 ACCESS = FinanceAccess(actor_id=ACTOR_ID, scope=PermissionScope.ALL, ip_address="203.0.113.7")
 
@@ -93,6 +94,9 @@ class FakeResult:
 
     def all(self) -> list[Any]:
         return list(self._values)
+
+    def first(self) -> Any:
+        return self._values[0] if self._values else None
 
 
 class FakeSavepoint:
@@ -221,7 +225,18 @@ def candidate_row(
     status: OrderStatus = OrderStatus.CONFIRMED,
 ) -> tuple[Any, ...]:
     """One row of the candidate query, in the order the service selects it."""
-    return (order_id, order_number, status, Decimal(total), ORDER_CREATED_AT, "Alex", "North", None)
+    return (
+        order_id,
+        order_number,
+        status,
+        Decimal(total),
+        "USD",
+        CONTACT_ID,
+        ORDER_PLACED_AT,
+        "Alex",
+        "North",
+        None,
+    )
 
 
 def make_order(total: str = "1800.00", **overrides: Any) -> Order:
@@ -236,8 +251,9 @@ def make_order(total: str = "1800.00", **overrides: Any) -> Order:
         "tax_total": Decimal("0.00"),
         "total": Decimal(total),
         "version": 1,
-        "created_at": ORDER_CREATED_AT,
-        "updated_at": ORDER_CREATED_AT,
+        "placed_at": ORDER_PLACED_AT,
+        "created_at": ORDER_PLACED_AT,
+        "updated_at": ORDER_PLACED_AT,
     }
     return Order(**(values | overrides))
 
@@ -358,15 +374,15 @@ async def test_a_feed_that_repeats_a_line_files_it_once() -> None:
 
 async def test_a_partly_known_statement_files_only_what_is_new() -> None:
     session = FakeSession()
-    queue_for_import(session, known=["stub-txn-0001", "stub-txn-0003"])
+    queue_for_import(session, known=["stub-txn-2026-03-0001", "stub-txn-2026-03-0003"])
 
     result = await make_service(session).import_statement(ACCESS)
 
     assert result.imported == STUB_TRANSACTION_COUNT - 2
     assert result.skipped == 2
     filed = [row.external_id for row in stored_transactions(session)]
-    assert "stub-txn-0001" not in filed
-    assert "stub-txn-0003" not in filed
+    assert "stub-txn-2026-03-0001" not in filed
+    assert "stub-txn-2026-03-0003" not in filed
 
 
 async def test_the_batch_is_looked_up_in_one_query() -> None:
@@ -390,7 +406,7 @@ async def test_a_line_that_lost_its_race_is_counted_as_skipped() -> None:
     """
     session = FakeSession()
     queue_for_import(session)
-    session.flush_errors["stub-txn-0002"] = integrity_error(
+    session.flush_errors["stub-txn-2026-03-0002"] = integrity_error(
         'duplicate key value violates unique constraint "bank_transactions_external_id_key"'
     )
 
@@ -406,7 +422,7 @@ async def test_an_integrity_failure_that_is_not_a_duplicate_is_raised() -> None:
     # would make an import report success while losing a line.
     session = FakeSession()
     queue_for_import(session)
-    session.flush_errors["stub-txn-0001"] = integrity_error(
+    session.flush_errors["stub-txn-2026-03-0001"] = integrity_error(
         'violates foreign key constraint "bank_transactions_statement_id_fkey"'
     )
 
@@ -418,7 +434,7 @@ async def test_a_statement_that_lost_its_race_is_reported() -> None:
     """Reported rather than absorbed: the retry is a no-op anyway."""
     session = FakeSession()
     session.execute_queue = [[]]
-    session.flush_errors["stub-stmt-2026-01"] = integrity_error(
+    session.flush_errors["stub-stmt-2026-03"] = integrity_error(
         'duplicate key value violates unique constraint "bank_statements_external_id_key"'
     )
 
@@ -780,13 +796,14 @@ async def test_the_page_is_ordered_by_booking_with_the_id_as_the_tiebreaker() ->
 # --- the batch run ---------------------------------------------------------
 
 
-async def test_reconcile_only_looks_at_incoming_money_that_is_still_open() -> None:
+async def test_reconcile_takes_in_every_line_that_is_still_open() -> None:
+    # Both directions: outgoing money is examined too, and filed as IGNORED.
     session = FakeSession()
 
     await make_service(session).reconcile(ACCESS)
 
     criteria = where_of(session.statements[0])
-    assert "bank_transactions.direction" in criteria
+    assert "bank_transactions.direction" not in criteria
     assert "bank_transactions.match_status IN" in criteria
     assert "LIMIT" in sql_of(session.statements[0])
     assert RECONCILE_BATCH_SIZE in session.statements[0].compile(dialect=PG_DIALECT).params.values()
@@ -840,15 +857,20 @@ async def test_a_payment_that_fits_nothing_is_left_alone() -> None:
     assert len(session.statements) == 2
 
 
-async def test_money_going_out_is_never_reconciled() -> None:
-    # A payment we made is not settling an order somebody placed with us.
+async def test_money_going_out_is_filed_rather_than_reconciled() -> None:
+    # A payment we made is not settling an order somebody placed with us, but
+    # it is still examined, and IGNORED is the answer rather than silence.
     session = FakeSession()
-    session.execute_queue = [[make_transaction(direction=TransactionDirection.DEBIT)]]
+    session.execute_queue = [
+        [make_transaction(direction=TransactionDirection.DEBIT)],
+        [make_transaction(direction=TransactionDirection.DEBIT, version=2)],
+    ]
 
     result = await make_service(session).reconcile(ACCESS)
 
-    assert (result.examined, result.unmatched) == (1, 1)
-    assert len(session.statements) == 1
+    assert (result.examined, result.ignored, result.unmatched) == (1, 1, 0)
+    # The order book is never consulted for it.
+    assert "orders" not in sql_of(session.statements[1])
 
 
 async def test_a_suggestion_that_no_longer_fits_falls_back_to_unmatched() -> None:
@@ -883,8 +905,8 @@ async def test_the_candidate_query_narrows_by_the_same_conditions_as_the_rule() 
     assert "orders.status IN" in criteria
     assert "orders.total >=" in criteria
     assert "orders.total <=" in criteria
-    assert "orders.created_at <=" in criteria
-    assert "orders.created_at >=" in criteria
+    assert "orders.placed_at <=" in criteria
+    assert "orders.placed_at >=" in criteria
 
 
 async def test_an_order_the_query_returned_is_still_put_to_the_rule() -> None:
@@ -904,6 +926,12 @@ async def test_an_order_the_query_returned_is_still_put_to_the_rule() -> None:
 
 # --- the summary -----------------------------------------------------------
 
+#: A window the caller named, so the service asks no question about statements
+#: and the grouped query is the first statement it builds.
+NAMED_WINDOW = FinanceSummaryParams(
+    **{"from": datetime(2026, 3, 1, tzinfo=UTC), "to": datetime(2026, 4, 1, tzinfo=UTC)}
+)
+
 
 async def test_the_summary_adds_the_flow_up_and_reports_the_balance() -> None:
     session = FakeSession()
@@ -915,7 +943,7 @@ async def test_the_summary_adds_the_flow_up_and_reports_the_balance() -> None:
         ]
     ]
 
-    result = await make_service(session).summary(ACCESS, FinanceSummaryParams())
+    result = await make_service(session).summary(ACCESS, NAMED_WINDOW)
 
     assert result.inflow == "2250.50"
     assert result.outflow == "3200.00"
@@ -930,7 +958,7 @@ async def test_every_state_is_reported_even_when_it_is_empty() -> None:
         [(TransactionDirection.CREDIT, PaymentMatchStatus.MATCHED, 4, Decimal("1000.00"))]
     ]
 
-    result = await make_service(session).summary(ACCESS, FinanceSummaryParams())
+    result = await make_service(session).summary(ACCESS, NAMED_WINDOW)
 
     assert [row.status for row in result.statuses] == [
         PaymentMatchStatus.UNMATCHED,
@@ -951,7 +979,7 @@ async def test_a_share_is_rounded_to_four_decimals() -> None:
         ]
     ]
 
-    result = await make_service(session).summary(ACCESS, FinanceSummaryParams())
+    result = await make_service(session).summary(ACCESS, NAMED_WINDOW)
 
     shares = {row.status: row.share for row in result.statuses}
     assert shares[PaymentMatchStatus.UNMATCHED] == 0.6667
@@ -961,7 +989,7 @@ async def test_a_share_is_rounded_to_four_decimals() -> None:
 async def test_an_empty_window_divides_by_nothing() -> None:
     session = FakeSession()
 
-    result = await make_service(session).summary(ACCESS, FinanceSummaryParams())
+    result = await make_service(session).summary(ACCESS, NAMED_WINDOW)
 
     assert result.transaction_count == 0
     assert result.inflow == result.outflow == result.net == "0.00"
@@ -988,6 +1016,34 @@ async def test_the_summary_reads_every_figure_from_one_query() -> None:
     different instants."""
     session = FakeSession()
 
-    await make_service(session).summary(ACCESS, FinanceSummaryParams())
+    await make_service(session).summary(ACCESS, NAMED_WINDOW)
 
     assert len(session.statements) == 1
+
+
+async def test_an_unnamed_window_is_taken_from_the_newest_statement() -> None:
+    """The requirement: nothing here may depend on the day it is run.
+
+    A window defaulted to "the last thirty days" makes a ledger of March
+    report an empty period from July onwards — correct behaviour that looks
+    exactly like a broken module.
+    """
+    session = FakeSession()
+    session.execute_queue = [[(date(2026, 3, 1), date(2026, 3, 31))], []]
+
+    result = await make_service(session).summary(ACCESS, FinanceSummaryParams())
+
+    assert result.from_ == datetime(2026, 3, 1, tzinfo=UTC)
+    # The period ends on the 31st inclusive; the window is half-open.
+    assert result.to == datetime(2026, 4, 1, tzinfo=UTC)
+
+
+async def test_nothing_imported_leaves_the_window_in_the_recent_past() -> None:
+    session = FakeSession()
+    session.execute_queue = [[], []]
+
+    result = await make_service(session).summary(ACCESS, FinanceSummaryParams())
+
+    # Whatever the window, the answer is empty; the fallback settles only what
+    # the report says it looked at.
+    assert result.from_ < result.to

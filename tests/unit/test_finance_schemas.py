@@ -19,7 +19,6 @@ from pydantic import ValidationError
 
 from app.db.enums import PaymentMatchStatus, TransactionDirection
 from app.modules.finance.schemas import (
-    DEFAULT_SUMMARY_DAYS,
     MAX_SUMMARY_DAYS,
     BankStatementOut,
     BankTransactionOut,
@@ -215,10 +214,24 @@ def test_a_version_below_one_is_refused() -> None:
 # --- the summary window ----------------------------------------------------
 
 
-def test_a_summary_with_no_bounds_covers_the_default_window() -> None:
+def test_a_summary_with_no_bounds_invents_none() -> None:
+    """The window used to be filled in here, against the clock.
+
+    What it should default to is a fact about the data — the newest statement
+    on file — and only the service can see that, so it decides. Leaving the
+    bounds empty is what lets it.
+    """
     params = FinanceSummaryParams()
 
-    assert params.range_to - params.range_from == timedelta(days=DEFAULT_SUMMARY_DAYS)
+    assert params.range_from is None
+    assert params.range_to is None
+
+
+def test_one_bound_alone_is_accepted_because_it_contradicts_nothing() -> None:
+    params = FinanceSummaryParams.model_validate({"from": NOW})
+
+    assert params.range_from == NOW
+    assert params.range_to is None
 
 
 def test_a_summary_bound_arrives_under_its_published_name() -> None:

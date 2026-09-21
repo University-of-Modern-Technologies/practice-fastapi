@@ -14,20 +14,21 @@ rule is reachable from it:
 
 * ``0001`` to ``0003`` quote an order number and pay it to the cent;
 * ``0004`` is a cent short: inside the tolerance, not equal to it;
-* ``0005`` quotes no number at all, and the payer is named as the customer;
+* ``0005`` quotes no number at all, and the payer is named as the person;
 * ``0006`` has an amount and a reference that fit nothing;
-* ``0007`` and ``0008`` share an amount and a payer and name no order, which
-  is the whole of what makes a suggestion a suggestion;
+* ``0007`` and ``0008`` share an amount and a payer — the company name this
+  time — and name no order, which is the whole of what makes a suggestion a
+  suggestion;
 * ``0009`` to ``0011`` are money going out, which is never reconciled;
-* ``0012`` pays an order that was raised long afterwards.
+* ``0012`` pays an order placed almost half a year earlier.
 
 The last line earns its place: without it the ninety-day window is a rule that
 has been written down but never once exercised.
 
-The order numbers the references quote are the ones this system allocates.
-Whether a given line actually reaches ``MATCHED`` therefore depends on which
-orders exist when the reconciliation runs — which is the honest behaviour of a
-bank feed, and exactly the situation the module exists to handle.
+Every date here is absolute, and so is every date in the orders these lines are
+meant to meet. Nothing is derived from the clock, so the same checkout run six
+months from now imports the same statement and reconciles to the same five
+matches, two suggestions, two unmatched lines and three ignored ones.
 """
 
 from __future__ import annotations
@@ -50,16 +51,16 @@ __all__ = [
 
 STUB_BANK_PROVIDER_NAME = "stub"
 
-STUB_STATEMENT_EXTERNAL_ID = "stub-stmt-2026-01"
+STUB_STATEMENT_EXTERNAL_ID = "stub-stmt-2026-03"
 STUB_ACCOUNT_LABEL = "Operating account"
-STUB_PERIOD_START = date(2026, 1, 1)
-STUB_PERIOD_END = date(2026, 1, 31)
+STUB_PERIOD_START = date(2026, 3, 1)
+STUB_PERIOD_END = date(2026, 3, 31)
 STUB_CURRENCY = "USD"
 STUB_OPENING_BALANCE = Decimal("10000.00")
 
 #: First line of the statement. Fixed, so a second import of the same feed
 #: files nothing rather than merely being likely to.
-_ANCHOR = datetime(2026, 1, 5, 10, 0, 0, tzinfo=UTC)
+_ANCHOR = datetime(2026, 3, 2, 10, 0, 0, tzinfo=UTC)
 
 #: Spacing between consecutive lines, counting forwards.
 _STEP = timedelta(days=2)
@@ -67,37 +68,36 @@ _STEP = timedelta(days=2)
 _CREDIT = TransactionDirection.CREDIT
 _DEBIT = TransactionDirection.DEBIT
 
-#: The payers, named once so a line of the table stays readable and so the
-#: two lines that have to share a payer cannot drift apart by a typo.
-_NORTH = "Alex North"
-_CEDAR = "Casey Cedar"
-_BLUE = "Jordan Blue"
-
-_NORTH_ACCOUNT = "UA903052990000026007233566001"
-_CEDAR_ACCOUNT = "UA903052990000026007233566002"
-_BLUE_ACCOUNT = "UA903052990000026007233566003"
+#: The payers, named once so a line of the table stays readable and so the two
+#: lines that have to share a payer cannot drift apart by a typo. Both ways of
+#: writing a customer down appear: a company pays lines 1 to 4 and 7 to 8, a
+#: person pays line 5, and the rule has to recognise either.
+_NORTHWIND = "Northwind Workshop"
+_CEDAR_LABS = "Cedar Labs"
+_BLUE_PEAK = "Blue Peak Studio"
+_JORDAN = "Jordan Blue"
 
 #: The statement as data: direction, amount, payer, account, reference. The
-#: order of the rows is the order of the identifiers ``stub-txn-0001`` upwards
+#: order of the rows is the order of the identifiers ``stub-txn-2026-03-0001``
 #: and of the booking dates, so the table reads as the account does.
 _LINES: tuple[tuple[TransactionDirection, str, str, str | None, str], ...] = (
-    (_CREDIT, "1800.00", _NORTH, _NORTH_ACCOUNT, "Payment for ORD-2026-0001"),
-    (_CREDIT, "2400.00", _CEDAR, _CEDAR_ACCOUNT, "Invoice ORD-2026-0002"),
-    (_CREDIT, "450.00", _BLUE, _BLUE_ACCOUNT, "ORD-2026-0003"),
+    (_CREDIT, "1800.00", _NORTHWIND, "ACCT-1001", "Payment for order ORD-2026-0001"),
+    (_CREDIT, "2400.00", _CEDAR_LABS, "ACCT-1002", "ORD-2026-0004 settled"),
+    (_CREDIT, "450.00", _BLUE_PEAK, "ACCT-1003", "Remittance for ORD-2026-0005"),
     # A cent short of the order it names: the tolerance exists for this line.
-    (_CREDIT, "1799.99", _NORTH, _NORTH_ACCOUNT, "Part payment ord-2026-0001"),
-    # Nothing to key on but the payer's own name.
-    (_CREDIT, "450.00", _BLUE, _BLUE_ACCOUNT, "Monthly settlement"),
+    (_CREDIT, "1249.99", _NORTHWIND, "ACCT-1004", "Order ORD-2026-0006, net of transfer fee"),
+    # Nothing to key on but the payer's own name, and it is the person's.
+    (_CREDIT, "777.00", _JORDAN, None, "Wire transfer"),
     # Fits nothing, and stays that way.
-    (_CREDIT, "275.50", "Halcyon Supplies", None, "Incoming transfer"),
+    (_CREDIT, "66.00", "Unknown Payer", None, "General deposit"),
     # Twice the same payer for the same amount, with nothing to tell them apart.
-    (_CREDIT, "990.00", _NORTH, _NORTH_ACCOUNT, "Bank transfer"),
-    (_CREDIT, "990.00", _NORTH, _NORTH_ACCOUNT, "Bank transfer"),
-    (_DEBIT, "3200.00", "Riverside Property", None, "Office rent January 2026"),
-    (_DEBIT, "5400.00", "Payroll clearing", None, "Payroll January 2026"),
-    (_DEBIT, "780.00", "Aurora Consulting", None, "Professional services January"),
-    # An advance against an order raised a quarter later: outside the window.
-    (_CREDIT, "1250.00", _CEDAR, _CEDAR_ACCOUNT, "Advance for ORD-2026-0012"),
+    (_CREDIT, "990.00", _CEDAR_LABS, "ACCT-1007", "Bank transfer"),
+    (_CREDIT, "990.00", _CEDAR_LABS, "ACCT-1008", "Bank transfer"),
+    (_DEBIT, "3200.00", "City Property Management", "ACCT-1009", "Office rent, February"),
+    (_DEBIT, "5400.00", "Payroll Services Ltd", "ACCT-1010", "Payroll, February"),
+    (_DEBIT, "640.00", "Cloud Hosting Inc", "ACCT-1011", "Hosting and services"),
+    # Pays an order placed almost half a year earlier: outside the window.
+    (_CREDIT, "1500.00", _NORTHWIND, "ACCT-1012", "Payment for order ORD-2025-0099"),
 )
 
 #: How many lines one import brings in. Derived rather than repeated, so the
@@ -106,9 +106,17 @@ STUB_TRANSACTION_COUNT = len(_LINES)
 
 
 def _transaction(index: int) -> ProviderTransaction:
+    """One line of the statement.
+
+    The period is part of the identifier rather than decoration. Import is
+    idempotent by external id, so a fixture whose contents change while its
+    ids stay the same is invisible to a database that already holds the old
+    rows: the import reports twelve skipped and the ledger keeps yesterday's
+    data for ever. A revised statement gets revised identifiers.
+    """
     direction, amount, counterparty, account, reference = _LINES[index]
     return ProviderTransaction(
-        external_id=f"stub-txn-{index + 1:04d}",
+        external_id=f"stub-txn-2026-03-{index + 1:04d}",
         booked_at=_ANCHOR + _STEP * index,
         amount=Decimal(amount),
         currency=STUB_CURRENCY,

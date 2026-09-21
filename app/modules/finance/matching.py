@@ -50,7 +50,7 @@ __all__ = [
 #: payer's side produces, and no more.
 MATCH_AMOUNT_TOLERANCE = Decimal("0.01")
 
-#: How long after an order was raised a payment may still be attributed to it.
+#: How long after an order was placed a payment may still be attributed to it.
 #: Ninety days is a quarter — long enough for an invoice on payment terms,
 #: short enough that a coincidence a year later is not read as a settlement.
 MATCH_WINDOW_DAYS = 90
@@ -91,7 +91,9 @@ class MatchCandidate:
     order_number: str
     status: OrderStatus
     total: Decimal
-    created_at: datetime
+    currency: str
+    contact_id: uuid.UUID | None
+    placed_at: datetime | None
     contact_name: str | None = None
     contact_company: str | None = None
 
@@ -114,14 +116,22 @@ def amounts_match(amount: Decimal, total: Decimal) -> bool:
     return abs(amount - total) <= MATCH_AMOUNT_TOLERANCE
 
 
-def within_window(booked_at: datetime, order_created_at: datetime) -> bool:
+def within_window(booked_at: datetime, order_placed_at: datetime | None) -> bool:
     """Whether the payment fell inside the order's collection window.
 
-    Closed at both ends. Money that arrived before the order existed cannot be
-    paying it, and money that arrived a quarter later is a different
-    transaction that happens to be for a similar sum.
+    Measured from when the order was *placed*, not from when its row was
+    written. The two drift apart by however long the data has been in the
+    database, and a window anchored to the row's age gives a different answer
+    every month for the same order and the same payment.
+
+    Closed at both ends. Money that arrived before the order was placed cannot
+    be paying it, and money that arrived a quarter later is a different
+    transaction that happens to be for a similar sum. An order that was never
+    placed has no window at all.
     """
-    return order_created_at <= booked_at <= order_created_at + MATCH_WINDOW
+    if order_placed_at is None:
+        return False
+    return order_placed_at <= booked_at <= order_placed_at + MATCH_WINDOW
 
 
 def references_order(reference: str, order_number: str) -> bool:
@@ -159,7 +169,7 @@ def _is_candidate(subject: MatchSubject, candidate: MatchCandidate) -> bool:
             or matches_counterparty(subject.counterparty_name, candidate)
         )
         and amounts_match(subject.amount, candidate.total)
-        and within_window(subject.booked_at, candidate.created_at)
+        and within_window(subject.booked_at, candidate.placed_at)
     )
 
 

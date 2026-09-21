@@ -28,7 +28,7 @@ from __future__ import annotations
 import math
 import uuid
 from collections.abc import Iterable, Sequence
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
@@ -65,6 +65,7 @@ from app.modules.finance.provider import (
     bank_provider_unavailable_error,
 )
 from app.modules.finance.schemas import (
+    DEFAULT_SUMMARY_DAYS,
     BankStatementOut,
     BankTransactionDetailOut,
     BankTransactionOut,
@@ -144,6 +145,19 @@ _SUMMARY_STATUSES: tuple[PaymentMatchStatus, ...] = (
     PaymentMatchStatus.MATCHED,
     PaymentMatchStatus.IGNORED,
 )
+
+
+def _as_utc_instant(value: date | datetime) -> datetime:
+    """A period bound as an instant at UTC midnight.
+
+    ``period_start`` and ``period_end`` are calendar days. Reading a day as a
+    local instant would move the window by the offset of whichever machine
+    this process happens to run on, which is the drift this module exists to
+    be free of.
+    """
+    if isinstance(value, datetime):
+        return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+    return datetime(value.year, value.month, value.day, tzinfo=UTC)
 
 
 def to_statement_out(statement: BankStatement) -> BankStatementOut:
@@ -340,6 +354,9 @@ class FinanceService:
                     order_number=candidate.order_number,
                     status=candidate.status,
                     total=candidate.total,
+                    currency=candidate.currency,
+                    contact_id=candidate.contact_id,
+                    placed_at=candidate.placed_at,
                 )
                 for candidate in candidates
             ],
@@ -355,6 +372,7 @@ class FinanceService:
         a report end up describing two different instants.
         """
         del access
+        window_from, window_to = await self._resolve_summary_window(params)
         rows = (
             await self._session.execute(
                 select(
@@ -366,8 +384,8 @@ class FinanceService:
                 # Half-open, as every window in this codebase is: two adjacent
                 # periods must not both claim the instant on their boundary.
                 .where(
-                    BankTransaction.booked_at >= params.range_from,
-                    BankTransaction.booked_at < params.range_to,
+                    BankTransaction.booked_at >= window_from,
+                    BankTransaction.booked_at < window_to,
                 )
                 .group_by(BankTransaction.direction, BankTransaction.match_status)
             )
@@ -389,8 +407,8 @@ class FinanceService:
 
         examined = sum(counts.values())
         return FinanceSummaryOut(
-            from_=params.range_from,
-            to=params.range_to,
+            from_=window_from,
+            to=window_to,
             transaction_count=examined,
             inflow=format_scaled_money(inflow),
             outflow=format_scaled_money(outflow),
@@ -404,6 +422,50 @@ class FinanceService:
                 )
                 for status in _SUMMARY_STATUSES
             ],
+        )
+
+    async def _resolve_summary_window(
+        self, params: FinanceSummaryParams
+    ) -> tuple[datetime, datetime]:
+        """Fills in whichever bound the caller left out.
+
+        From the newest statement on file, not from the clock. A ledger is a
+        record of periods that happened, and "the summary, please" means the
+        period there is data for — asked in March, or asked two years later.
+        Defaulting to the last thirty days instead makes the module answer
+        honestly with zeroes and look broken, which is the worse of the two
+        ways to be right.
+
+        With nothing imported at all there is no period to name, and the window
+        falls back to the recent past. Either way the answer is empty, so the
+        fallback settles only what the report echoes back.
+        """
+        given_from, given_to = params.range_from, params.range_to
+        if given_from is not None and given_to is not None:
+            return given_from, given_to
+
+        latest = (
+            await self._session.execute(
+                select(BankStatement.period_start, BankStatement.period_end)
+                .order_by(BankStatement.period_start.desc(), BankStatement.id.asc())
+                .limit(1)
+            )
+        ).first()
+
+        now = datetime.now(tz=UTC)
+        if latest is None:
+            to = given_to if given_to is not None else now
+            return (
+                given_from if given_from is not None else to - timedelta(days=DEFAULT_SUMMARY_DAYS),
+                to,
+            )
+
+        period_start, period_end = latest
+        # The period is inclusive of its last day; the window is half-open, so
+        # the upper bound is the midnight after it rather than the day itself.
+        return (
+            given_from if given_from is not None else _as_utc_instant(period_start),
+            given_to if given_to is not None else _as_utc_instant(period_end) + timedelta(days=1),
         )
 
     # --- importing ---------------------------------------------------------
@@ -519,9 +581,13 @@ class FinanceService:
     async def reconcile(self, access: FinanceAccess) -> ReconcileOut:
         """Applies the rule to everything still waiting on it.
 
-        Only money coming in is examined. A payment we made is not settling an
-        order somebody placed with us, and running the rule over outgoing lines
-        would produce coincidences rather than matches.
+        Outgoing lines are read in with the rest. The rule is never run over
+        them — a payment we made is not settling an order somebody placed with
+        us — but they are filed as ``IGNORED``, which is the decision rather
+        than an omission: rent and payroll are real movements that no order
+        will ever explain. Leaving them out would make ``IGNORED`` a state
+        nothing can reach, and would make ``examined`` describe half the batch
+        while calling itself the whole of it.
 
         Nothing already decided is touched: a line somebody matched by hand is
         an answer, a line somebody ignored is a decision, and a batch job that
@@ -532,7 +598,6 @@ class FinanceService:
                 await self._session.execute(
                     select(BankTransaction)
                     .where(
-                        BankTransaction.direction == TransactionDirection.CREDIT,
                         BankTransaction.match_status.in_(_RECONCILABLE_STATUSES),
                     )
                     .order_by(BankTransaction.booked_at.asc(), BankTransaction.id.asc())
@@ -545,6 +610,7 @@ class FinanceService:
 
         tally: dict[PaymentMatchStatus, int] = dict.fromkeys(_RECONCILABLE_STATUSES, 0)
         tally[PaymentMatchStatus.MATCHED] = 0
+        tally[PaymentMatchStatus.IGNORED] = 0
         for transaction in pending:
             outcome = await self._reconcile_one(access, transaction)
             tally[outcome] = tally.get(outcome, 0) + 1
@@ -554,12 +620,25 @@ class FinanceService:
             matched=tally[PaymentMatchStatus.MATCHED],
             suggested=tally[PaymentMatchStatus.SUGGESTED],
             unmatched=tally[PaymentMatchStatus.UNMATCHED],
+            ignored=tally[PaymentMatchStatus.IGNORED],
         )
 
     async def _reconcile_one(
         self, access: FinanceAccess, transaction: BankTransaction
     ) -> PaymentMatchStatus:
         """Runs the rule over one line and files whatever it concluded."""
+        if transaction.direction is not TransactionDirection.CREDIT:
+            # Money going out is filed rather than judged, and filing it is
+            # silent for the same reason the two undecided states are: nothing
+            # was concluded about an order.
+            if transaction.match_status is not PaymentMatchStatus.IGNORED:
+                await self._write(
+                    transaction.id,
+                    transaction.version,
+                    {"match_status": PaymentMatchStatus.IGNORED},
+                )
+            return PaymentMatchStatus.IGNORED
+
         candidates = await self._candidates_for(transaction)
         outcome = outcome_for(candidates)
 
@@ -601,7 +680,9 @@ class FinanceService:
                     Order.order_number,
                     Order.status,
                     Order.total,
-                    Order.created_at,
+                    Order.currency,
+                    Order.contact_id,
+                    Order.placed_at,
                     Contact.first_name,
                     Contact.last_name,
                     Contact.company,
@@ -612,12 +693,12 @@ class FinanceService:
                     Order.status.in_(MATCHABLE_ORDER_STATUSES),
                     Order.total >= transaction.amount - MATCH_AMOUNT_TOLERANCE,
                     Order.total <= transaction.amount + MATCH_AMOUNT_TOLERANCE,
-                    Order.created_at <= transaction.booked_at,
-                    Order.created_at >= transaction.booked_at - MATCH_WINDOW,
+                    Order.placed_at <= transaction.booked_at,
+                    Order.placed_at >= transaction.booked_at - MATCH_WINDOW,
                 )
                 # Oldest first: when two orders fit equally, the one that has
                 # been waiting longer is the one a person would name.
-                .order_by(Order.created_at.asc(), Order.id.asc())
+                .order_by(Order.placed_at.asc(), Order.id.asc())
             )
         ).all()
 
@@ -627,9 +708,11 @@ class FinanceService:
                 order_number=row[1],
                 status=row[2],
                 total=row[3],
-                created_at=row[4],
-                contact_name=self._contact_name(row[5], row[6]),
-                contact_company=row[7],
+                currency=row[4],
+                contact_id=row[5],
+                placed_at=row[6],
+                contact_name=self._contact_name(row[7], row[8]),
+                contact_company=row[9],
             )
             for row in rows
         ]
@@ -722,10 +805,14 @@ class FinanceService:
         already on file changed nothing and announces nothing.
         """
         existing = (
-            await self._session.execute(
-                select(BankStatement).where(BankStatement.external_id == feed.external_id)
+            (
+                await self._session.execute(
+                    select(BankStatement).where(BankStatement.external_id == feed.external_id)
+                )
             )
-        ).scalars().one_or_none()
+            .scalars()
+            .one_or_none()
+        )
         if existing is not None:
             return existing, False
 
@@ -789,9 +876,7 @@ class FinanceService:
         )
         return set(result.scalars().all())
 
-    async def _insert_transaction(
-        self, statement_id: uuid.UUID, item: ProviderTransaction
-    ) -> bool:
+    async def _insert_transaction(self, statement_id: uuid.UUID, item: ProviderTransaction) -> bool:
         """Files one line, or reports that somebody beat us to it.
 
         Nothing about reconciliation is written: the bank knows what arrived,
@@ -829,10 +914,14 @@ class FinanceService:
 
     async def _require_transaction(self, transaction_id: uuid.UUID) -> BankTransaction:
         transaction = (
-            await self._session.execute(
-                select(BankTransaction).where(BankTransaction.id == transaction_id)
+            (
+                await self._session.execute(
+                    select(BankTransaction).where(BankTransaction.id == transaction_id)
+                )
             )
-        ).scalars().one_or_none()
+            .scalars()
+            .one_or_none()
+        )
         if transaction is None:
             raise NotFoundError("Transaction not found", TRANSACTION_NOT_FOUND)
         return transaction
@@ -854,10 +943,14 @@ class FinanceService:
         wrong resource.
         """
         order = (
-            await self._session.execute(
-                select(Order).where(Order.id == order_id, Order.deleted_at.is_(None))
+            (
+                await self._session.execute(
+                    select(Order).where(Order.id == order_id, Order.deleted_at.is_(None))
+                )
             )
-        ).scalars().one_or_none()
+            .scalars()
+            .one_or_none()
+        )
         if order is None:
             raise NotFoundError("Order not found", TRANSACTION_ORDER_NOT_FOUND)
         return order

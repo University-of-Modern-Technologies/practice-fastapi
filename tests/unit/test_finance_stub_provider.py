@@ -21,17 +21,17 @@ from app.modules.finance.stub_provider import (
     stub_statement,
 )
 
-FIRST_BOOKING = datetime(2026, 1, 5, 10, 0, tzinfo=UTC)
+FIRST_BOOKING = datetime(2026, 3, 2, 10, 0, tzinfo=UTC)
 BOOKING_STEP = timedelta(days=2)
 
 
 def test_the_statement_header_is_the_one_the_contract_names() -> None:
     statement = stub_statement()
 
-    assert statement.external_id == STUB_STATEMENT_EXTERNAL_ID == "stub-stmt-2026-01"
+    assert statement.external_id == STUB_STATEMENT_EXTERNAL_ID == "stub-stmt-2026-03"
     assert statement.account_label == "Operating account"
-    assert statement.period_start == date(2026, 1, 1)
-    assert statement.period_end == date(2026, 1, 31)
+    assert statement.period_start == date(2026, 3, 1)
+    assert statement.period_end == date(2026, 3, 31)
     assert statement.currency == "USD"
     assert statement.opening_balance == Decimal("10000.00")
 
@@ -41,7 +41,7 @@ def test_the_statement_carries_twelve_lines_numbered_from_one() -> None:
 
     assert STUB_TRANSACTION_COUNT == 12
     assert [item.external_id for item in statement.transactions] == [
-        f"stub-txn-{index:04d}" for index in range(1, 13)
+        f"stub-txn-2026-03-{index:04d}" for index in range(1, 13)
     ]
 
 
@@ -78,7 +78,11 @@ def test_the_money_going_out_is_the_last_three_lines_but_one() -> None:
         if item.direction is TransactionDirection.DEBIT
     ]
 
-    assert debits == ["stub-txn-0009", "stub-txn-0010", "stub-txn-0011"]
+    assert debits == [
+        "stub-txn-2026-03-0009",
+        "stub-txn-2026-03-0010",
+        "stub-txn-2026-03-0011",
+    ]
 
 
 def test_two_lines_are_deliberately_indistinguishable() -> None:
@@ -95,8 +99,8 @@ def test_two_lines_are_deliberately_indistinguishable() -> None:
 def test_one_line_is_a_cent_short_of_the_order_it_names() -> None:
     fourth = stub_statement().transactions[3]
 
-    assert fourth.amount == Decimal("1799.99")
-    assert "ord-2026-0001" in fourth.reference.casefold()
+    assert fourth.amount == Decimal("1249.99")
+    assert "ord-2026-0006" in fourth.reference.casefold()
 
 
 def test_one_line_names_no_order_and_only_the_payer() -> None:
@@ -111,7 +115,7 @@ def test_one_line_fits_nothing_at_all() -> None:
     # comfortable leaving a payment in.
     sixth = stub_statement().transactions[5]
 
-    assert sixth.amount == Decimal("275.50")
+    assert sixth.amount == Decimal("66.00")
     assert sixth.counterparty_account is None
 
 
