@@ -51,16 +51,16 @@ __all__ = [
 
 STUB_BANK_PROVIDER_NAME = "stub"
 
-STUB_STATEMENT_EXTERNAL_ID = "stub-stmt-2026-03"
+STUB_STATEMENT_EXTERNAL_ID = "stub-stmt-2026-01"
 STUB_ACCOUNT_LABEL = "Operating account"
-STUB_PERIOD_START = date(2026, 3, 1)
-STUB_PERIOD_END = date(2026, 3, 31)
+STUB_PERIOD_START = date(2026, 1, 1)
+STUB_PERIOD_END = date(2026, 1, 31)
 STUB_CURRENCY = "USD"
 STUB_OPENING_BALANCE = Decimal("10000.00")
 
 #: First line of the statement. Fixed, so a second import of the same feed
 #: files nothing rather than merely being likely to.
-_ANCHOR = datetime(2026, 3, 2, 10, 0, 0, tzinfo=UTC)
+_ANCHOR = datetime(2026, 1, 2, 10, 0, 0, tzinfo=UTC)
 
 #: Spacing between consecutive lines, counting forwards.
 _STEP = timedelta(days=2)
@@ -78,7 +78,7 @@ _BLUE_PEAK = "Blue Peak Studio"
 _JORDAN = "Jordan Blue"
 
 #: The statement as data: direction, amount, payer, account, reference. The
-#: order of the rows is the order of the identifiers ``stub-txn-2026-03-0001``
+#: order of the rows is the order of the identifiers ``stub-txn-2026-01-0001``
 #: and of the booking dates, so the table reads as the account does.
 _LINES: tuple[tuple[TransactionDirection, str, str, str | None, str], ...] = (
     (_CREDIT, "1800.00", _NORTHWIND, "ACCT-1001", "Payment for order ORD-2026-0001"),
@@ -93,8 +93,8 @@ _LINES: tuple[tuple[TransactionDirection, str, str, str | None, str], ...] = (
     # Twice the same payer for the same amount, with nothing to tell them apart.
     (_CREDIT, "990.00", _CEDAR_LABS, "ACCT-1007", "Bank transfer"),
     (_CREDIT, "990.00", _CEDAR_LABS, "ACCT-1008", "Bank transfer"),
-    (_DEBIT, "3200.00", "City Property Management", "ACCT-1009", "Office rent, February"),
-    (_DEBIT, "5400.00", "Payroll Services Ltd", "ACCT-1010", "Payroll, February"),
+    (_DEBIT, "3200.00", "City Property Management", "ACCT-1009", "Office rent, January"),
+    (_DEBIT, "5400.00", "Payroll Services Ltd", "ACCT-1010", "Payroll, January"),
     (_DEBIT, "640.00", "Cloud Hosting Inc", "ACCT-1011", "Hosting and services"),
     # Pays an order placed almost half a year earlier: outside the window.
     (_CREDIT, "1500.00", _NORTHWIND, "ACCT-1012", "Payment for order ORD-2025-0099"),
@@ -116,7 +116,7 @@ def _transaction(index: int) -> ProviderTransaction:
     """
     direction, amount, counterparty, account, reference = _LINES[index]
     return ProviderTransaction(
-        external_id=f"stub-txn-2026-03-{index + 1:04d}",
+        external_id=f"stub-txn-2026-01-{index + 1:04d}",
         booked_at=_ANCHOR + _STEP * index,
         amount=Decimal(amount),
         currency=STUB_CURRENCY,

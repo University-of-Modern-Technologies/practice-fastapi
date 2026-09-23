@@ -14,7 +14,7 @@ import asyncio
 import os
 import uuid
 from collections.abc import Mapping, Sequence
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import Any, cast
 
@@ -229,12 +229,20 @@ async def upsert(
     if not rows:
         return
 
+    explicit_updated_at = ["updated_at" in row for row in rows]
+    if any(explicit_updated_at) and not all(explicit_updated_at):
+        message = "All rows in one upsert batch must either include updated_at or omit it"
+        raise ValueError(message)
+
     statement = insert(table).values(list(rows))
     assignments: dict[str, Any] = {name: statement.excluded[name] for name in update}
     if "updated_at" in table.columns:
         # The ORM-level ``onupdate`` does not apply to a Core upsert, so the
-        # timestamp is refreshed explicitly.
-        assignments["updated_at"] = func.now()
+        # timestamp is refreshed explicitly. Fixture rows carry a deterministic
+        # value that must be restored on rerun; operational rows keep action time.
+        assignments["updated_at"] = (
+            statement.excluded.updated_at if all(explicit_updated_at) else func.now()
+        )
 
     if assignments:
         statement = statement.on_conflict_do_update(index_elements=conflict, set_=assignments)
@@ -412,6 +420,9 @@ async def seed_crm(connection: AsyncConnection) -> None:
             DealStage.QUALIFIED,
             Decimal("4800.00"),
             25,
+            date(2026, 1, 20),
+            datetime(2026, 1, 3, 9, 0, tzinfo=UTC),
+            datetime(2026, 1, 4, 9, 0, tzinfo=UTC),
         ),
         (
             DEAL_IDS["renewal"],
@@ -421,6 +432,9 @@ async def seed_crm(connection: AsyncConnection) -> None:
             DealStage.PROPOSAL,
             Decimal("12500.00"),
             75,
+            date(2026, 1, 25),
+            datetime(2026, 1, 7, 9, 0, tzinfo=UTC),
+            datetime(2026, 1, 8, 9, 0, tzinfo=UTC),
         ),
         (
             DEAL_IDS["pilot"],
@@ -430,6 +444,9 @@ async def seed_crm(connection: AsyncConnection) -> None:
             DealStage.LEAD,
             Decimal("2400.00"),
             10,
+            date(2026, 1, 30),
+            datetime(2026, 1, 11, 9, 0, tzinfo=UTC),
+            datetime(2026, 1, 12, 9, 0, tzinfo=UTC),
         ),
     )
 
@@ -446,10 +463,24 @@ async def seed_crm(connection: AsyncConnection) -> None:
                 "amount": amount,
                 "currency": "USD",
                 "probability": probability,
+                "expected_close_date": expected_close_date,
                 "version": 1,
+                "created_at": created_at,
+                "updated_at": updated_at,
                 "deleted_at": None,
             }
-            for deal_id, owner_id, contact_id, title, stage, amount, probability in deals
+            for (
+                deal_id,
+                owner_id,
+                contact_id,
+                title,
+                stage,
+                amount,
+                probability,
+                expected_close_date,
+                created_at,
+                updated_at,
+            ) in deals
         ],
         conflict=["id"],
         update=[
@@ -460,6 +491,8 @@ async def seed_crm(connection: AsyncConnection) -> None:
             "amount",
             "currency",
             "probability",
+            "expected_close_date",
+            "created_at",
             "deleted_at",
         ],
     )
@@ -587,7 +620,9 @@ async def seed_orders(connection: AsyncConnection) -> None:
                 "tax_total": Decimal("0.00"),
                 "total": Decimal("1800.00"),
                 "version": 1,
-                "placed_at": datetime(2026, 2, 1, 9, 0, tzinfo=UTC),
+                "placed_at": datetime(2026, 1, 1, 9, 0, tzinfo=UTC),
+                "created_at": datetime(2026, 1, 1, 9, 0, tzinfo=UTC),
+                "updated_at": datetime(2026, 1, 1, 9, 0, tzinfo=UTC),
                 "deleted_at": None,
             },
             {
@@ -604,6 +639,8 @@ async def seed_orders(connection: AsyncConnection) -> None:
                 "total": Decimal("2400.00"),
                 "version": 1,
                 "placed_at": None,
+                "created_at": datetime(2026, 1, 17, 9, 0, tzinfo=UTC),
+                "updated_at": datetime(2026, 1, 17, 9, 0, tzinfo=UTC),
                 "deleted_at": None,
             },
             {
@@ -620,6 +657,8 @@ async def seed_orders(connection: AsyncConnection) -> None:
                 "total": Decimal("450.00"),
                 "version": 1,
                 "placed_at": datetime(2026, 1, 15, 9, 0, tzinfo=UTC),
+                "created_at": datetime(2026, 1, 15, 9, 0, tzinfo=UTC),
+                "updated_at": datetime(2026, 1, 15, 9, 0, tzinfo=UTC),
                 "deleted_at": None,
             },
             {
@@ -635,7 +674,9 @@ async def seed_orders(connection: AsyncConnection) -> None:
                 "tax_total": Decimal("0.00"),
                 "total": Decimal("2400.00"),
                 "version": 1,
-                "placed_at": datetime(2026, 2, 3, 9, 0, tzinfo=UTC),
+                "placed_at": datetime(2026, 1, 3, 9, 0, tzinfo=UTC),
+                "created_at": datetime(2026, 1, 3, 9, 0, tzinfo=UTC),
+                "updated_at": datetime(2026, 1, 3, 9, 0, tzinfo=UTC),
                 "deleted_at": None,
             },
             {
@@ -651,7 +692,9 @@ async def seed_orders(connection: AsyncConnection) -> None:
                 "tax_total": Decimal("0.00"),
                 "total": Decimal("450.00"),
                 "version": 1,
-                "placed_at": datetime(2026, 2, 5, 9, 0, tzinfo=UTC),
+                "placed_at": datetime(2026, 1, 5, 9, 0, tzinfo=UTC),
+                "created_at": datetime(2026, 1, 5, 9, 0, tzinfo=UTC),
+                "updated_at": datetime(2026, 1, 5, 9, 0, tzinfo=UTC),
                 "deleted_at": None,
             },
             {
@@ -669,7 +712,9 @@ async def seed_orders(connection: AsyncConnection) -> None:
                 "tax_total": Decimal("0.00"),
                 "total": Decimal("1250.00"),
                 "version": 1,
-                "placed_at": datetime(2026, 2, 7, 9, 0, tzinfo=UTC),
+                "placed_at": datetime(2026, 1, 7, 9, 0, tzinfo=UTC),
+                "created_at": datetime(2026, 1, 7, 9, 0, tzinfo=UTC),
+                "updated_at": datetime(2026, 1, 7, 9, 0, tzinfo=UTC),
                 "deleted_at": None,
             },
             {
@@ -688,7 +733,9 @@ async def seed_orders(connection: AsyncConnection) -> None:
                 "tax_total": Decimal("0.00"),
                 "total": Decimal("990.00"),
                 "version": 1,
-                "placed_at": datetime(2026, 2, 9, 9, 0, tzinfo=UTC),
+                "placed_at": datetime(2026, 1, 11, 9, 0, tzinfo=UTC),
+                "created_at": datetime(2026, 1, 11, 9, 0, tzinfo=UTC),
+                "updated_at": datetime(2026, 1, 11, 9, 0, tzinfo=UTC),
                 "deleted_at": None,
             },
             {
@@ -704,7 +751,9 @@ async def seed_orders(connection: AsyncConnection) -> None:
                 "tax_total": Decimal("0.00"),
                 "total": Decimal("990.00"),
                 "version": 1,
-                "placed_at": datetime(2026, 2, 11, 9, 0, tzinfo=UTC),
+                "placed_at": datetime(2026, 1, 13, 9, 0, tzinfo=UTC),
+                "created_at": datetime(2026, 1, 13, 9, 0, tzinfo=UTC),
+                "updated_at": datetime(2026, 1, 13, 9, 0, tzinfo=UTC),
                 "deleted_at": None,
             },
             {
@@ -720,7 +769,9 @@ async def seed_orders(connection: AsyncConnection) -> None:
                 "tax_total": Decimal("0.00"),
                 "total": Decimal("777.00"),
                 "version": 1,
-                "placed_at": datetime(2026, 2, 13, 9, 0, tzinfo=UTC),
+                "placed_at": datetime(2026, 1, 9, 9, 0, tzinfo=UTC),
+                "created_at": datetime(2026, 1, 9, 9, 0, tzinfo=UTC),
+                "updated_at": datetime(2026, 1, 9, 9, 0, tzinfo=UTC),
                 "deleted_at": None,
             },
             {
@@ -740,6 +791,8 @@ async def seed_orders(connection: AsyncConnection) -> None:
                 "total": Decimal("1500.00"),
                 "version": 1,
                 "placed_at": datetime(2025, 10, 1, 9, 0, tzinfo=UTC),
+                "created_at": datetime(2025, 10, 1, 9, 0, tzinfo=UTC),
+                "updated_at": datetime(2025, 10, 1, 9, 0, tzinfo=UTC),
                 "deleted_at": None,
             },
         ],
@@ -755,6 +808,7 @@ async def seed_orders(connection: AsyncConnection) -> None:
             "tax_total",
             "total",
             "placed_at",
+            "created_at",
             "deleted_at",
         ],
     )

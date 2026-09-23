@@ -21,6 +21,7 @@ from typing import Annotated
 
 from pydantic import AfterValidator, Field, PrivateAttr, model_validator
 
+from app.core.reporting import DEFAULT_REPORT_WINDOW_FROM, DEFAULT_REPORT_WINDOW_TO
 from app.core.responses import CamelModel
 from app.core.serializers import UtcDatetime
 from app.db.enums import DealStage
@@ -35,7 +36,8 @@ from app.modules.analytics.types import (
 
 __all__ = [
     "DEFAULT_LIMIT",
-    "DEFAULT_RANGE_DAYS",
+    "DEFAULT_RANGE_FROM",
+    "DEFAULT_RANGE_TO",
     "DEFAULT_STOCK_THRESHOLD",
     "MAX_LIMIT",
     "MAX_RANGE_DAYS",
@@ -61,8 +63,10 @@ __all__ = [
 
 #: Widest window a single report may scan, so one request cannot table-scan years.
 MAX_RANGE_DAYS = 366
-#: Window applied when the caller does not name one.
-DEFAULT_RANGE_DAYS = 30
+#: Window applied when the caller does not name one: a fixed month rather than
+#: a stretch measured backwards from the clock. See ``app.core.reporting``.
+DEFAULT_RANGE_FROM = DEFAULT_REPORT_WINDOW_FROM
+DEFAULT_RANGE_TO = DEFAULT_REPORT_WINDOW_TO
 #: Hard ceiling for every ``limit``; larger values are clamped, not rejected.
 MAX_LIMIT = 100
 DEFAULT_LIMIT = 10
@@ -138,14 +142,12 @@ class DateRangeParams(CamelModel):
 
     @model_validator(mode="after")
     def _resolve_range(self) -> DateRangeParams:
-        # `to` defaults to now and `from` to a fixed window before it, so a
-        # caller may send neither, either, or both.
-        to = _as_utc(self.to if self.to is not None else datetime.now(tz=UTC))
-        from_ = (
-            _as_utc(self.from_)
-            if self.from_ is not None
-            else to - timedelta(days=DEFAULT_RANGE_DAYS)
-        )
+        # Each bound defaults on its own, so a caller may send neither, either,
+        # or both. Neither default reads the clock: a report asked for without
+        # a window covers the same month today and in a year, which is what
+        # makes two runs of the same question comparable at all.
+        to = _as_utc(self.to) if self.to is not None else DEFAULT_RANGE_TO
+        from_ = _as_utc(self.from_) if self.from_ is not None else DEFAULT_RANGE_FROM
 
         if from_ >= to:
             message = "from must be earlier than to"

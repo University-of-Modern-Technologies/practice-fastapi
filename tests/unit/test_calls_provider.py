@@ -169,7 +169,7 @@ def test_the_journal_is_anchored_where_both_backends_anchor_it() -> None:
     first = stub_journal()[0]
 
     assert first.external_id == "stub-call-0001"
-    assert first.started_at.isoformat() == "2026-01-01T09:00:00+00:00"
+    assert first.started_at.isoformat() == "2026-01-02T09:00:00+00:00"
     assert first.direction is CallDirection.INBOUND
     assert first.from_number == "+14155551000"
     assert first.to_number == "+14155550100"
@@ -261,9 +261,7 @@ async def test_the_pause_between_attempts_grows() -> None:
 
 
 async def test_a_well_formed_batch_is_mapped_onto_the_domain_shape() -> None:
-    provider, transport = make_http_provider(
-        [CallTransportResponse(status=200, body=[VALID_CALL])]
-    )
+    provider, transport = make_http_provider([CallTransportResponse(status=200, body=[VALID_CALL])])
 
     batch = await provider.fetch_calls(FETCH)
 
@@ -324,8 +322,7 @@ async def test_a_payload_outside_the_contract_never_becomes_a_row(body: Any) -> 
 
 async def test_an_unbounded_batch_is_refused() -> None:
     oversized = [
-        VALID_CALL | {"externalId": f"pbx-{index}"}
-        for index in range(MAX_PROVIDER_BATCH_SIZE + 1)
+        VALID_CALL | {"externalId": f"pbx-{index}"} for index in range(MAX_PROVIDER_BATCH_SIZE + 1)
     ]
     provider, _ = make_http_provider([CallTransportResponse(status=200, body=oversized)])
 

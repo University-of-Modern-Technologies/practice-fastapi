@@ -33,7 +33,7 @@ STUB_CALL_PROVIDER_NAME = "stub"
 STUB_CALL_JOURNAL_SIZE = 25
 
 #: Newest call in the generated journal. Fixed, so runs are reproducible.
-_ANCHOR = datetime(2026, 1, 1, 9, 0, 0, tzinfo=UTC)
+_ANCHOR = datetime(2026, 1, 2, 9, 0, 0, tzinfo=UTC)
 
 #: Spacing between consecutive generated calls, counting backwards.
 _STEP = timedelta(minutes=17)

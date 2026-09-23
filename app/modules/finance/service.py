@@ -28,7 +28,7 @@ from __future__ import annotations
 import math
 import uuid
 from collections.abc import Iterable, Sequence
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
@@ -40,6 +40,7 @@ from sqlalchemy.orm import InstrumentedAttribute
 from app.core.errors import ConflictError, NotFoundError, VersionConflictError
 from app.core.filters import FilterBuilder
 from app.core.paged_query import PagedQuery
+from app.core.reporting import DEFAULT_REPORT_WINDOW_FROM, DEFAULT_REPORT_WINDOW_TO
 from app.core.serializers import format_scaled_money
 from app.db.enums import PaymentMatchStatus, TransactionDirection
 from app.db.models.contact import Contact
@@ -65,7 +66,6 @@ from app.modules.finance.provider import (
     bank_provider_unavailable_error,
 )
 from app.modules.finance.schemas import (
-    DEFAULT_SUMMARY_DAYS,
     BankStatementOut,
     BankTransactionDetailOut,
     BankTransactionOut,
@@ -145,19 +145,6 @@ _SUMMARY_STATUSES: tuple[PaymentMatchStatus, ...] = (
     PaymentMatchStatus.MATCHED,
     PaymentMatchStatus.IGNORED,
 )
-
-
-def _as_utc_instant(value: date | datetime) -> datetime:
-    """A period bound as an instant at UTC midnight.
-
-    ``period_start`` and ``period_end`` are calendar days. Reading a day as a
-    local instant would move the window by the offset of whichever machine
-    this process happens to run on, which is the drift this module exists to
-    be free of.
-    """
-    if isinstance(value, datetime):
-        return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
-    return datetime(value.year, value.month, value.day, tzinfo=UTC)
 
 
 def to_statement_out(statement: BankStatement) -> BankStatementOut:
@@ -427,45 +414,15 @@ class FinanceService:
     async def _resolve_summary_window(
         self, params: FinanceSummaryParams
     ) -> tuple[datetime, datetime]:
-        """Fills in whichever bound the caller left out.
+        """Fills in whichever bound the caller left out from the shared default.
 
-        From the newest statement on file, not from the clock. A ledger is a
-        record of periods that happened, and "the summary, please" means the
-        period there is data for — asked in March, or asked two years later.
-        Defaulting to the last thirty days instead makes the module answer
-        honestly with zeroes and look broken, which is the worse of the two
-        ways to be right.
-
-        With nothing imported at all there is no period to name, and the window
-        falls back to the recent past. Either way the answer is empty, so the
-        fallback settles only what the report echoes back.
+        The default is a fixed reporting window rather than a fact inferred
+        from imported rows. This keeps the same request stable before and after
+        an import and ensures every report module describes the same period.
         """
-        given_from, given_to = params.range_from, params.range_to
-        if given_from is not None and given_to is not None:
-            return given_from, given_to
-
-        latest = (
-            await self._session.execute(
-                select(BankStatement.period_start, BankStatement.period_end)
-                .order_by(BankStatement.period_start.desc(), BankStatement.id.asc())
-                .limit(1)
-            )
-        ).first()
-
-        now = datetime.now(tz=UTC)
-        if latest is None:
-            to = given_to if given_to is not None else now
-            return (
-                given_from if given_from is not None else to - timedelta(days=DEFAULT_SUMMARY_DAYS),
-                to,
-            )
-
-        period_start, period_end = latest
-        # The period is inclusive of its last day; the window is half-open, so
-        # the upper bound is the midnight after it rather than the day itself.
         return (
-            given_from if given_from is not None else _as_utc_instant(period_start),
-            given_to if given_to is not None else _as_utc_instant(period_end) + timedelta(days=1),
+            params.range_from if params.range_from is not None else DEFAULT_REPORT_WINDOW_FROM,
+            params.range_to if params.range_to is not None else DEFAULT_REPORT_WINDOW_TO,
         )
 
     # --- importing ---------------------------------------------------------
