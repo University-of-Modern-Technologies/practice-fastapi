@@ -2,6 +2,7 @@ import { auditKeys } from '@/app/(auth)/audit/audit.queries';
 import { callsKeys } from '@/app/(auth)/calls/calls.queries';
 import { contactsKeys } from '@/app/(auth)/contacts/contacts.queries';
 import { dealsKeys } from '@/app/(auth)/deals/deals.queries';
+import { financeKeys } from '@/app/(auth)/finance/finance.queries';
 import { helpdeskKeys } from '@/app/(auth)/helpdesk/helpdesk.queries';
 import { ordersKeys } from '@/app/(auth)/orders/orders.queries';
 import { productsKeys } from '@/app/(auth)/products/products.queries';
@@ -79,6 +80,20 @@ const RESOLVERS: Readonly<Record<string, EventKeyResolver>> = {
   'call.updated': (event) => [callsKeys.detail(event.entityId), callsKeys.lists()],
   'call.linked': (event) => [callsKeys.detail(event.entityId), callsKeys.lists()],
   'call.deleted': (event) => [callsKeys.detail(event.entityId), callsKeys.lists()],
+
+  // Reconciliation moves money between the summary buckets, so the totals go
+  // stale with the row that changed.
+  'transaction.matched': (event) => [
+    financeKeys.transaction(event.entityId),
+    financeKeys.transactions(),
+    financeKeys.summaries(),
+  ],
+  'transaction.unmatched': (event) => [
+    financeKeys.transaction(event.entityId),
+    financeKeys.transactions(),
+    financeKeys.summaries(),
+  ],
+  'statement.imported': () => [financeKeys.all],
 
   'ticket.created': () => [helpdeskKeys.lists()],
   'ticket.updated': (event) => [helpdeskKeys.detail(event.entityId), helpdeskKeys.lists()],

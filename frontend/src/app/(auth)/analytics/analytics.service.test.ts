@@ -56,11 +56,11 @@ describe('toWireRange', () => {
 });
 
 describe('resolveRange', () => {
-  it('fills in a window when the query string names none', () => {
+  it('fills in the January reporting window when the query string names none', () => {
     const range = resolveRange(undefined, undefined);
 
+    expect(range).toEqual({ from: '2026-01-01', to: '2026-01-31' });
     expect(describeRangeIssue(range)).toBeNull();
-    expect(Date.parse(range.from)).toBeLessThan(Date.parse(range.to));
   });
 
   it('ignores an unreadable date rather than asking for it', () => {

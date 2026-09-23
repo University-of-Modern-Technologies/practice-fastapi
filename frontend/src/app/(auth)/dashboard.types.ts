@@ -8,8 +8,17 @@ import type { Id, IsoDateTime, MoneyWire } from '@/types/domain';
  */
 
 export interface DashboardRangeQuery {
-  /** Start of the reporting window; the API closes it at "now" on its own. */
+  /**
+   * The reporting window, both ends named.
+   *
+   * The upper bound used to be left to the API, which closed it at "now". That
+   * made the overview slide forward every day while the data stayed where it
+   * was, so the cards emptied out on their own. Naming both ends is what keeps
+   * the overview showing the same month however long after the fact it is
+   * opened.
+   */
   readonly from: string;
+  readonly to: string;
 }
 
 export interface SalesSummaryTotals {
