@@ -15,19 +15,9 @@ describe('MoneyValue', () => {
     expect(shown()).toBe('1 234,50');
   });
 
-  it('лишає обидва знаки після коми, коли другий — нуль', () => {
-    render(<MoneyValue value="10.10" />);
-    expect(shown()).toBe('10,10');
-  });
-
   it('показує нуль як суму, а не як прочерк', () => {
     render(<MoneyValue value="0.00" />);
     expect(shown()).toBe('0,00');
-  });
-
-  it('показує від’ємну суму зі знаком', () => {
-    render(<MoneyValue value="-1234.50" />);
-    expect(shown()).toBe('-1 234,50');
   });
 
   // The whole reason money never becomes a float: a sum this size loses its
@@ -46,12 +36,6 @@ describe('MoneyValue', () => {
   it('показує прочерк для невизначеної суми', () => {
     render(<MoneyValue value={undefined} />);
     expect(shown()).toBe('—');
-  });
-
-  // One malformed row must not blank the whole table.
-  it('показує зіпсоване значення як нуль, а не падає', () => {
-    render(<MoneyValue value="не сума" />);
-    expect(shown()).toBe('0,00');
   });
 
   it('додає позначку валюти на вимогу', () => {

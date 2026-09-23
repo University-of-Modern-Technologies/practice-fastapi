@@ -11,9 +11,10 @@ Run with ``python -m scripts.seed``.
 from __future__ import annotations
 
 import asyncio
+import os
 import uuid
 from collections.abc import Mapping, Sequence
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import Any, cast
 
@@ -63,6 +64,11 @@ PRODUCT_IDS = {
     "licence": uuid.UUID("40000000-0000-4000-8000-000000000001"),
     "workshop": uuid.UUID("40000000-0000-4000-8000-000000000002"),
     "support": uuid.UUID("40000000-0000-4000-8000-000000000003"),
+    # Neither carries real business meaning — they exist so a change that
+    # reads "may this product be archived" has one case that says yes
+    # without any preparation and one closed-order-only case to read.
+    "unblocked": uuid.UUID("40000000-0000-4000-8000-000000000004"),
+    "closed_order_only": uuid.UUID("40000000-0000-4000-8000-000000000005"),
 }
 WAREHOUSE_IDS = {
     "central": uuid.UUID("50000000-0000-4000-8000-000000000001"),
@@ -71,11 +77,24 @@ WAREHOUSE_IDS = {
 ORDER_IDS = {
     "confirmed": uuid.UUID("60000000-0000-4000-8000-000000000001"),
     "draft": uuid.UUID("60000000-0000-4000-8000-000000000002"),
+    "fulfilled": uuid.UUID("60000000-0000-4000-8000-000000000003"),
+    # The seven below exist so reconciliation has something to reconcile
+    # against. Their dates are absolute on purpose: the module is judged by
+    # whether a payment falls inside an order's window, and a window anchored
+    # to "whenever the seed ran" gives a different answer every month.
+    "settled_cedar": uuid.UUID("60000000-0000-4000-8000-000000000004"),
+    "settled_blue_peak": uuid.UUID("60000000-0000-4000-8000-000000000005"),
+    "fee_northwind": uuid.UUID("60000000-0000-4000-8000-000000000006"),
+    "twin_cedar_early": uuid.UUID("60000000-0000-4000-8000-000000000007"),
+    "twin_cedar_late": uuid.UUID("60000000-0000-4000-8000-000000000008"),
+    "wire_blue_peak": uuid.UUID("60000000-0000-4000-8000-000000000009"),
+    "stale_northwind": uuid.UUID("60000000-0000-4000-8000-000000000099"),
 }
 ORDER_ITEM_IDS = {
     "confirmed_licence": uuid.UUID("70000000-0000-4000-8000-000000000001"),
     "confirmed_support": uuid.UUID("70000000-0000-4000-8000-000000000002"),
     "draft_workshop": uuid.UUID("70000000-0000-4000-8000-000000000003"),
+    "fulfilled_closed_order_only": uuid.UUID("70000000-0000-4000-8000-000000000004"),
 }
 
 PERMISSIONS: Sequence[tuple[str, str]] = (
@@ -104,6 +123,14 @@ PERMISSIONS: Sequence[tuple[str, str]] = (
     ("integrations:read", "View integration status"),
     ("integrations:write", "Trigger integration operations"),
     ("ai:use", "Use the AI assistance features"),
+    ("helpdesk:read", "View support tickets"),
+    ("helpdesk:write", "Create and update support tickets"),
+    ("helpdesk:delete", "Soft-delete support tickets"),
+    ("calls:read", "View the call log"),
+    ("calls:write", "Sync calls and link them to records"),
+    ("calls:delete", "Soft-delete calls"),
+    ("finance:read", "View bank statements and transactions"),
+    ("finance:write", "Import statements and reconcile payments"),
 )
 
 ROLES: Sequence[tuple[str, str]] = (
@@ -134,6 +161,11 @@ MANAGER_GRANTS: Sequence[tuple[str, PermissionScope]] = tuple(
         "analytics:read",
         "integrations:read",
         "ai:use",
+        "helpdesk:read",
+        "helpdesk:write",
+        "calls:read",
+        "calls:write",
+        "finance:read",
     )
 )
 
@@ -143,6 +175,8 @@ VIEWER_GRANTS: Sequence[tuple[str, PermissionScope]] = (
     ("products:read", PermissionScope.ALL),
     ("orders:read", PermissionScope.OWN),
     ("warehouse:read", PermissionScope.ALL),
+    ("helpdesk:read", PermissionScope.OWN),
+    ("calls:read", PermissionScope.OWN),
 )
 
 GRANTS: Mapping[str, Sequence[tuple[str, PermissionScope]]] = {
@@ -155,13 +189,18 @@ GRANTS: Mapping[str, Sequence[tuple[str, PermissionScope]]] = {
 
 
 def read_seed_password() -> str:
-    """Reads and validates the demo password from the configuration."""
+    """Reads and validates the demo password from the environment.
+
+    The value is read here rather than through application settings: nothing the
+    application serves needs it, and a fixture that only this script uses has no
+    business widening the configuration the application validates on startup.
+    """
     settings = get_settings()
     if settings.is_production:
         message = "The training seed is local-only and cannot run in production."
         raise RuntimeError(message)
 
-    password = settings.seed_user_password or ""
+    password = os.environ.get("SEED_USER_PASSWORD", "")
     if len(password) < MIN_PASSWORD_LENGTH or password == PLACEHOLDER_PASSWORD:
         message = "SEED_USER_PASSWORD must contain at least 12 non-placeholder characters."
         raise RuntimeError(message)
@@ -190,12 +229,20 @@ async def upsert(
     if not rows:
         return
 
+    explicit_updated_at = ["updated_at" in row for row in rows]
+    if any(explicit_updated_at) and not all(explicit_updated_at):
+        message = "All rows in one upsert batch must either include updated_at or omit it"
+        raise ValueError(message)
+
     statement = insert(table).values(list(rows))
     assignments: dict[str, Any] = {name: statement.excluded[name] for name in update}
     if "updated_at" in table.columns:
         # The ORM-level ``onupdate`` does not apply to a Core upsert, so the
-        # timestamp is refreshed explicitly.
-        assignments["updated_at"] = func.now()
+        # timestamp is refreshed explicitly. Fixture rows carry a deterministic
+        # value that must be restored on rerun; operational rows keep action time.
+        assignments["updated_at"] = (
+            statement.excluded.updated_at if all(explicit_updated_at) else func.now()
+        )
 
     if assignments:
         statement = statement.on_conflict_do_update(index_elements=conflict, set_=assignments)
@@ -373,6 +420,9 @@ async def seed_crm(connection: AsyncConnection) -> None:
             DealStage.QUALIFIED,
             Decimal("4800.00"),
             25,
+            date(2026, 1, 20),
+            datetime(2026, 1, 3, 9, 0, tzinfo=UTC),
+            datetime(2026, 1, 4, 9, 0, tzinfo=UTC),
         ),
         (
             DEAL_IDS["renewal"],
@@ -382,6 +432,9 @@ async def seed_crm(connection: AsyncConnection) -> None:
             DealStage.PROPOSAL,
             Decimal("12500.00"),
             75,
+            date(2026, 1, 25),
+            datetime(2026, 1, 7, 9, 0, tzinfo=UTC),
+            datetime(2026, 1, 8, 9, 0, tzinfo=UTC),
         ),
         (
             DEAL_IDS["pilot"],
@@ -391,6 +444,9 @@ async def seed_crm(connection: AsyncConnection) -> None:
             DealStage.LEAD,
             Decimal("2400.00"),
             10,
+            date(2026, 1, 30),
+            datetime(2026, 1, 11, 9, 0, tzinfo=UTC),
+            datetime(2026, 1, 12, 9, 0, tzinfo=UTC),
         ),
     )
 
@@ -407,10 +463,24 @@ async def seed_crm(connection: AsyncConnection) -> None:
                 "amount": amount,
                 "currency": "USD",
                 "probability": probability,
+                "expected_close_date": expected_close_date,
                 "version": 1,
+                "created_at": created_at,
+                "updated_at": updated_at,
                 "deleted_at": None,
             }
-            for deal_id, owner_id, contact_id, title, stage, amount, probability in deals
+            for (
+                deal_id,
+                owner_id,
+                contact_id,
+                title,
+                stage,
+                amount,
+                probability,
+                expected_close_date,
+                created_at,
+                updated_at,
+            ) in deals
         ],
         conflict=["id"],
         update=[
@@ -421,6 +491,8 @@ async def seed_crm(connection: AsyncConnection) -> None:
             "amount",
             "currency",
             "probability",
+            "expected_close_date",
+            "created_at",
             "deleted_at",
         ],
     )
@@ -451,6 +523,22 @@ async def seed_catalogue(connection: AsyncConnection) -> None:
             "Priority response times for one year.",
             "Support",
             Decimal("600.00"),
+        ),
+        (
+            PRODUCT_IDS["unblocked"],
+            "LIC-LEGACY-04",
+            "Legacy licence, discontinued",
+            "Superseded by the team licence; nothing open references it.",
+            "Licences",
+            Decimal("900.00"),
+        ),
+        (
+            PRODUCT_IDS["closed_order_only"],
+            "SRV-PILOT-05",
+            "One-time pilot engagement",
+            "A single delivered engagement; its only order is fulfilled.",
+            "Services",
+            Decimal("450.00"),
         ),
     )
 
@@ -505,6 +593,8 @@ async def seed_catalogue(connection: AsyncConnection) -> None:
                 ("CENTRAL", "LIC-TEAM-01", 120, 10),
                 ("CENTRAL", "SUP-PRIO-03", 80, 0),
                 ("REGIONAL", "SRV-WS-02", 15, 3),
+                ("CENTRAL", "LIC-LEGACY-04", 6, 0),
+                ("CENTRAL", "SRV-PILOT-05", 4, 0),
             )
         ],
         conflict=["warehouse_id", "product_id"],
@@ -530,7 +620,9 @@ async def seed_orders(connection: AsyncConnection) -> None:
                 "tax_total": Decimal("0.00"),
                 "total": Decimal("1800.00"),
                 "version": 1,
-                "placed_at": datetime(2026, 2, 1, 9, 0, tzinfo=UTC),
+                "placed_at": datetime(2026, 1, 1, 9, 0, tzinfo=UTC),
+                "created_at": datetime(2026, 1, 1, 9, 0, tzinfo=UTC),
+                "updated_at": datetime(2026, 1, 1, 9, 0, tzinfo=UTC),
                 "deleted_at": None,
             },
             {
@@ -547,6 +639,160 @@ async def seed_orders(connection: AsyncConnection) -> None:
                 "total": Decimal("2400.00"),
                 "version": 1,
                 "placed_at": None,
+                "created_at": datetime(2026, 1, 17, 9, 0, tzinfo=UTC),
+                "updated_at": datetime(2026, 1, 17, 9, 0, tzinfo=UTC),
+                "deleted_at": None,
+            },
+            {
+                "id": ORDER_IDS["fulfilled"],
+                "order_number": "ORD-2026-0003",
+                "owner_id": USER_IDS["manager"],
+                "contact_id": CONTACT_IDS["blue_peak"],
+                "deal_id": None,
+                "status": OrderStatus.FULFILLED,
+                "currency": "USD",
+                "subtotal": Decimal("450.00"),
+                "discount_total": Decimal("0.00"),
+                "tax_total": Decimal("0.00"),
+                "total": Decimal("450.00"),
+                "version": 1,
+                "placed_at": datetime(2026, 1, 15, 9, 0, tzinfo=UTC),
+                "created_at": datetime(2026, 1, 15, 9, 0, tzinfo=UTC),
+                "updated_at": datetime(2026, 1, 15, 9, 0, tzinfo=UTC),
+                "deleted_at": None,
+            },
+            {
+                "id": ORDER_IDS["settled_cedar"],
+                "order_number": "ORD-2026-0004",
+                "owner_id": USER_IDS["manager"],
+                "contact_id": CONTACT_IDS["cedar_labs"],
+                "deal_id": None,
+                "status": OrderStatus.CONFIRMED,
+                "currency": "USD",
+                "subtotal": Decimal("2400.00"),
+                "discount_total": Decimal("0.00"),
+                "tax_total": Decimal("0.00"),
+                "total": Decimal("2400.00"),
+                "version": 1,
+                "placed_at": datetime(2026, 1, 3, 9, 0, tzinfo=UTC),
+                "created_at": datetime(2026, 1, 3, 9, 0, tzinfo=UTC),
+                "updated_at": datetime(2026, 1, 3, 9, 0, tzinfo=UTC),
+                "deleted_at": None,
+            },
+            {
+                "id": ORDER_IDS["settled_blue_peak"],
+                "order_number": "ORD-2026-0005",
+                "owner_id": USER_IDS["manager"],
+                "contact_id": CONTACT_IDS["blue_peak"],
+                "deal_id": None,
+                "status": OrderStatus.PAID,
+                "currency": "USD",
+                "subtotal": Decimal("450.00"),
+                "discount_total": Decimal("0.00"),
+                "tax_total": Decimal("0.00"),
+                "total": Decimal("450.00"),
+                "version": 1,
+                "placed_at": datetime(2026, 1, 5, 9, 0, tzinfo=UTC),
+                "created_at": datetime(2026, 1, 5, 9, 0, tzinfo=UTC),
+                "updated_at": datetime(2026, 1, 5, 9, 0, tzinfo=UTC),
+                "deleted_at": None,
+            },
+            {
+                # Paid a cent short: the bank kept a transfer fee. This is the
+                # order that says the tolerance is a rule, not a rounding slip.
+                "id": ORDER_IDS["fee_northwind"],
+                "order_number": "ORD-2026-0006",
+                "owner_id": USER_IDS["manager"],
+                "contact_id": CONTACT_IDS["northwind"],
+                "deal_id": None,
+                "status": OrderStatus.CONFIRMED,
+                "currency": "USD",
+                "subtotal": Decimal("1250.00"),
+                "discount_total": Decimal("0.00"),
+                "tax_total": Decimal("0.00"),
+                "total": Decimal("1250.00"),
+                "version": 1,
+                "placed_at": datetime(2026, 1, 7, 9, 0, tzinfo=UTC),
+                "created_at": datetime(2026, 1, 7, 9, 0, tzinfo=UTC),
+                "updated_at": datetime(2026, 1, 7, 9, 0, tzinfo=UTC),
+                "deleted_at": None,
+            },
+            {
+                # Two orders, one customer, the same total. A payment naming
+                # only the customer cannot choose between them, which is the
+                # whole of SUGGESTED.
+                "id": ORDER_IDS["twin_cedar_early"],
+                "order_number": "ORD-2026-0007",
+                "owner_id": USER_IDS["manager"],
+                "contact_id": CONTACT_IDS["cedar_labs"],
+                "deal_id": None,
+                "status": OrderStatus.CONFIRMED,
+                "currency": "USD",
+                "subtotal": Decimal("990.00"),
+                "discount_total": Decimal("0.00"),
+                "tax_total": Decimal("0.00"),
+                "total": Decimal("990.00"),
+                "version": 1,
+                "placed_at": datetime(2026, 1, 11, 9, 0, tzinfo=UTC),
+                "created_at": datetime(2026, 1, 11, 9, 0, tzinfo=UTC),
+                "updated_at": datetime(2026, 1, 11, 9, 0, tzinfo=UTC),
+                "deleted_at": None,
+            },
+            {
+                "id": ORDER_IDS["twin_cedar_late"],
+                "order_number": "ORD-2026-0008",
+                "owner_id": USER_IDS["manager"],
+                "contact_id": CONTACT_IDS["cedar_labs"],
+                "deal_id": None,
+                "status": OrderStatus.CONFIRMED,
+                "currency": "USD",
+                "subtotal": Decimal("990.00"),
+                "discount_total": Decimal("0.00"),
+                "tax_total": Decimal("0.00"),
+                "total": Decimal("990.00"),
+                "version": 1,
+                "placed_at": datetime(2026, 1, 13, 9, 0, tzinfo=UTC),
+                "created_at": datetime(2026, 1, 13, 9, 0, tzinfo=UTC),
+                "updated_at": datetime(2026, 1, 13, 9, 0, tzinfo=UTC),
+                "deleted_at": None,
+            },
+            {
+                "id": ORDER_IDS["wire_blue_peak"],
+                "order_number": "ORD-2026-0009",
+                "owner_id": USER_IDS["manager"],
+                "contact_id": CONTACT_IDS["blue_peak"],
+                "deal_id": None,
+                "status": OrderStatus.CONFIRMED,
+                "currency": "USD",
+                "subtotal": Decimal("777.00"),
+                "discount_total": Decimal("0.00"),
+                "tax_total": Decimal("0.00"),
+                "total": Decimal("777.00"),
+                "version": 1,
+                "placed_at": datetime(2026, 1, 9, 9, 0, tzinfo=UTC),
+                "created_at": datetime(2026, 1, 9, 9, 0, tzinfo=UTC),
+                "updated_at": datetime(2026, 1, 9, 9, 0, tzinfo=UTC),
+                "deleted_at": None,
+            },
+            {
+                # Placed far enough back that the payment quoting it falls
+                # outside the ninety-day window. Without it the window is
+                # written but never tested.
+                "id": ORDER_IDS["stale_northwind"],
+                "order_number": "ORD-2025-0099",
+                "owner_id": USER_IDS["manager"],
+                "contact_id": CONTACT_IDS["northwind"],
+                "deal_id": None,
+                "status": OrderStatus.CONFIRMED,
+                "currency": "USD",
+                "subtotal": Decimal("1500.00"),
+                "discount_total": Decimal("0.00"),
+                "tax_total": Decimal("0.00"),
+                "total": Decimal("1500.00"),
+                "version": 1,
+                "placed_at": datetime(2025, 10, 1, 9, 0, tzinfo=UTC),
+                "created_at": datetime(2025, 10, 1, 9, 0, tzinfo=UTC),
+                "updated_at": datetime(2025, 10, 1, 9, 0, tzinfo=UTC),
                 "deleted_at": None,
             },
         ],
@@ -562,6 +808,7 @@ async def seed_orders(connection: AsyncConnection) -> None:
             "tax_total",
             "total",
             "placed_at",
+            "created_at",
             "deleted_at",
         ],
     )
@@ -599,6 +846,16 @@ async def seed_orders(connection: AsyncConnection) -> None:
                 "quantity": 1,
                 "unit_price": Decimal("2400.00"),
                 "line_total": Decimal("2400.00"),
+            },
+            {
+                "id": ORDER_ITEM_IDS["fulfilled_closed_order_only"],
+                "order_id": ORDER_IDS["fulfilled"],
+                "product_id": PRODUCT_IDS["closed_order_only"],
+                "sku": "SRV-PILOT-05",
+                "name": "One-time pilot engagement",
+                "quantity": 1,
+                "unit_price": Decimal("450.00"),
+                "line_total": Decimal("450.00"),
             },
         ],
         conflict=["order_id", "product_id"],

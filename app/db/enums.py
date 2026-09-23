@@ -50,6 +50,67 @@ class StockMovementType(enum.StrEnum):
     ADJUSTMENT = "ADJUSTMENT"
 
 
+class TicketChannel(enum.StrEnum):
+    """How a support request reached the company."""
+
+    EMAIL = "EMAIL"
+    PHONE = "PHONE"
+    CHAT = "CHAT"
+    WEB = "WEB"
+
+
+class TicketStatus(enum.StrEnum):
+    """Lifecycle of a support ticket."""
+
+    NEW = "NEW"
+    OPEN = "OPEN"
+    PENDING = "PENDING"
+    RESOLVED = "RESOLVED"
+    CLOSED = "CLOSED"
+
+
+class TicketPriority(enum.StrEnum):
+    """How urgently a ticket has to be answered."""
+
+    LOW = "LOW"
+    NORMAL = "NORMAL"
+    HIGH = "HIGH"
+    URGENT = "URGENT"
+
+
+class CallDirection(enum.StrEnum):
+    """Which side placed the call."""
+
+    INBOUND = "INBOUND"
+    OUTBOUND = "OUTBOUND"
+
+
+class CallDisposition(enum.StrEnum):
+    """How a call ended."""
+
+    ANSWERED = "ANSWERED"
+    NO_ANSWER = "NO_ANSWER"
+    BUSY = "BUSY"
+    FAILED = "FAILED"
+    VOICEMAIL = "VOICEMAIL"
+
+
+class TransactionDirection(enum.StrEnum):
+    """Whether money entered the account or left it."""
+
+    CREDIT = "CREDIT"
+    DEBIT = "DEBIT"
+
+
+class PaymentMatchStatus(enum.StrEnum):
+    """How far a bank transaction got towards an order it pays for."""
+
+    UNMATCHED = "UNMATCHED"
+    SUGGESTED = "SUGGESTED"
+    MATCHED = "MATCHED"
+    IGNORED = "IGNORED"
+
+
 def pg_enum(enum_type: type[enum.Enum], name: str) -> SAEnum:
     """Maps a Python enum onto a native PostgreSQL enum type.
 

@@ -12,7 +12,6 @@ follows from them:
 
 from __future__ import annotations
 
-import contextlib
 import uuid
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -29,6 +28,7 @@ from app.core.filters import FilterBuilder
 from app.core.paged_query import PagedQuery
 from app.core.serializers import quantize_money
 from app.db.models.product import Product
+from app.events.dispatch import announcer, publish_after_commit
 from app.events.types import DomainEvent, DomainEventPublisher, NoopPublisher
 from app.modules.audit import AuditEvent, AuditService
 from app.modules.products.schemas import (
@@ -319,19 +319,22 @@ class ProductsService:
     def _announce(
         self, event_type: str, product_id: uuid.UUID, access: ProductAccess, payload: Any
     ) -> None:
-        """Reports a committed change to the secondary consumers.
+        """Reports the change to the secondary consumers once it is committed.
 
-        Guarded even though publishers promise not to throw: the change is on
-        its way to being committed, and a misbehaving listener must not turn a
-        successful write into a failed request.
+        Delivery is deferred to the session's commit: the request transaction
+        closes after the handler returns, so publishing here would announce a
+        change that a later failure could still undo.
         """
-        with contextlib.suppress(Exception):
-            self._events.publish(
+        publish_after_commit(
+            self._session,
+            announcer(
+                self._events,
                 DomainEvent(
                     event_type=event_type,
                     entity_type=PRODUCT_ENTITY_TYPE,
                     entity_id=str(product_id),
                     actor_id=str(access.actor_id),
                     payload=payload,
-                )
-            )
+                ),
+            ),
+        )

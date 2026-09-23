@@ -1,0 +1,8 @@
+# Session state written by auth.setup.ts. It carries a live refresh cookie, so
+# it never belongs in the repository.
+.auth/
+
+# Artefacts a run may drop beside the tests. The report and the trace directory
+# of the project root are already ignored one level up.
+playwright-report/
+test-results/

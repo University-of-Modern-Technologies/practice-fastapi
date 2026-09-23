@@ -36,6 +36,71 @@ export const DEAL_STAGE_TRANSITIONS: Readonly<Record<DealStage, readonly DealSta
   LOST: [],
 };
 
+export const TICKET_CHANNELS = ['EMAIL', 'PHONE', 'CHAT', 'WEB'] as const;
+export type TicketChannel = (typeof TICKET_CHANNELS)[number];
+
+export const TICKET_STATUSES = ['NEW', 'OPEN', 'PENDING', 'RESOLVED', 'CLOSED'] as const;
+export type TicketStatus = (typeof TICKET_STATUSES)[number];
+
+export const TICKET_PRIORITIES = ['LOW', 'NORMAL', 'HIGH', 'URGENT'] as const;
+export type TicketPriority = (typeof TICKET_PRIORITIES)[number];
+
+export const TICKET_CHANNEL: Readonly<Record<TicketChannel, StatusMeta>> = {
+  EMAIL: { label: 'Пошта', color: 'default' },
+  PHONE: { label: 'Телефон', color: 'processing' },
+  CHAT: { label: 'Чат', color: 'warning' },
+  WEB: { label: 'Вебформа', color: 'default' },
+};
+
+export const TICKET_STATUS: Readonly<Record<TicketStatus, StatusMeta>> = {
+  NEW: { label: 'Нове', color: 'default' },
+  OPEN: { label: 'У роботі', color: 'processing' },
+  PENDING: { label: 'Очікує відповіді', color: 'warning' },
+  RESOLVED: { label: 'Розвʼязано', color: 'success' },
+  CLOSED: { label: 'Закрито', color: 'default' },
+};
+
+export const TICKET_PRIORITY: Readonly<Record<TicketPriority, StatusMeta>> = {
+  LOW: { label: 'Низький', color: 'default' },
+  NORMAL: { label: 'Звичайний', color: 'processing' },
+  HIGH: { label: 'Високий', color: 'warning' },
+  URGENT: { label: 'Терміновий', color: 'error' },
+};
+
+/**
+ * Mirrors the state machine the API enforces. The card offers only the moves
+ * listed here, so a step the server would refuse is never proposed — its 422
+ * stays a safety net rather than the first check.
+ */
+export const TICKET_STATUS_TRANSITIONS: Readonly<Record<TicketStatus, readonly TicketStatus[]>> = {
+  NEW: ['OPEN', 'CLOSED'],
+  OPEN: ['PENDING', 'RESOLVED', 'CLOSED'],
+  PENDING: ['OPEN', 'RESOLVED', 'CLOSED'],
+  // Reopening is a published move: a ticket the customer came back about goes
+  // from `RESOLVED` to `OPEN`, and the server clears `resolvedAt` with it.
+  RESOLVED: ['CLOSED', 'OPEN'],
+  CLOSED: [],
+};
+
+export const CALL_DIRECTIONS = ['INBOUND', 'OUTBOUND'] as const;
+export type CallDirection = (typeof CALL_DIRECTIONS)[number];
+
+export const CALL_DISPOSITIONS = ['ANSWERED', 'NO_ANSWER', 'BUSY', 'FAILED', 'VOICEMAIL'] as const;
+export type CallDisposition = (typeof CALL_DISPOSITIONS)[number];
+
+export const CALL_DIRECTION: Readonly<Record<CallDirection, StatusMeta>> = {
+  INBOUND: { label: 'Вхідний', color: 'processing' },
+  OUTBOUND: { label: 'Вихідний', color: 'default' },
+};
+
+export const CALL_DISPOSITION: Readonly<Record<CallDisposition, StatusMeta>> = {
+  ANSWERED: { label: 'Відповіли', color: 'success' },
+  NO_ANSWER: { label: 'Без відповіді', color: 'warning' },
+  BUSY: { label: 'Зайнято', color: 'warning' },
+  FAILED: { label: 'Помилка звʼязку', color: 'error' },
+  VOICEMAIL: { label: 'Голосова пошта', color: 'default' },
+};
+
 /** Probability the API demands for a terminal stage; null means it is free. */
 export const DEAL_STAGE_PROBABILITY: Readonly<Record<DealStage, number | null>> = {
   LEAD: null,

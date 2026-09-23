@@ -21,12 +21,11 @@ different sides of a rollback.
 
 from __future__ import annotations
 
-import contextlib
 import uuid
 from collections.abc import Callable
 from typing import Any
 
-from sqlalchemy import ColumnElement, Executable, event, insert, select, update
+from sqlalchemy import ColumnElement, Executable, insert, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -35,6 +34,8 @@ from app.core.filters import FilterBuilder
 from app.core.paged_query import PagedQuery
 from app.db.enums import StockMovementType
 from app.db.models.warehouse import StockLevel, StockMovement, Warehouse
+from app.events.dispatch import announcer as _announcer
+from app.events.dispatch import publish_after_commit
 from app.events.types import DomainEvent, DomainEventPublisher, NoopPublisher
 from app.modules.audit import AuditEvent, AuditService
 from app.modules.warehouse.schemas import (
@@ -257,35 +258,6 @@ class StockChange:
     def publish_committed(self) -> None:
         """Announces the movement; call only after the transaction committed."""
         self._publish()
-
-
-def publish_after_commit(session: AsyncSession, publish: Callable[[], None]) -> None:
-    """Defers an announcement until the session's transaction has committed.
-
-    The request session commits after the handler returns, so publishing inside
-    the handler would announce a change that a later failure could still undo.
-    A session without the ORM event bus — a stand-in in a unit test — publishes
-    immediately, which is the only thing it can honestly do.
-    """
-    sync_session = getattr(session, "sync_session", None)
-    if sync_session is None:
-        publish()
-        return
-
-    def _announce(_session: Any) -> None:
-        publish()
-
-    event.listen(sync_session, "after_commit", _announce, once=True)
-
-
-def _announcer(publisher: DomainEventPublisher, domain_event: DomainEvent) -> Callable[[], None]:
-    """Wraps publication so a broken listener cannot fail a committed change."""
-
-    def publish() -> None:
-        with contextlib.suppress(Exception):
-            publisher.publish(domain_event)
-
-    return publish
 
 
 def _map_integrity_error(error: IntegrityError) -> AppError:

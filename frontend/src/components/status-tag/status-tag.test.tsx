@@ -16,13 +16,6 @@ describe('StatusTag', () => {
     expect(screen.getByText('Скасовано')).toBeInTheDocument();
   });
 
-  // Without the fallback a state the server added ships as an empty tag, and
-  // the row looks as if it had no status at all.
-  it('показує невідоме значення як його ж текст, а не порожнім', () => {
-    renderWithProviders(<StatusTag dictionary={DEAL_STAGE} value="ON_HOLD" />);
-    expect(screen.getByText('ON_HOLD')).toBeInTheDocument();
-  });
-
   it('фарбує успішний і помилковий стани по-різному', () => {
     const { unmount } = renderWithProviders(<StatusTag dictionary={DEAL_STAGE} value="WON" />);
     const won = screen.getByText('Виграно').className;

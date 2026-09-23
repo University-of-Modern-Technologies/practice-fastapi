@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from app.events.connection import EventStore, create_event_store_readiness_check
+from app.events.dispatch import announcer, publish_after_commit
 from app.events.model import DOMAIN_EVENT_COLLECTION, ensure_indexes
 from app.events.sanitize import is_sensitive_event_field, sanitize_event_payload
 from app.events.service import EventStoreService, EventStoreUnavailableError
@@ -36,8 +37,10 @@ __all__ = [
     "EventStoreService",
     "EventStoreUnavailableError",
     "NoopPublisher",
+    "announcer",
     "create_event_store_readiness_check",
     "ensure_indexes",
     "is_sensitive_event_field",
+    "publish_after_commit",
     "sanitize_event_payload",
 ]

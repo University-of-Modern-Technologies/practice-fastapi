@@ -62,6 +62,6 @@ class ContactAccess:
     ip_address: str | None = None
 
     @property
-    def is_limited_to_own(self) -> bool:
-        """True when this caller may only reach records they own."""
-        return self.scope is not PermissionScope.ALL
+    def owned_only(self) -> bool:
+        """Whether this actor may see and touch nothing but their own contacts."""
+        return self.scope is PermissionScope.OWN

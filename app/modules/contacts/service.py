@@ -82,7 +82,7 @@ def _snapshot(contact: ContactOut) -> dict[str, Any]:
 def _visible(access: ContactAccess) -> Criteria:
     """The predicates that decide which rows exist for this caller."""
     criteria: Criteria = [Contact.deleted_at.is_(None)]
-    if access.is_limited_to_own:
+    if access.owned_only:
         criteria.append(Contact.owner_id == access.actor_id)
     return criteria
 
@@ -102,7 +102,7 @@ class _ContactPage(PagedQuery[Contact, ContactListParams, ContactOut]):
 
         # A narrow grant pins the owner; a wide one may filter by whichever
         # owner was asked for.
-        owner_id = self._access.actor_id if self._access.is_limited_to_own else params.owner_id
+        owner_id = self._access.actor_id if self._access.owned_only else params.owner_id
         return (
             FilterBuilder(criteria)
             .equals(Contact.owner_id, owner_id)
@@ -260,7 +260,7 @@ class ContactsService:
     @staticmethod
     def _ensure_owner_allowed(access: ContactAccess, owner_id: uuid.UUID) -> None:
         """Only a caller who sees everything may hand a contact to someone else."""
-        if access.is_limited_to_own and owner_id != access.actor_id:
+        if access.owned_only and owner_id != access.actor_id:
             raise ForbiddenError()
 
     async def _require_active(self, access: ContactAccess, contact_id: uuid.UUID) -> Contact:

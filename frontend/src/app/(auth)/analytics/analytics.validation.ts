@@ -1,12 +1,15 @@
-import { DateTime } from '@/lib/date-time';
+import { DEFAULT_REPORT_RANGE } from '@/shared/constants';
 import type { CalendarRange, DateRange } from './analytics.types';
 
 const DAY_MS = 86_400_000;
 
 /** Widest window the API scans in one request; anything larger answers 400. */
 export const MAX_RANGE_DAYS = 366;
-/** Window applied when the query string names none. */
-export const DEFAULT_RANGE_DAYS = 30;
+/**
+ * Window applied when the query string names none: a fixed month rather than a
+ * stretch measured backwards from the clock. See `shared/constants/reporting`.
+ */
+export const DEFAULT_RANGE = DEFAULT_REPORT_RANGE;
 
 export const DEFAULT_LIMIT = 10;
 export const MAX_LIMIT = 100;
@@ -24,13 +27,13 @@ const readDate = (value: string | undefined): string | undefined =>
   value !== undefined && value !== '' && isReadableInstant(value) ? value : undefined;
 
 /**
- * Fills in what the user has not picked. The defaults mirror the ones the API
- * applies, so an untouched page and an explicit "last 30 days" ask for the same
- * window instead of two windows that differ by the moment of the request.
+ * Fills in what the user has not picked. The defaults are the ones the API
+ * applies, so an untouched page and the same page read a year later ask for
+ * the same window rather than two that differ by the moment of the request.
  */
 export const resolveRange = (from: string | undefined, to: string | undefined): CalendarRange => ({
-  from: readDate(from) ?? DateTime.daysAgo(DEFAULT_RANGE_DAYS),
-  to: readDate(to) ?? DateTime.today(),
+  from: readDate(from) ?? DEFAULT_RANGE.from,
+  to: readDate(to) ?? DEFAULT_RANGE.to,
 });
 
 /**

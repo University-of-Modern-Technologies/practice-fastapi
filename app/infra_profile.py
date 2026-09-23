@@ -18,6 +18,7 @@ import structlog
 from app.cache import CacheRedis, CacheService, NoopCacheService
 from app.core.settings import Settings
 from app.modules.ai import AiConfig, AiProvider, create_ai_provider
+from app.modules.calls import CallProviderConfig
 from app.modules.integrations import (
     DeliveryClient,
     DeliveryIntegrationConfig,
@@ -45,6 +46,7 @@ class InfraStack:
 
     profile: InfraProfile
     ai_config: AiConfig
+    call_provider_config: CallProviderConfig
     ai_provider: AiProvider
     delivery_client: DeliveryClient
     cache: CacheService | NoopCacheService
@@ -80,6 +82,14 @@ def create_infra_stack(
         cache_ttl_seconds=settings.ai_cache_ttl_seconds,
     )
 
+    call_provider_config = CallProviderConfig(
+        base_url=None if offline else settings.call_provider_base_url,
+        api_key=None if offline else settings.call_provider_api_key,
+        timeout_ms=settings.call_provider_timeout_ms,
+        max_attempts=settings.call_provider_max_attempts,
+        backoff_ms=settings.call_provider_backoff_ms,
+    )
+
     delivery_config = DeliveryIntegrationConfig(
         base_url=None if offline else settings.delivery_base_url,
         api_key=None if offline else settings.delivery_api_key,
@@ -96,6 +106,7 @@ def create_infra_stack(
         profile=profile,
         ai_config=ai_config,
         ai_provider=create_ai_provider(config=ai_config, logger=logger),
+        call_provider_config=call_provider_config,
         delivery_client=create_configured_delivery_client(delivery_config),
         # Offline means no external store at all, not merely an unreachable
         # one: the noop cache never opens a socket, whereas a real Redis

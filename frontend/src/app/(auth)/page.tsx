@@ -7,14 +7,14 @@ import { useHasPermission } from '@/shared/hooks';
 import { useAuthStore } from '@/shared/stores';
 import { DealFunnelSummary, LowStockSummary, MetricCard, QuickLinks } from './_components';
 import {
-  DASHBOARD_RANGE_DAYS,
+  DASHBOARD_RANGE_LABEL,
   LOW_STOCK_THRESHOLD,
   useDealFunnel,
   useSalesSummary,
   useStockHealth,
 } from './dashboard.queries';
 
-const PERIOD_HINT = `За останні ${DASHBOARD_RANGE_DAYS} днів`;
+const PERIOD_HINT = `За ${DASHBOARD_RANGE_LABEL}`;
 
 export default function DashboardPage() {
   const user = useAuthStore((state) => state.user);

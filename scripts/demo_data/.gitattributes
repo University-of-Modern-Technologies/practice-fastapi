@@ -1,0 +1,3 @@
+# The generator writes LF. Normalising to CRLF on checkout would make
+# every regeneration look like a change to every line.
+* text eol=lf

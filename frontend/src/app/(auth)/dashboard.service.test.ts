@@ -30,21 +30,26 @@ describe('DashboardService', () => {
     vi.restoreAllMocks();
   });
 
-  it('reads the sales summary from the window start, letting the API close the range', async () => {
+  // Both ends travel now. The upper bound used to be left to the API, which
+  // closed it at "now", and the overview therefore slid forward a day at a
+  // time while the data stayed where it was.
+  it('reads the sales summary for a window closed at both ends', async () => {
     const fetchMock = stub({ data: salesSummary });
 
-    await expect(DashboardService.salesSummary({ from: '2026-07-16' })).resolves.toEqual(
-      salesSummary,
+    await expect(
+      DashboardService.salesSummary({ from: '2026-01-01', to: '2026-01-31' }),
+    ).resolves.toEqual(salesSummary);
+    expect(urlOf(fetchMock)).toBe(
+      '/api/v1/analytics/sales-summary?from=2026-01-01&to=2026-01-31&period=day',
     );
-    expect(urlOf(fetchMock)).toBe('/api/v1/analytics/sales-summary?from=2026-07-16&period=day');
   });
 
   it('reads the deal funnel for the same window without a period bucket', async () => {
     const fetchMock = stub({ data: { from: 'a', to: 'b', stages: [] } });
 
-    await DashboardService.dealFunnel({ from: '2026-07-16' });
+    await DashboardService.dealFunnel({ from: '2026-01-01', to: '2026-01-31' });
 
-    expect(urlOf(fetchMock)).toBe('/api/v1/analytics/deal-funnel?from=2026-07-16');
+    expect(urlOf(fetchMock)).toBe('/api/v1/analytics/deal-funnel?from=2026-01-01&to=2026-01-31');
   });
 
   it('asks stock health for a short list under the low-stock threshold', async () => {
@@ -66,7 +71,7 @@ describe('DashboardService', () => {
   it('surfaces a build without the analytics module as a 404 ApiError', async () => {
     stub({ error: { code: 'NOT_FOUND', message: 'Not Found' } }, 404);
 
-    const error = await DashboardService.salesSummary({ from: '2026-07-16' }).catch(
+    const error = await DashboardService.salesSummary({ from: '2026-01-01', to: '2026-01-31' }).catch(
       (cause: unknown) => cause,
     );
 
@@ -77,7 +82,7 @@ describe('DashboardService', () => {
   it('surfaces an unreachable API as a NETWORK_ERROR rather than a crash', async () => {
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('Failed to fetch')));
 
-    const error = await DashboardService.dealFunnel({ from: '2026-07-16' }).catch(
+    const error = await DashboardService.dealFunnel({ from: '2026-01-01', to: '2026-01-31' }).catch(
       (cause: unknown) => cause,
     );
 

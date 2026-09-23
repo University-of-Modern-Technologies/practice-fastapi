@@ -21,11 +21,14 @@ from app.db.types import CreatedAt, IpAddress, UpdatedAt, UuidFk, UuidPk
 
 if TYPE_CHECKING:
     from app.db.models.audit import AuditLog
+    from app.db.models.call import Call
     from app.db.models.contact import Contact
     from app.db.models.deal import Deal
+    from app.db.models.finance import BankStatement, BankTransaction
     from app.db.models.order import Order
     from app.db.models.rbac import UserRole
     from app.db.models.setting import OrganizationSetting
+    from app.db.models.ticket import Ticket, TicketStatusLog
     from app.db.models.warehouse import StockMovement
 
 
@@ -59,6 +62,24 @@ class User(Base):
     )
     setting_edits: Mapped[list[OrganizationSetting]] = relationship(
         back_populates="updated_by", lazy="raise"
+    )
+    # Two paths lead from a user to a ticket, so each names its own column:
+    # without that SQLAlchemy cannot tell which foreign key it should follow.
+    tickets: Mapped[list[Ticket]] = relationship(
+        back_populates="owner", foreign_keys="Ticket.owner_id", lazy="raise"
+    )
+    tickets_assigned: Mapped[list[Ticket]] = relationship(
+        back_populates="assignee", foreign_keys="Ticket.assignee_id", lazy="raise"
+    )
+    ticket_status_changes: Mapped[list[TicketStatusLog]] = relationship(
+        back_populates="changed_by", lazy="raise"
+    )
+    calls: Mapped[list[Call]] = relationship(back_populates="owner", lazy="raise")
+    statement_imports: Mapped[list[BankStatement]] = relationship(
+        back_populates="imported_by", lazy="raise"
+    )
+    transaction_matches: Mapped[list[BankTransaction]] = relationship(
+        back_populates="matched_by", lazy="raise"
     )
 
     __table_args__ = (

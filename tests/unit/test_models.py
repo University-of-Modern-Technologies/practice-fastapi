@@ -20,6 +20,9 @@ from app.db.enums import DealStage, OrderStatus, PermissionScope, StockMovementT
 
 EXPECTED_TABLES = {
     "audit_logs",
+    "bank_statements",
+    "bank_transactions",
+    "calls",
     "contacts",
     "deals",
     "order_items",
@@ -32,6 +35,8 @@ EXPECTED_TABLES = {
     "sessions",
     "stock_levels",
     "stock_movements",
+    "ticket_status_logs",
+    "tickets",
     "user_roles",
     "users",
     "warehouses",
@@ -121,6 +126,17 @@ EXPECTED_INDEXES = {
     "audit_logs_action_created_at_idx",
     "audit_logs_actor_id_created_at_idx",
     "audit_logs_entity_type_entity_id_created_at_idx",
+    "bank_statements_period_start_period_end_idx",
+    "bank_transactions_booked_at_idx",
+    "bank_transactions_match_status_booked_at_idx",
+    "bank_transactions_matched_order_id_idx",
+    "bank_transactions_statement_id_booked_at_idx",
+    "calls_contact_id_idx",
+    "calls_deal_id_idx",
+    "calls_deleted_at_idx",
+    "calls_direction_disposition_idx",
+    "calls_owner_id_started_at_idx",
+    "calls_started_at_idx",
     "contacts_company_idx",
     "contacts_email_idx",
     "contacts_last_name_first_name_idx",
@@ -145,11 +161,22 @@ EXPECTED_INDEXES = {
     "stock_movements_reference_type_reference_id_idx",
     "stock_movements_type_created_at_idx",
     "stock_movements_warehouse_id_product_id_created_at_idx",
+    "ticket_status_logs_ticket_id_changed_at_idx",
+    "tickets_assignee_id_idx",
+    "tickets_contact_id_idx",
+    "tickets_deleted_at_idx",
+    "tickets_owner_id_status_deleted_at_idx",
+    "tickets_status_priority_idx",
     "user_roles_role_id_idx",
     "users_is_active_idx",
 }
 
-MIGRATION_PATH = Path(__file__).resolve().parents[2] / "migrations" / "versions" / "0001_initial.py"
+#: Every revision, not just the first one. The schema is the sum of the
+#: history, so a check that reads one file stops seeing the schema the
+#: moment a second revision is added.
+MIGRATION_PATHS = sorted(
+    (Path(__file__).resolve().parents[2] / "migrations" / "versions").glob("[0-9]*.py")
+)
 
 
 def _literal_arguments(call: ast.Call) -> list[str]:
@@ -161,18 +188,19 @@ def _literal_arguments(call: ast.Call) -> list[str]:
 
 
 def _migration_calls(function: str) -> list[str]:
-    """First literal argument of every ``op.<function>`` call in the migration."""
-    tree = ast.parse(MIGRATION_PATH.read_text(encoding="utf-8"))
+    """First literal argument of every ``op.<function>`` call across the history."""
     names: list[str] = []
-    for node in ast.walk(tree):
-        if (
-            isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Attribute)
-            and node.func.attr == function
-        ):
-            arguments = _literal_arguments(node)
-            if arguments:
-                names.append(arguments[0])
+    for path in MIGRATION_PATHS:
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == function
+            ):
+                arguments = _literal_arguments(node)
+                if arguments:
+                    names.append(arguments[0])
     return names
 
 
