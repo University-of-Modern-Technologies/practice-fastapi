@@ -41,7 +41,6 @@ from app.modules.finance.types import (
 )
 
 __all__ = [
-    "DEFAULT_SUMMARY_DAYS",
     "MAX_SUMMARY_DAYS",
     "BankStatementOut",
     "BankTransactionDetailOut",
@@ -59,7 +58,6 @@ __all__ = [
 ]
 
 #: Window a summary covers when the caller names none.
-DEFAULT_SUMMARY_DAYS = 30
 
 #: Widest window one summary may scan, so a single request cannot walk years
 #: of ledger.
@@ -286,10 +284,9 @@ class FinanceSummaryParams(CamelModel):
 
     They used to be resolved at validation time against the clock: ``to``
     became "now" and ``from`` a month before it. That made the answer to a
-    question with no parameters depend on the day it was asked — a ledger of
-    March, read in September, reported an empty period for ever. What the
-    window should default to is a fact about the data, not about the calendar,
-    so the decision belongs to the service, which can see the data.
+    question with no parameters depend on the day it was asked. The service
+    resolves omitted bounds from the shared fixed reporting window instead,
+    so every reporting module describes the same period.
 
     The checks below therefore apply only to a window the caller actually
     named. A caller who names one bound, or none, is making no claim to

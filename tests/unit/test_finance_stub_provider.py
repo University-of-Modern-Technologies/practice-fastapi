@@ -21,17 +21,17 @@ from app.modules.finance.stub_provider import (
     stub_statement,
 )
 
-FIRST_BOOKING = datetime(2026, 3, 2, 10, 0, tzinfo=UTC)
+FIRST_BOOKING = datetime(2026, 1, 2, 10, 0, tzinfo=UTC)
 BOOKING_STEP = timedelta(days=2)
 
 
 def test_the_statement_header_is_the_one_the_contract_names() -> None:
     statement = stub_statement()
 
-    assert statement.external_id == STUB_STATEMENT_EXTERNAL_ID == "stub-stmt-2026-03"
+    assert statement.external_id == STUB_STATEMENT_EXTERNAL_ID == "stub-stmt-2026-01"
     assert statement.account_label == "Operating account"
-    assert statement.period_start == date(2026, 3, 1)
-    assert statement.period_end == date(2026, 3, 31)
+    assert statement.period_start == date(2026, 1, 1)
+    assert statement.period_end == date(2026, 1, 31)
     assert statement.currency == "USD"
     assert statement.opening_balance == Decimal("10000.00")
 
@@ -41,7 +41,7 @@ def test_the_statement_carries_twelve_lines_numbered_from_one() -> None:
 
     assert STUB_TRANSACTION_COUNT == 12
     assert [item.external_id for item in statement.transactions] == [
-        f"stub-txn-2026-03-{index:04d}" for index in range(1, 13)
+        f"stub-txn-2026-01-{index:04d}" for index in range(1, 13)
     ]
 
 
@@ -79,9 +79,9 @@ def test_the_money_going_out_is_the_last_three_lines_but_one() -> None:
     ]
 
     assert debits == [
-        "stub-txn-2026-03-0009",
-        "stub-txn-2026-03-0010",
-        "stub-txn-2026-03-0011",
+        "stub-txn-2026-01-0009",
+        "stub-txn-2026-01-0010",
+        "stub-txn-2026-01-0011",
     ]
 
 

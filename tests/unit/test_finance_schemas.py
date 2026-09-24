@@ -217,9 +217,9 @@ def test_a_version_below_one_is_refused() -> None:
 def test_a_summary_with_no_bounds_invents_none() -> None:
     """The window used to be filled in here, against the clock.
 
-    What it should default to is a fact about the data — the newest statement
-    on file — and only the service can see that, so it decides. Leaving the
-    bounds empty is what lets it.
+    The shared fixed month belongs to the service, not to request parsing.
+    Leaving the bounds empty is what lets the service fill each one from that
+    default without hiding which values the caller actually supplied.
     """
     params = FinanceSummaryParams()
 

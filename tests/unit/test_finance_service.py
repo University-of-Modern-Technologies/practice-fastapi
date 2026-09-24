@@ -9,7 +9,7 @@ write, record and announce.
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any, cast
 
@@ -50,9 +50,9 @@ from app.modules.finance.types import (
     FinanceAccess,
 )
 
-NOW = datetime(2026, 3, 1, 8, 0, 0, 123_000, tzinfo=UTC)
-BOOKED_AT = datetime(2026, 3, 10, 12, 0, tzinfo=UTC)
-ORDER_PLACED_AT = datetime(2026, 3, 1, 9, 0, tzinfo=UTC)
+NOW = datetime(2026, 1, 1, 8, 0, 0, 123_000, tzinfo=UTC)
+BOOKED_AT = datetime(2026, 1, 10, 12, 0, tzinfo=UTC)
+ORDER_PLACED_AT = datetime(2026, 1, 1, 9, 0, tzinfo=UTC)
 
 ACTOR_ID = uuid.UUID("11111111-1111-4111-8111-111111111111")
 TRANSACTION_ID = uuid.UUID("22222222-2222-4222-8222-222222222222")
@@ -374,15 +374,15 @@ async def test_a_feed_that_repeats_a_line_files_it_once() -> None:
 
 async def test_a_partly_known_statement_files_only_what_is_new() -> None:
     session = FakeSession()
-    queue_for_import(session, known=["stub-txn-2026-03-0001", "stub-txn-2026-03-0003"])
+    queue_for_import(session, known=["stub-txn-2026-01-0001", "stub-txn-2026-01-0003"])
 
     result = await make_service(session).import_statement(ACCESS)
 
     assert result.imported == STUB_TRANSACTION_COUNT - 2
     assert result.skipped == 2
     filed = [row.external_id for row in stored_transactions(session)]
-    assert "stub-txn-2026-03-0001" not in filed
-    assert "stub-txn-2026-03-0003" not in filed
+    assert "stub-txn-2026-01-0001" not in filed
+    assert "stub-txn-2026-01-0003" not in filed
 
 
 async def test_the_batch_is_looked_up_in_one_query() -> None:
@@ -406,7 +406,7 @@ async def test_a_line_that_lost_its_race_is_counted_as_skipped() -> None:
     """
     session = FakeSession()
     queue_for_import(session)
-    session.flush_errors["stub-txn-2026-03-0002"] = integrity_error(
+    session.flush_errors["stub-txn-2026-01-0002"] = integrity_error(
         'duplicate key value violates unique constraint "bank_transactions_external_id_key"'
     )
 
@@ -422,7 +422,7 @@ async def test_an_integrity_failure_that_is_not_a_duplicate_is_raised() -> None:
     # would make an import report success while losing a line.
     session = FakeSession()
     queue_for_import(session)
-    session.flush_errors["stub-txn-2026-03-0001"] = integrity_error(
+    session.flush_errors["stub-txn-2026-01-0001"] = integrity_error(
         'violates foreign key constraint "bank_transactions_statement_id_fkey"'
     )
 
@@ -434,7 +434,7 @@ async def test_a_statement_that_lost_its_race_is_reported() -> None:
     """Reported rather than absorbed: the retry is a no-op anyway."""
     session = FakeSession()
     session.execute_queue = [[]]
-    session.flush_errors["stub-stmt-2026-03"] = integrity_error(
+    session.flush_errors["stub-stmt-2026-01"] = integrity_error(
         'duplicate key value violates unique constraint "bank_statements_external_id_key"'
     )
 
@@ -929,7 +929,7 @@ async def test_an_order_the_query_returned_is_still_put_to_the_rule() -> None:
 #: A window the caller named, so the service asks no question about statements
 #: and the grouped query is the first statement it builds.
 NAMED_WINDOW = FinanceSummaryParams(
-    **{"from": datetime(2026, 3, 1, tzinfo=UTC), "to": datetime(2026, 4, 1, tzinfo=UTC)}
+    **{"from": datetime(2026, 1, 1, tzinfo=UTC), "to": datetime(2026, 2, 1, tzinfo=UTC)}
 )
 
 
@@ -1021,29 +1021,31 @@ async def test_the_summary_reads_every_figure_from_one_query() -> None:
     assert len(session.statements) == 1
 
 
-async def test_an_unnamed_window_is_taken_from_the_newest_statement() -> None:
-    """The requirement: nothing here may depend on the day it is run.
-
-    A window defaulted to "the last thirty days" makes a ledger of March
-    report an empty period from July onwards — correct behaviour that looks
-    exactly like a broken module.
-    """
+async def test_an_unnamed_window_uses_the_shared_fixed_default() -> None:
+    """The default does not depend on imported statements or the current day."""
     session = FakeSession()
-    session.execute_queue = [[(date(2026, 3, 1), date(2026, 3, 31))], []]
 
     result = await make_service(session).summary(ACCESS, FinanceSummaryParams())
 
-    assert result.from_ == datetime(2026, 3, 1, tzinfo=UTC)
-    # The period ends on the 31st inclusive; the window is half-open.
-    assert result.to == datetime(2026, 4, 1, tzinfo=UTC)
+    assert result.from_ == datetime(2026, 1, 1, tzinfo=UTC)
+    assert result.to == datetime(2026, 2, 1, tzinfo=UTC)
+    # The grouped query is the only read: no latest-statement lookup precedes it.
+    assert len(session.statements) == 1
 
 
-async def test_nothing_imported_leaves_the_window_in_the_recent_past() -> None:
-    session = FakeSession()
-    session.execute_queue = [[], []]
+async def test_a_missing_bound_uses_the_shared_default_while_an_explicit_one_wins() -> None:
+    lower_bound_session = FakeSession()
+    lower_bound = FinanceSummaryParams.model_validate({"from": "2026-01-10T00:00:00Z"})
 
-    result = await make_service(session).summary(ACCESS, FinanceSummaryParams())
+    lower_bound_result = await make_service(lower_bound_session).summary(ACCESS, lower_bound)
 
-    # Whatever the window, the answer is empty; the fallback settles only what
-    # the report says it looked at.
-    assert result.from_ < result.to
+    assert lower_bound_result.from_ == datetime(2026, 1, 10, tzinfo=UTC)
+    assert lower_bound_result.to == datetime(2026, 2, 1, tzinfo=UTC)
+
+    upper_bound_session = FakeSession()
+    upper_bound = FinanceSummaryParams.model_validate({"to": "2026-01-20T00:00:00Z"})
+
+    upper_bound_result = await make_service(upper_bound_session).summary(ACCESS, upper_bound)
+
+    assert upper_bound_result.from_ == datetime(2026, 1, 1, tzinfo=UTC)
+    assert upper_bound_result.to == datetime(2026, 1, 20, tzinfo=UTC)

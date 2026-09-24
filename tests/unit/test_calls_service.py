@@ -198,9 +198,7 @@ def make_call(**overrides: Any) -> Call:
     return Call(**(values | overrides))
 
 
-def make_service(
-    session: FakeSession, provider: Any = None, publisher: Any = None
-) -> CallsService:
+def make_service(session: FakeSession, provider: Any = None, publisher: Any = None) -> CallsService:
     return CallsService(
         cast("AsyncSession", session),
         provider if provider is not None else StubCallProvider(),
@@ -488,9 +486,7 @@ async def test_the_page_is_ordered_by_when_people_spoke_and_tie_broken_by_id() -
 async def test_the_absence_filter_asks_about_absence(has_contact: bool, expected: str) -> None:
     session = FakeSession()
 
-    await make_service(session).list_calls(
-        ALL_ACCESS, CallListParams(has_contact=has_contact)
-    )
+    await make_service(session).list_calls(ALL_ACCESS, CallListParams(has_contact=has_contact))
 
     assert expected in sql_of(session.statements[1])[0]
 
