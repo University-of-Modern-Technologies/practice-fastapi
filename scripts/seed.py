@@ -112,6 +112,15 @@ PERMISSIONS: Sequence[tuple[str, str]] = (
     ("integrations:read", "View integration status"),
     ("integrations:write", "Trigger integration operations"),
     ("ai:use", "Use the AI assistance features"),
+    ("helpdesk:read", "View support tickets"),
+    ("helpdesk:write", "Create and update support tickets"),
+    ("helpdesk:delete", "Soft-delete support tickets"),
+    ("calls:read", "View the call log"),
+    ("calls:write", "Sync calls and link them to records"),
+    ("calls:delete", "Soft-delete calls"),
+    ("finance:read", "View bank statements and transactions"),
+    ("finance:write", "Import statements and reconcile payments"),
+    ("finance:delete", "Remove reconciliation records"),
 )
 
 ROLES: Sequence[tuple[str, str]] = (
@@ -142,6 +151,11 @@ MANAGER_GRANTS: Sequence[tuple[str, PermissionScope]] = tuple(
         "analytics:read",
         "integrations:read",
         "ai:use",
+        "helpdesk:read",
+        "helpdesk:write",
+        "calls:read",
+        "calls:write",
+        "finance:read",
     )
 )
 
@@ -151,6 +165,8 @@ VIEWER_GRANTS: Sequence[tuple[str, PermissionScope]] = (
     ("products:read", PermissionScope.ALL),
     ("orders:read", PermissionScope.OWN),
     ("warehouse:read", PermissionScope.ALL),
+    ("helpdesk:read", PermissionScope.OWN),
+    ("calls:read", PermissionScope.OWN),
 )
 
 GRANTS: Mapping[str, Sequence[tuple[str, PermissionScope]]] = {

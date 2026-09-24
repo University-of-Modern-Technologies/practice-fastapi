@@ -15,7 +15,7 @@ REALTIME_TOPIC_DEALS: Final = "deals"
 REALTIME_TOPIC_ORDERS: Final = "orders"
 
 RealtimeCollectionTopic = Literal["deals", "orders"]
-RealtimeEntityType = Literal["deal", "order", "contact", "user"]
+RealtimeEntityType = Literal["deal", "order", "contact", "user", "ticket", "call", "transaction"]
 
 REALTIME_COLLECTION_TOPICS: Final[tuple[RealtimeCollectionTopic, ...]] = get_args(
     RealtimeCollectionTopic
@@ -41,6 +41,9 @@ _ENTITY_TYPE_RESOURCES: Final[dict[RealtimeEntityType, str]] = {
     "order": "orders",
     "contact": "contacts",
     "user": "users",
+    "ticket": "helpdesk",
+    "call": "calls",
+    "transaction": "finance",
 }
 
 

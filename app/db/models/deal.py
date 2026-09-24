@@ -15,6 +15,7 @@ from app.db.enums import DealStage, pg_enum
 from app.db.types import CreatedAt, DeletedAt, Money, UpdatedAt, UuidFk, UuidPk, Version
 
 if TYPE_CHECKING:
+    from app.db.models.call import Call
     from app.db.models.contact import Contact
     from app.db.models.order import Order
     from app.db.models.user import User
@@ -63,6 +64,7 @@ class Deal(Base):
     owner: Mapped[User] = relationship(back_populates="deals", lazy="raise")
     contact: Mapped[Contact | None] = relationship(back_populates="deals", lazy="raise")
     orders: Mapped[list[Order]] = relationship(back_populates="deal", lazy="raise")
+    calls: Mapped[list[Call]] = relationship(back_populates="deal", lazy="raise")
 
     __table_args__ = (
         Index(None, "owner_id", "stage", "deleted_at"),
