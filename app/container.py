@@ -41,6 +41,7 @@ from app.modules.ai.provider import AiProvider
 from app.modules.analytics import create_analytics_router
 from app.modules.audit import create_audit_router
 from app.modules.auth import AuthService, auth_config_from_settings, create_auth_router
+from app.modules.calls import CallProviderConfig, create_calls_router
 from app.modules.contacts import create_contacts_router
 from app.modules.deals import create_deals_router
 from app.modules.helpdesk import create_helpdesk_router
@@ -166,6 +167,8 @@ class Container:
     delivery_client: DeliveryClient
     ai_config: AiConfig
     ai_provider: AiProvider
+    call_provider_config: CallProviderConfig
+    call_sync_batch_size: int
     routers: list[tuple[str, APIRouter]] = field(default_factory=list)
     readiness_checks: list[ReadinessCheck] = field(default_factory=list)
 
@@ -242,6 +245,7 @@ def build_container(settings: Settings) -> Container:
     delivery_client = infra.delivery_client
     ai_config = infra.ai_config
     ai_provider = infra.ai_provider
+    call_provider_config = infra.call_provider_config
 
     return Container(
         settings=settings,
@@ -259,12 +263,15 @@ def build_container(settings: Settings) -> Container:
         delivery_client=delivery_client,
         ai_config=ai_config,
         ai_provider=ai_provider,
+        call_provider_config=call_provider_config,
+        call_sync_batch_size=settings.call_sync_batch_size,
         routers=[
             (f"{API_PREFIX}/auth", create_auth_router()),
             (f"{API_PREFIX}/rbac", create_rbac_router()),
             (f"{API_PREFIX}/users", create_users_router()),
             (f"{API_PREFIX}/audit", create_audit_router()),
             (f"{API_PREFIX}/helpdesk", create_helpdesk_router()),
+            (f"{API_PREFIX}/calls", create_calls_router()),
             (f"{API_PREFIX}/contacts", create_contacts_router()),
             (f"{API_PREFIX}/deals", create_deals_router()),
             (f"{API_PREFIX}/products", create_products_router()),
