@@ -1,0 +1,6 @@
+{"id":"a1000000-0000-4000-9000-000000000001","email":"rowan.rep@crm-training.example","name":"Rowan Rep","role":"manager","isActive":true,"createdAt":"2024-05-07T00:00:00.000Z","updatedAt":"2024-05-07T00:00:00.000Z"}
+{"id":"a1000000-0000-4000-9000-000000000002","email":"sasha.sales@crm-training.example","name":"Sasha Sales","role":"manager","isActive":true,"createdAt":"2024-05-27T00:00:00.000Z","updatedAt":"2024-05-27T00:00:00.000Z"}
+{"id":"a1000000-0000-4000-9000-000000000003","email":"devon.deals@crm-training.example","name":"Devon Deals","role":"manager","isActive":true,"createdAt":"2024-06-16T00:00:00.000Z","updatedAt":"2024-06-16T00:00:00.000Z"}
+{"id":"a1000000-0000-4000-9000-000000000004","email":"marlo.market@crm-training.example","name":"Marlo Market","role":"manager","isActive":false,"createdAt":"2024-07-06T00:00:00.000Z","updatedAt":"2024-07-06T00:00:00.000Z"}
+{"id":"a1000000-0000-4000-9000-000000000005","email":"kit.clerk@crm-training.example","name":"Kit Clerk","role":"viewer","isActive":true,"createdAt":"2024-07-26T00:00:00.000Z","updatedAt":"2024-07-26T00:00:00.000Z"}
+{"id":"a1000000-0000-4000-9000-000000000006","email":"noor.notes@crm-training.example","name":"Noor Notes","role":"viewer","isActive":true,"createdAt":"2024-08-15T00:00:00.000Z","updatedAt":"2024-08-15T00:00:00.000Z"}
