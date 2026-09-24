@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
-from typing import Any
+from typing import Any, cast
 
 import structlog
 
@@ -59,11 +59,12 @@ class _FakeRedis:
 
 
 def _logger() -> structlog.stdlib.BoundLogger:
-    return structlog.get_logger("test")
+    # structlog's own stubs type get_logger() as returning Any.
+    return cast("structlog.stdlib.BoundLogger", structlog.get_logger("test"))
 
 
 def test_defaults_to_the_live_profile_matching_the_pre_existing_behaviour() -> None:
-    stack = create_infra_stack(_settings(), _FakeRedis(), _logger())  # type: ignore[arg-type]
+    stack = create_infra_stack(_settings(), _FakeRedis(), _logger())
 
     assert stack.profile == "live"
     assert stack.ai_provider.name == MOCK_AI_PROVIDER_NAME
@@ -76,7 +77,7 @@ def test_forwards_configured_settings_when_live() -> None:
             ai_endpoint_url="https://example.invalid/complete",
             delivery_base_url="https://example.invalid/delivery",
         ),
-        _FakeRedis(),  # type: ignore[arg-type]
+        _FakeRedis(),
         _logger(),
     )
 
@@ -91,7 +92,7 @@ async def test_offline_forces_every_stand_in_even_with_real_settings_configured(
             ai_endpoint_url="https://example.invalid/complete",
             delivery_base_url="https://example.invalid/delivery",
         ),
-        redis,  # type: ignore[arg-type]
+        redis,
         _logger(),
     )
 
@@ -110,7 +111,7 @@ async def test_uses_the_real_cache_in_the_live_profile() -> None:
     stack = create_infra_stack(
         _settings(infra_profile="live"),
         redis,
-        _logger(),  # type: ignore[arg-type]
+        _logger(),
     )
 
     await stack.cache.set("some-key", "value")
@@ -121,7 +122,7 @@ def test_offline_keeps_the_tuning_knobs_that_do_not_select_an_implementation() -
     """Only the endpoint/base URL are withheld — the caps a service enforces stay."""
     stack = create_infra_stack(
         _settings(infra_profile="offline", ai_max_input_chars=1234, ai_cache_ttl_seconds=42),
-        _FakeRedis(),  # type: ignore[arg-type]
+        _FakeRedis(),
         _logger(),
     )
 

@@ -99,9 +99,6 @@ class Settings(BaseSettings):
     # Absent means the scrape endpoint is not exposed at all.
     metrics_token: str | None = Field(default=None, min_length=16)
 
-    # Local-development fixture only; the seed refuses to run without it.
-    seed_user_password: str | None = None
-
     shutdown_grace_period_ms: int = Field(default=10_000, ge=0, le=300_000)
     shutdown_timeout_ms: int = Field(default=15_000, ge=1, le=300_000)
 

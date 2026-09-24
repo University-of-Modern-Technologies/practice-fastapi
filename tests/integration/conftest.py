@@ -30,12 +30,16 @@ from sqlalchemy.pool import NullPool
 
 from app.core.security import hash_password
 from app.core.settings import Settings
-from app.db.enums import PermissionScope
+from app.db.enums import OrderStatus, PermissionScope
 from app.db.models.contact import Contact
+from app.db.models.order import Order
 from app.db.models.product import Product
 from app.db.models.rbac import Permission, Role, RolePermission, UserRole
 from app.db.models.user import User
 from app.db.models.warehouse import Warehouse
+from app.modules.orders.schemas import CreateOrderRequest, OrderItemRequest, TransitionOrderRequest
+from app.modules.orders.service import OrdersService
+from app.modules.orders.types import OrderAccess
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
@@ -367,3 +371,53 @@ async def create_contact(session: AsyncSession, owner: User) -> Contact:
     session.add(contact)
     await session.flush()
     return contact
+
+
+#: The one non-branching path forward; CANCELLED is reachable from any of
+#: these but is never where an archiving scenario needs to land, so this
+#: factory does not offer it.
+_FORWARD_PATH = (
+    OrderStatus.DRAFT,
+    OrderStatus.CONFIRMED,
+    OrderStatus.PAID,
+    OrderStatus.FULFILLED,
+)
+
+
+async def create_order(
+    session: AsyncSession,
+    owner: User,
+    product: Product,
+    *,
+    quantity: int = 1,
+    status: OrderStatus = OrderStatus.DRAFT,
+) -> Order:
+    """A DRAFT order for one product, walked forward to `status`.
+
+    Built through `OrdersService` with no stock port, the same shape a unit
+    test uses: the transitions move the order's own status without touching
+    a warehouse. Good for scenarios that only care what state an order is
+    in — a product-archiving check asking "does this product sit in an open
+    order" does not need a real reservation to answer that.
+    """
+    access = OrderAccess(actor_id=owner.id, scope=PermissionScope.ALL)
+    service = OrdersService(session)
+    created = await service.create(
+        access,
+        CreateOrderRequest(
+            owner_id=owner.id,
+            items=[OrderItemRequest(product_id=product.id, quantity=quantity)],
+        ),
+    )
+
+    target_index = _FORWARD_PATH.index(status)
+    version = created.version
+    for next_status in _FORWARD_PATH[1 : target_index + 1]:
+        moved = await service.transition(
+            access, created.id, TransitionOrderRequest(version=version, status=next_status)
+        )
+        version = moved.version
+
+    order = await session.get(Order, created.id)
+    assert order is not None
+    return order
