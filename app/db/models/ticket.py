@@ -75,9 +75,7 @@ class Ticket(Base):
         back_populates="tickets_assigned", foreign_keys=[assignee_id], lazy="raise"
     )
     contact: Mapped[Contact | None] = relationship(back_populates="tickets", lazy="raise")
-    status_logs: Mapped[list[TicketStatusLog]] = relationship(
-        back_populates="ticket", lazy="raise"
-    )
+    status_logs: Mapped[list[TicketStatusLog]] = relationship(back_populates="ticket", lazy="raise")
 
     __table_args__ = (
         Index(None, "owner_id", "status", "deleted_at"),
