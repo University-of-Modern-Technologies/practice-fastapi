@@ -49,9 +49,7 @@ describe('DateTime', () => {
     expect(DateTime.toPicker(null)).toBeNull();
   });
 
-  it('produces calendar dates for filter defaults', () => {
+  it('produces a calendar date for filter defaults', () => {
     expect(DateTime.today()).toMatch(/^\d{4}-\d{2}-\d{2}$/);
-    expect(DateTime.daysAgo(30)).toMatch(/^\d{4}-\d{2}-\d{2}$/);
-    expect(DateTime.daysAgo(30) < DateTime.today()).toBe(true);
   });
 });

@@ -91,8 +91,10 @@ export class DateTime {
     return dayjs().tz(DISPLAY_TIME_ZONE).format(WIRE_DATE_FORMAT);
   }
 
-  /** `days` before today, for the default reporting window. */
-  static daysAgo(days: number): string {
-    return dayjs().tz(DISPLAY_TIME_ZONE).subtract(days, 'day').format(WIRE_DATE_FORMAT);
-  }
+  // `daysAgo` used to live here, and it is deliberately gone. It had one
+  // purpose — the default reporting window, measured backwards from the clock
+  // — and that default is now a fixed month, because a window that slides
+  // walks off the end of the data and draws an empty screen for a full
+  // system. A helper kept for a caller that no longer exists is how the thing
+  // it was removed for comes back.
 }

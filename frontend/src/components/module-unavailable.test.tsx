@@ -3,20 +3,13 @@ import { ModuleUnavailable } from './module-unavailable';
 import { renderWithProviders, screen } from '@/test/render';
 
 describe('ModuleUnavailable', () => {
-  it('пояснює відсутній розділ замість того, щоб показати помилку', () => {
+  it('пояснює відсутній розділ і стан решти застосунку', () => {
     renderWithProviders(
       <ModuleUnavailable missing="звіти аналітики" requirement="аналітика потрібна" />,
     );
 
     expect(screen.getByText('Розділ недоступний у поточній збірці API')).toBeInTheDocument();
     expect(screen.getByText(/не надає звіти аналітики/)).toBeInTheDocument();
-  });
-
-  it('заспокоює щодо решти застосунку', () => {
-    renderWithProviders(
-      <ModuleUnavailable missing="звіти аналітики" requirement="аналітика потрібна" />,
-    );
-
     expect(screen.getByText(/Решта розділів працює як звичайно/)).toBeInTheDocument();
   });
 
