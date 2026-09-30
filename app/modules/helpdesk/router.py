@@ -16,6 +16,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query, Request, Response, status
 
+from app.core.openapi import refusals
 from app.core.responses import Envelope, Page
 from app.db.enums import PermissionScope
 from app.events.dependencies import PublisherDep
@@ -85,7 +86,7 @@ def create_helpdesk_router() -> APIRouter:
     """Builds the router; the prefix is applied by the application factory."""
     router = APIRouter(tags=["Helpdesk"])
 
-    @router.get("/tickets", summary="Переглянути звернення")
+    @router.get("/tickets", summary="Переглянути звернення", responses=refusals(401, 403))
     async def list_tickets(
         access: ReadAccess,
         service: HelpdeskServiceDep,
@@ -103,7 +104,8 @@ def create_helpdesk_router() -> APIRouter:
         # The published description is Ukrainian and has to match the sibling
         # backend character for character, so the lone Cyrillic vowel that
         # looks like a Latin one stays exactly as it is.
-        description="Звернення завжди відкривається у статусі NEW під згенерованим номером.",  # noqa: RUF001
+        description="Звернення завжди відкривається у статусі NEW під згенерованим номером.",  # noqa: RUF001,
+        responses=refusals(401, 403, 404, 409),
     )
     async def create_ticket(
         payload: CreateTicketRequest,
@@ -112,7 +114,7 @@ def create_helpdesk_router() -> APIRouter:
     ) -> Envelope[TicketOut]:
         return Envelope(data=await service.create(access, payload))
 
-    @router.get("/tickets/{id}", summary="Отримати звернення")
+    @router.get("/tickets/{id}", summary="Отримати звернення", responses=refusals(401, 403, 404))
     async def get_ticket(
         id: uuid.UUID,  # noqa: A002
         access: ReadAccess,
@@ -120,7 +122,11 @@ def create_helpdesk_router() -> APIRouter:
     ) -> Envelope[TicketOut]:
         return Envelope(data=await service.get_by_id(access, id))
 
-    @router.patch("/tickets/{id}", summary="Оновити звернення без зміни статусу")
+    @router.patch(
+        "/tickets/{id}",
+        summary="Оновити звернення без зміни статусу",
+        responses=refusals(401, 403, 404, 409),
+    )
     async def update_ticket(
         id: uuid.UUID,  # noqa: A002
         payload: UpdateTicketRequest,
@@ -136,6 +142,7 @@ def create_helpdesk_router() -> APIRouter:
         description="Дозволені переходи: NEW → OPEN/CLOSED, OPEN → PENDING/RESOLVED/CLOSED, "
         "PENDING → OPEN/RESOLVED/CLOSED, RESOLVED → CLOSED/OPEN. Перехід поза таблицею — "
         "422 `TICKET_TRANSITION_NOT_ALLOWED`.",
+        responses=refusals(401, 403, 404, 409, 422),
     )
     async def transition_ticket(
         id: uuid.UUID,  # noqa: A002
@@ -150,6 +157,7 @@ def create_helpdesk_router() -> APIRouter:
         status_code=status.HTTP_204_NO_CONTENT,
         response_class=Response,
         summary="Видалити звернення",
+        responses=refusals(401, 403, 404, 409),
     )
     async def delete_ticket(
         id: uuid.UUID,  # noqa: A002

@@ -13,6 +13,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query, Request, Response, status
 
+from app.core.openapi import refusals
 from app.core.responses import Envelope, Page
 from app.db.enums import PermissionScope
 from app.modules.auth.dependencies import CurrentAuth, SessionDep
@@ -59,7 +60,7 @@ def create_contacts_router() -> APIRouter:
     """Builds the router; the prefix is applied by the application factory."""
     router = APIRouter(tags=["Contacts"])
 
-    @router.get("", summary="Переглянути контакти")
+    @router.get("", summary="Переглянути контакти", responses=refusals(401, 403))
     async def list_contacts(
         request: Request,
         auth: CurrentAuth,
@@ -72,7 +73,12 @@ def create_contacts_router() -> APIRouter:
             data=Page(items=items, page=params.page, page_size=params.page_size, total=total)
         )
 
-    @router.post("", status_code=status.HTTP_201_CREATED, summary="Створити контакт")
+    @router.post(
+        "",
+        status_code=status.HTTP_201_CREATED,
+        summary="Створити контакт",
+        responses=refusals(401, 403, 409),
+    )
     async def create_contact(
         request: Request,
         payload: CreateContactRequest,
@@ -82,7 +88,7 @@ def create_contacts_router() -> APIRouter:
     ) -> Envelope[ContactOut]:
         return Envelope(data=await service.create(_access(request, auth, scope), payload))
 
-    @router.get("/{id}", summary="Отримати контакт")
+    @router.get("/{id}", summary="Отримати контакт", responses=refusals(401, 403, 404))
     async def get_contact(
         request: Request,
         id: uuid.UUID,  # noqa: A002
@@ -92,7 +98,7 @@ def create_contacts_router() -> APIRouter:
     ) -> Envelope[ContactOut]:
         return Envelope(data=await service.get_by_id(_access(request, auth, scope), id))
 
-    @router.patch("/{id}", summary="Оновити контакт")
+    @router.patch("/{id}", summary="Оновити контакт", responses=refusals(401, 403, 404, 409))
     # A path parameter, a body and the three standard dependencies; there is
     # nothing here to bundle that would not just hide a parameter.
     async def update_contact(  # noqa: PLR0913, PLR0917
@@ -110,6 +116,7 @@ def create_contacts_router() -> APIRouter:
         status_code=status.HTTP_204_NO_CONTENT,
         response_class=Response,
         summary="Видалити контакт",
+        responses=refusals(401, 403, 404),
     )
     async def delete_contact(
         request: Request,

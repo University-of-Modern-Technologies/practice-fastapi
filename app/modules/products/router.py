@@ -13,6 +13,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Path, Query, Request, Response, status
 
+from app.core.openapi import refusals
 from app.core.responses import Envelope, Page
 from app.db.enums import PermissionScope
 from app.events.dependencies import PublisherDep
@@ -76,7 +77,7 @@ def create_products_router() -> APIRouter:
     """Builds the router; the prefix is applied by the application factory."""
     router = APIRouter(tags=["Products"])
 
-    @router.get("", summary="Переглянути каталог товарів")
+    @router.get("", summary="Переглянути каталог товарів", responses=refusals(401, 403))
     async def list_products(
         _access: ReadAccess,
         service: ProductsServiceDep,
@@ -87,7 +88,12 @@ def create_products_router() -> APIRouter:
             data=Page(items=items, page=params.page, page_size=params.page_size, total=total)
         )
 
-    @router.post("", status_code=status.HTTP_201_CREATED, summary="Створити товар")
+    @router.post(
+        "",
+        status_code=status.HTTP_201_CREATED,
+        summary="Створити товар",
+        responses=refusals(401, 403, 409),
+    )
     async def create_product(
         payload: CreateProductRequest,
         access: WriteAccess,
@@ -95,7 +101,7 @@ def create_products_router() -> APIRouter:
     ) -> Envelope[ProductOut]:
         return Envelope(data=await service.create(access, payload))
 
-    @router.get("/{product_id}", summary="Отримати товар")
+    @router.get("/{product_id}", summary="Отримати товар", responses=refusals(401, 403, 404))
     async def get_product(
         product_id: ProductId,
         _access: ReadAccess,
@@ -103,7 +109,7 @@ def create_products_router() -> APIRouter:
     ) -> Envelope[ProductOut]:
         return Envelope(data=await service.get_by_id(product_id))
 
-    @router.patch("/{product_id}", summary="Оновити товар")
+    @router.patch("/{product_id}", summary="Оновити товар", responses=refusals(401, 403, 404, 409))
     async def update_product(
         product_id: ProductId,
         payload: UpdateProductRequest,
@@ -117,6 +123,7 @@ def create_products_router() -> APIRouter:
         status_code=status.HTTP_204_NO_CONTENT,
         response_class=Response,
         summary="Видалити товар",
+        responses=refusals(401, 403, 404, 409),
     )
     async def delete_product(
         product_id: ProductId,

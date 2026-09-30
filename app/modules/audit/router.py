@@ -12,6 +12,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query
 
+from app.core.openapi import refusals
 from app.core.responses import Envelope, Page
 from app.db.enums import PermissionScope
 from app.modules.audit.schemas import AuditHistoryParams, AuditListParams, AuditRecordOut
@@ -34,7 +35,7 @@ def create_audit_router() -> APIRouter:
     """Builds the router; the prefix is applied by the application factory."""
     router = APIRouter(tags=["Audit"])
 
-    @router.get("", summary="Переглянути журнал змін")
+    @router.get("", summary="Переглянути журнал змін", responses=refusals(401, 403))
     async def list_records(
         auth: CurrentAuth,
         scope: ReadScope,
@@ -61,7 +62,9 @@ def create_audit_router() -> APIRouter:
 
     # Declared before the single-record route so a two-segment path is never
     # mistaken for an identifier.
-    @router.get("/{resource}/{resource_id}", summary="Історія одного запису")
+    @router.get(
+        "/{resource}/{resource_id}", summary="Історія одного запису", responses=refusals(401, 403)
+    )
     # Two path segments plus the three standard dependencies; there is nothing
     # here to bundle that would not just hide a parameter.
     async def history(  # noqa: PLR0913, PLR0917
@@ -89,7 +92,7 @@ def create_audit_router() -> APIRouter:
             data=Page(items=items, page=params.page, page_size=params.page_size, total=total)
         )
 
-    @router.get("/{record_id}", summary="Отримати запис журналу")
+    @router.get("/{record_id}", summary="Отримати запис журналу", responses=refusals(401, 403, 404))
     async def get_record(
         record_id: uuid.UUID,
         auth: CurrentAuth,

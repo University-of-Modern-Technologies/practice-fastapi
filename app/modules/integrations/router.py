@@ -12,6 +12,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Path, Request, status
 
+from app.core.openapi import refusals
 from app.core.responses import Envelope
 from app.db.enums import PermissionScope
 from app.modules.integrations.delivery.client import DeliveryClient
@@ -88,14 +89,18 @@ def create_integrations_router() -> APIRouter:
 
     # Circuit state is an operational detail, so it stays behind the same read
     # permission as the rest of the module rather than being exposed publicly.
-    @router.get("/health", summary="Стан інтеграції з перевізником")
+    @router.get("/health", summary="Стан інтеграції з перевізником", responses=refusals(401, 403))
     async def integration_health(
         _scope: ReadScope,
         service: IntegrationsServiceDep,
     ) -> Envelope[DeliveryHealthDto]:
         return Envelope(data=service.health())
 
-    @router.post("/delivery/quotes", summary="Розрахувати вартість доставки")
+    @router.post(
+        "/delivery/quotes",
+        summary="Розрахувати вартість доставки",
+        responses=refusals(401, 403, 422, 502, 503, 504),
+    )
     async def create_quote(
         payload: QuoteRequest,
         _scope: ReadScope,
@@ -107,6 +112,7 @@ def create_integrations_router() -> APIRouter:
         "/delivery/shipments",
         status_code=status.HTTP_201_CREATED,
         summary="Створити відправлення",
+        responses=refusals(401, 403, 422, 502, 503, 504),
     )
     async def create_shipment(
         payload: CreateShipmentRequest,
@@ -115,7 +121,11 @@ def create_integrations_router() -> APIRouter:
     ) -> Envelope[ShipmentDto]:
         return Envelope(data=await service.create_shipment(payload))
 
-    @router.get("/delivery/shipments/{id}", summary="Статус відправлення")
+    @router.get(
+        "/delivery/shipments/{id}",
+        summary="Статус відправлення",
+        responses=refusals(401, 403, 404, 422, 502, 503, 504),
+    )
     async def get_shipment(
         id: ShipmentIdParam,  # noqa: A002 — the published path parameter is `id`
         _scope: ReadScope,

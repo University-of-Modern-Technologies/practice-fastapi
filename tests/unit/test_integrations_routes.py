@@ -241,6 +241,12 @@ async def test_the_openapi_schema_advertises_the_four_documented_paths(
         f"{PREFIX}/delivery/shipments",
         f"{PREFIX}/delivery/shipments/{{id}}",
     }
+    # The framework's schema-violation 422 is replaced by 400; a 422 that is
+    # left is the carrier refusing a well-formed request, in the error envelope.
     for path in paths:
         for operation in schema["paths"][path].values():
-            assert "422" not in operation["responses"]
+            refusal = operation["responses"].get("422")
+            if refusal is not None:
+                assert refusal["content"]["application/json"]["schema"] == {
+                    "$ref": "#/components/schemas/ErrorResponse"
+                }
