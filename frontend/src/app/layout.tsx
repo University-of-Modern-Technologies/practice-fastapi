@@ -21,7 +21,10 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     // next-themes writes the theme class here after hydration; without
     // suppressHydrationWarning React reports the added class as a mismatch.
     <html lang="uk" suppressHydrationWarning>
-      <body>
+      {/* "crm" is the scope class the component library declares its CSS
+          variables on; carrying it on <body> makes them readable everywhere,
+          not only inside a component. */}
+      <body className="crm">
         <AppProviders>{children}</AppProviders>
       </body>
     </html>

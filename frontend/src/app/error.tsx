@@ -1,6 +1,8 @@
 'use client';
 
-import { Button, Result } from 'antd';
+import { Button, Result, Space } from 'antd';
+import { StatusScreen } from '@/components/status-screen';
+import { Brand } from '@/templates/layouts';
 
 /**
  * Catches what a query or a render did not. The user gets a way forward rather
@@ -14,15 +16,20 @@ export default function GlobalError({
   reset: () => void;
 }) {
   return (
-    <Result
-      status="500"
-      title="Щось пішло не так"
-      subTitle={error.digest ? `Код помилки: ${error.digest}` : error.message}
-      extra={
-        <Button type="primary" onClick={reset}>
-          Спробувати ще раз
-        </Button>
-      }
-    />
+    <StatusScreen brand={<Brand />}>
+      <Result
+        status="500"
+        title="Щось пішло не так"
+        subTitle={error.digest ? `Код помилки: ${error.digest}` : error.message}
+        extra={
+          <Space wrap className="justify-center">
+            <Button type="primary" onClick={reset}>
+              Спробувати ще раз
+            </Button>
+            <Button href="/">На головну</Button>
+          </Space>
+        }
+      />
+    </StatusScreen>
   );
 }

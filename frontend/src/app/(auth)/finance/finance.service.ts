@@ -68,9 +68,7 @@ export const toTransactionListQuery = (
 };
 
 export const toStatementListQuery = (params: ListParams<StatementFilter>): StatementListQuery =>
-  listQuery(params)
-    .text('search', { maxLength: SEARCH_MAX_LENGTH })
-    .build<StatementListQuery>();
+  listQuery(params).text('search', { maxLength: SEARCH_MAX_LENGTH }).build<StatementListQuery>();
 
 /**
  * Not every API build serves the finance section, and the client is never told

@@ -71,9 +71,10 @@ describe('DashboardService', () => {
   it('surfaces a build without the analytics module as a 404 ApiError', async () => {
     stub({ error: { code: 'NOT_FOUND', message: 'Not Found' } }, 404);
 
-    const error = await DashboardService.salesSummary({ from: '2026-01-01', to: '2026-01-31' }).catch(
-      (cause: unknown) => cause,
-    );
+    const error = await DashboardService.salesSummary({
+      from: '2026-01-01',
+      to: '2026-01-31',
+    }).catch((cause: unknown) => cause);
 
     expect(error).toBeInstanceOf(ApiError);
     expect(error).toMatchObject({ status: 404 });

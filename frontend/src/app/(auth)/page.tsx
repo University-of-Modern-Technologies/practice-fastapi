@@ -1,6 +1,6 @@
 'use client';
 
-import { Col, Row, Tag, Typography } from 'antd';
+import { Col, Row, Typography } from 'antd';
 import Link from 'next/link';
 import { MoneyValue, PageHeader } from '@/components';
 import { useHasPermission } from '@/shared/hooks';
@@ -39,9 +39,6 @@ export default function DashboardPage() {
       <PageHeader
         title={`Вітаємо, ${user?.name ?? ''}`}
         description="Стан справ і розділи, доступні вашій ролі"
-        actions={user?.roles.map((role) => (
-          <Tag key={role}>{role}</Tag>
-        ))}
       />
 
       {showMetrics ? (

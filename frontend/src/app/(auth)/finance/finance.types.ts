@@ -1,5 +1,13 @@
 import type { OrderStatus, StatusMeta } from '@/shared/constants';
-import type { CurrencyCode, Id, IsoDate, IsoDateTime, MoneyWire, Timestamps, Versioned } from '@/types/domain';
+import type {
+  CurrencyCode,
+  Id,
+  IsoDate,
+  IsoDateTime,
+  MoneyWire,
+  Timestamps,
+  Versioned,
+} from '@/types/domain';
 
 /* ---------------------------------------------------------------------------
  * MOVES TO `@/shared/constants/enums.ts` — everything down to the next banner.
@@ -216,9 +224,7 @@ export const TRANSACTION_SORT_FIELDS = ['bookedAt', 'amount', 'createdAt'] as co
 
 export type TransactionSortField = (typeof TRANSACTION_SORT_FIELDS)[number];
 
-export const isTransactionSortField = (
-  value: string | undefined,
-): value is TransactionSortField =>
+export const isTransactionSortField = (value: string | undefined): value is TransactionSortField =>
   value !== undefined && (TRANSACTION_SORT_FIELDS as readonly string[]).includes(value);
 
 /**
@@ -306,6 +312,5 @@ export const FINANCE_ERROR_MESSAGES: Readonly<Record<string, string>> = {
   [FINANCE_ERROR.amountMismatch]:
     'Сума транзакції не збігається з підсумком замовлення — зведення відхилено',
   [FINANCE_ERROR.duplicateStatement]: 'Таку виписку вже імпортовано',
-  [FINANCE_ERROR.providerUnavailable]:
-    'Банк недоступний — показано те, що вже імпортовано раніше',
+  [FINANCE_ERROR.providerUnavailable]: 'Банк недоступний — показано те, що вже імпортовано раніше',
 };

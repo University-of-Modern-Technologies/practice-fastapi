@@ -1,9 +1,9 @@
 'use client';
 
-import { Spin } from 'antd';
 import { usePathname, useRouter } from 'next/navigation';
 import { useEffect, type ReactNode } from 'react';
 import { useAuthStore } from '@/shared/stores';
+import { ShellSkeleton } from './skeletons';
 
 /**
  * Holds the protected area until the session state is known. Redirecting while
@@ -22,13 +22,7 @@ export function RouteGuard({ children }: { children: ReactNode }) {
     router.replace(`/login?next=${next}`);
   }, [status, pathname, router]);
 
-  if (status !== 'authenticated') {
-    return (
-      <div className="flex min-h-screen items-center justify-center">
-        <Spin size="large" />
-      </div>
-    );
-  }
+  if (status !== 'authenticated') return <ShellSkeleton />;
 
   return <>{children}</>;
 }

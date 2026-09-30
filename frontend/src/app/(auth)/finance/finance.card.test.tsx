@@ -112,7 +112,9 @@ describe('Платіж — стан «потрібен вибір»', () => {
   it('пояснює, що автоматично звести не можна саме через кількох кандидатів', async () => {
     showCard(twoCandidates, ['finance:read', 'finance:write', 'orders:read']);
 
-    expect(await screen.findByText(/Автоматично звести не можна — вибір за людиною/)).toBeInTheDocument();
+    expect(
+      await screen.findByText(/Автоматично звести не можна — вибір за людиною/),
+    ).toBeInTheDocument();
   });
 
   it('надсилає вибір людини як зведення з версією, яку показувала картка', async () => {

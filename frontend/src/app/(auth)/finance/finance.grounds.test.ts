@@ -61,10 +61,7 @@ describe('describeMatch — чому цей кандидат тут', () => {
   // not reconstructed here: the build sends the candidate's contact as an
   // identifier and no name, so there is nothing to compare the payer with.
   it('мовчить про платника, бо збіг за іменем перевіряє сервер, а не клієнт', () => {
-    const grounds = describeMatch(
-      transaction({ reference: 'Оплата за договором' }),
-      candidate(),
-    );
+    const grounds = describeMatch(transaction({ reference: 'Оплата за договором' }), candidate());
 
     expect(texts(grounds)).not.toContain('Платник');
     expect(texts(grounds)).not.toContain('У призначенні платежу');

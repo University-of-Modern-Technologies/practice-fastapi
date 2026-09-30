@@ -77,6 +77,32 @@ export const visibleNavigation = (
     )
     .filter((node) => node.href !== undefined || (node.children?.length ?? 0) > 0);
 
+/**
+ * The chain of nodes from the outermost heading down to the node with `key`,
+ * or an empty list when the key is not in the tree. The header reads it as a
+ * breadcrumb, so it follows the same tree the sidebar draws.
+ */
+export const navigationTrail = (
+  nodes: readonly NavigationNode[],
+  key: string,
+): readonly NavigationNode[] => {
+  for (const node of nodes) {
+    if (node.key === key) return [node];
+    const below = navigationTrail(node.children ?? [], key);
+    if (below.length > 0) return [node, ...below];
+  }
+  return [];
+};
+
+/** Longest matching href wins, so /warehouse/movements does not light up /warehouse. */
+export const activeNavigationKey = (
+  pathname: string,
+  links: readonly NavigationLink[],
+): string | undefined =>
+  links
+    .filter((link) => pathname === link.href || pathname.startsWith(`${link.href}/`))
+    .sort((a, b) => b.href.length - a.href.length)[0]?.key;
+
 export const NAVIGATION: readonly NavigationNode[] = [
   {
     key: 'overview',
@@ -147,7 +173,7 @@ export const NAVIGATION: readonly NavigationNode[] = [
     ],
   },
   {
-    key: 'stock',
+    key: 'inventory',
     label: 'Товари і склад',
     children: [
       {

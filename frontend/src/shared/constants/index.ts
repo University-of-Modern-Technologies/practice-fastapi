@@ -1,3 +1,4 @@
+export { APP_NAME } from './brand';
 export { DEFAULT_REPORT_RANGE, DEFAULT_REPORT_RANGE_LABEL } from './reporting';
 export { FONT_FAMILY, FONT_FAMILY_MONO, PALETTE, RADIUS, SURFACE } from './theme';
 export {
