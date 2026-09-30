@@ -40,7 +40,7 @@ from sqlalchemy.orm import InstrumentedAttribute
 from app.core.errors import ConflictError, NotFoundError, VersionConflictError
 from app.core.filters import FilterBuilder
 from app.core.paged_query import PagedQuery
-from app.core.reporting import DEFAULT_REPORT_WINDOW_FROM, DEFAULT_REPORT_WINDOW_TO
+from app.core.reporting import DEFAULT_REPORT_WINDOW_FROM, default_report_window_to
 from app.core.serializers import format_scaled_money
 from app.db.enums import PaymentMatchStatus, TransactionDirection
 from app.db.models.contact import Contact
@@ -422,7 +422,7 @@ class FinanceService:
         """
         return (
             params.range_from if params.range_from is not None else DEFAULT_REPORT_WINDOW_FROM,
-            params.range_to if params.range_to is not None else DEFAULT_REPORT_WINDOW_TO,
+            params.range_to if params.range_to is not None else default_report_window_to(),
         )
 
     # --- importing ---------------------------------------------------------

@@ -21,11 +21,13 @@ from app.core.settings import Settings
 from app.health.readiness import ReadinessCheck
 from app.health.routes import SERVICE_VERSION, create_health_router
 from app.middleware.body_limit import BodyLimitMiddleware
+from app.middleware.cache_invalidation import CacheInvalidationMiddleware
 from app.middleware.metrics import MetricsMiddleware
 from app.middleware.rate_limit import RateLimitMiddleware, RateLimitRedis
 from app.middleware.request_id import RequestIdMiddleware
 from app.middleware.request_logger import RequestLoggerMiddleware
 from app.middleware.security_headers import SecurityHeadersMiddleware
+from app.modules.analytics.cache_keys import analytics_prefix
 from app.observability import (
     create_http_metrics,
     create_metrics_registry,
@@ -129,6 +131,12 @@ def create_app(  # noqa: PLR0913
     # Starlette applies middleware in reverse registration order, so this block
     # reads bottom-up: the correlation id is established first and the body
     # guard last, immediately before the route handler.
+    # Innermost of all: it has to see the status the route actually produced.
+    app.add_middleware(
+        CacheInvalidationMiddleware,
+        prefixes=(analytics_prefix(),),
+        exempt_path_prefixes=(f"{API_PREFIX}/auth",),
+    )
     app.add_middleware(BodyLimitMiddleware, max_bytes=settings.json_body_limit_bytes)
     if rate_limit_redis is not None:
         # Between CORS and the body guard: a throttled caller must not get far

@@ -49,13 +49,11 @@ STOCK_HEALTH_REPORT = "stock-health"
 
 #: These are the slow queries of the system, so every report is cached.
 #:
-#: Invalidation story, stated honestly: entries are NOT dropped when an order, a
-#: deal or a stock level changes. Doing so would mean invalidating a key space
-#: that depends on caller-chosen date ranges, and every write path would have to
-#: know about every report. Reports expire on time instead, which means a report
-#: may lag behind the database by at most this many seconds. That trade is
-#: acceptable for aggregate reporting and unacceptable for anything
-#: transactional, which is why nothing transactional is served from here.
+#: Invalidation is deliberately coarse: every successful write drops the whole
+#: analytics namespace (see ``app.middleware.cache_invalidation``). The write
+#: path would otherwise have to know which report each change moves, across key
+#: spaces built from caller-chosen date ranges. The TTL is then only a backstop
+#: for changes that bypass the API.
 #: Fallback only; the wiring passes the configured cache TTL instead.
 DEFAULT_ANALYTICS_TTL_SECONDS = 300
 
@@ -140,8 +138,9 @@ class StockHealthQuery:
 class AnalyticsCache(Protocol):
     """The slice of a cache backend this module needs.
 
-    Only ``remember`` appears: reporting never writes, so it never invalidates,
-    and a read-through is the whole of the interaction.
+    Only ``remember`` appears: reporting never writes, the drop after a write
+    belongs to the middleware, and a read-through is the whole of the
+    interaction.
     """
 
     async def remember[T](
