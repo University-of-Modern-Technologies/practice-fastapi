@@ -1,6 +1,6 @@
 'use client';
 
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { MutationCache, QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { useState, type ReactNode } from 'react';
 import { ApiError } from '@/shared/api';
 
@@ -14,8 +14,22 @@ const shouldRetry = (failureCount: number, error: unknown): boolean => {
   return error.status === 0 || error.status >= 500;
 };
 
-const createQueryClient = (): QueryClient =>
-  new QueryClient({
+/**
+ * Reports are aggregates over everything else, so no single mutation knows
+ * which of them it moves. Any successful write marks them all stale — the same
+ * rule the API applies to its own report cache.
+ */
+const REPORT_KEYS = [['analytics'], ['dashboard']] as const;
+
+const createQueryClient = (): QueryClient => {
+  const queryClient: QueryClient = new QueryClient({
+    mutationCache: new MutationCache({
+      onSuccess: () => {
+        for (const queryKey of REPORT_KEYS) {
+          void queryClient.invalidateQueries({ queryKey });
+        }
+      },
+    }),
     defaultOptions: {
       queries: {
         retry: shouldRetry,
@@ -27,6 +41,8 @@ const createQueryClient = (): QueryClient =>
       mutations: { retry: false },
     },
   });
+  return queryClient;
+};
 
 export function QueryProvider({ children }: { children: ReactNode }) {
   // Held in state so a re-render never swaps the cache out from under the tree.

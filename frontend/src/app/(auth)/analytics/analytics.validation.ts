@@ -1,15 +1,10 @@
-import { DEFAULT_REPORT_RANGE } from '@/shared/constants';
+import { MAX_REPORT_RANGE_DAYS, defaultReportRange } from '@/shared/constants';
 import type { CalendarRange, DateRange } from './analytics.types';
 
 const DAY_MS = 86_400_000;
 
 /** Widest window the API scans in one request; anything larger answers 400. */
-export const MAX_RANGE_DAYS = 366;
-/**
- * Window applied when the query string names none: a fixed month rather than a
- * stretch measured backwards from the clock. See `shared/constants/reporting`.
- */
-export const DEFAULT_RANGE = DEFAULT_REPORT_RANGE;
+export const MAX_RANGE_DAYS = MAX_REPORT_RANGE_DAYS;
 
 export const DEFAULT_LIMIT = 10;
 export const MAX_LIMIT = 100;
@@ -27,14 +22,13 @@ const readDate = (value: string | undefined): string | undefined =>
   value !== undefined && value !== '' && isReadableInstant(value) ? value : undefined;
 
 /**
- * Fills in what the user has not picked. The defaults are the ones the API
- * applies, so an untouched page and the same page read a year later ask for
- * the same window rather than two that differ by the moment of the request.
+ * Fills in what the user has not picked: from the fixed start to today, the
+ * window the API applies too. See `shared/constants/reporting`.
  */
-export const resolveRange = (from: string | undefined, to: string | undefined): CalendarRange => ({
-  from: readDate(from) ?? DEFAULT_RANGE.from,
-  to: readDate(to) ?? DEFAULT_RANGE.to,
-});
+export const resolveRange = (from: string | undefined, to: string | undefined): CalendarRange => {
+  const fallback = defaultReportRange();
+  return { from: readDate(from) ?? fallback.from, to: readDate(to) ?? fallback.to };
+};
 
 /**
  * A calendar day names a whole day, not its first millisecond. The interval is

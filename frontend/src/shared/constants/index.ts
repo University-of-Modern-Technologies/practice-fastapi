@@ -1,5 +1,10 @@
 export { APP_NAME } from './brand';
-export { DEFAULT_REPORT_RANGE, DEFAULT_REPORT_RANGE_LABEL } from './reporting';
+export {
+  DEFAULT_REPORT_FROM,
+  DEFAULT_REPORT_RANGE_LABEL,
+  MAX_REPORT_RANGE_DAYS,
+  defaultReportRange,
+} from './reporting';
 export { FONT_FAMILY, FONT_FAMILY_MONO, PALETTE, RADIUS, SURFACE } from './theme';
 export {
   CALL_DIRECTION,

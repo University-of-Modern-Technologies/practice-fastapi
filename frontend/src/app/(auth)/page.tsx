@@ -14,7 +14,7 @@ import {
   useStockHealth,
 } from './dashboard.queries';
 
-const PERIOD_HINT = `За ${DASHBOARD_RANGE_LABEL}`;
+const PERIOD_HINT = DASHBOARD_RANGE_LABEL.charAt(0).toUpperCase() + DASHBOARD_RANGE_LABEL.slice(1);
 
 export default function DashboardPage() {
   const user = useAuthStore((state) => state.user);
