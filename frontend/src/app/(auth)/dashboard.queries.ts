@@ -2,7 +2,7 @@
 
 import { useQuery } from '@tanstack/react-query';
 import { ApiError } from '@/shared/api';
-import { DEFAULT_REPORT_RANGE, DEFAULT_REPORT_RANGE_LABEL } from '@/shared/constants';
+import { DEFAULT_REPORT_RANGE_LABEL, defaultReportRange } from '@/shared/constants';
 import { DashboardService } from './dashboard.service';
 import type {
   DashboardRangeQuery,
@@ -13,13 +13,11 @@ import type {
 } from './dashboard.types';
 
 /**
- * Reporting window of the overview: a fixed month, not a stretch measured
- * backwards from the clock. An overview that quietly reports on "the last
- * thirty days" shows an empty system to anyone who opens it long enough after
- * the data was made, and an empty overview reads as a fault rather than as an
- * answer. See `shared/constants/reporting`.
+ * Reporting window of the overview: from a fixed start to today, not a stretch
+ * measured backwards from the clock. An overview that quietly reports on "the
+ * last thirty days" shows an empty system to anyone who opens it long enough
+ * after the data was made. See `shared/constants/reporting`.
  */
-export const DASHBOARD_RANGE = DEFAULT_REPORT_RANGE;
 export const DASHBOARD_RANGE_LABEL = DEFAULT_REPORT_RANGE_LABEL;
 export const LOW_STOCK_THRESHOLD = 5;
 export const LOW_STOCK_LIMIT = 5;
@@ -52,12 +50,13 @@ export interface AnalyticsBlock<T> {
 // up, and the answer would not change.
 const ANALYTICS_OPTIONS = { retry: false, staleTime: 60_000 } as const;
 
-// Both bounds, not just the lower one: a window open at the top would still
-// end at "now" on the API's side, and the overview would slide again.
-const rangeQuery = (): DashboardRangeQuery => ({
-  from: `${DASHBOARD_RANGE.from}T00:00:00.000Z`,
-  to: `${DASHBOARD_RANGE.to}T23:59:59.999Z`,
-});
+// Both bounds, always: the dates are part of the request and therefore of the
+// cache key on both sides, so tomorrow's overview is a new question, not
+// yesterday's cached answer.
+const rangeQuery = (): DashboardRangeQuery => {
+  const range = defaultReportRange();
+  return { from: `${range.from}T00:00:00.000Z`, to: `${range.to}T23:59:59.999Z` };
+};
 
 export const useSalesSummary = (enabled: boolean): AnalyticsBlock<SalesSummaryReport> => {
   const query = rangeQuery();

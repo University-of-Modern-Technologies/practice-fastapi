@@ -8,10 +8,10 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
+from app.core.reporting import default_report_window_to
 from app.core.serializers import format_datetime
 from app.modules.analytics.schemas import (
     DEFAULT_RANGE_FROM,
-    DEFAULT_RANGE_TO,
     MAX_LIMIT,
     MAX_RANGE_DAYS,
     DealFunnelParams,
@@ -34,23 +34,23 @@ def parses(model: Any, query: dict[str, Any]) -> bool:
 
 
 class TestDateRange:
-    def test_defaults_the_range_to_a_fixed_month_not_to_the_last_thirty_days(self) -> None:
-        """A relative default makes a report of old data look like no data.
+    def test_defaults_the_range_to_a_fixed_start_and_the_end_of_today(self) -> None:
+        """A window measured back from the clock would lose the demonstration data.
 
-        The answer to a question with no parameters used to depend on the day
-        it was asked; now the same question covers the same month today and in
-        a year, which is what makes two runs of it comparable.
+        The start stays where the data begins, and the end covers today, so a
+        record entered this morning is in the report asked for this afternoon.
         """
         params = SalesSummaryParams()
         assert params.range_from == DEFAULT_RANGE_FROM
-        assert params.range_to == DEFAULT_RANGE_TO
+        assert params.range_to == default_report_window_to()
+        assert params.range_to > datetime.now(UTC)
         assert params.period is AnalyticsPeriod.DAY
 
     def test_fills_only_the_bound_the_caller_left_out(self) -> None:
         params = SalesSummaryParams.model_validate({"from": "2026-01-01T00:00:00Z"})
 
         assert format_datetime(params.range_from) == "2026-01-01T00:00:00.000Z"
-        assert params.range_to == DEFAULT_RANGE_TO
+        assert params.range_to == default_report_window_to()
 
     def test_normalises_dates_to_utc_and_stays_idempotent_on_a_second_parse(self) -> None:
         first = SalesSummaryParams.model_validate(

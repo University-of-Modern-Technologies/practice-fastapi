@@ -30,9 +30,8 @@ const MATCH_STATUS_OPTIONS = PAYMENT_MATCH_STATUSES.map((status) => ({
 }));
 
 /** True when the list is narrowed — an empty result then means "not found". */
-export const hasActiveTransactionFilters = (
-  params: ListParams<TransactionFilter>,
-): boolean => signature(params).trim() !== '';
+export const hasActiveTransactionFilters = (params: ListParams<TransactionFilter>): boolean =>
+  signature(params).trim() !== '';
 
 /** Everything the row shows, flattened — also the identity it is remounted by. */
 function signature(params: ListParams<TransactionFilter>): string {
@@ -50,11 +49,7 @@ function signature(params: ListParams<TransactionFilter>): string {
     .join(' ');
 }
 
-function TransactionFilterRow({
-  params,
-  onChange,
-  onReset,
-}: UseTransactionTableFiltersOptions) {
+function TransactionFilterRow({ params, onChange, onReset }: UseTransactionTableFiltersOptions) {
   const hasFilters = hasActiveTransactionFilters(params);
 
   return (

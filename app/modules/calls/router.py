@@ -18,6 +18,7 @@ from typing import Annotated, cast
 
 from fastapi import APIRouter, Depends, Query, Request, Response, status
 
+from app.core.openapi import refusals
 from app.core.responses import Envelope, Page
 from app.db.enums import PermissionScope
 from app.events.dependencies import PublisherDep
@@ -137,7 +138,7 @@ def create_calls_router() -> APIRouter:
     """Builds the router; the prefix is applied by the application factory."""
     router = APIRouter(tags=["Calls"])
 
-    @router.get("", summary="Переглянути журнал дзвінків")
+    @router.get("", summary="Переглянути журнал дзвінків", responses=refusals(401, 403))
     async def list_calls(
         access: ReadAccess,
         service: CallsServiceDep,
@@ -155,6 +156,7 @@ def create_calls_router() -> APIRouter:
         summary="Синхронізувати дзвінки з провайдером",
         description="Повторний виклик не створює дублів: ключ ідемпотентності — `externalId`. "
         "Недоступний провайдер — 502 `CALL_PROVIDER_UNAVAILABLE`.",
+        responses=refusals(401, 403, 502),
     )
     async def sync_calls(
         access: WriteAccess,
@@ -162,7 +164,7 @@ def create_calls_router() -> APIRouter:
     ) -> Envelope[SyncCallsOut]:
         return Envelope(data=await service.sync(access))
 
-    @router.get("/{id}", summary="Отримати дзвінок")
+    @router.get("/{id}", summary="Отримати дзвінок", responses=refusals(401, 403, 404))
     async def get_call(
         id: uuid.UUID,  # noqa: A002
         access: ReadAccess,
@@ -170,7 +172,7 @@ def create_calls_router() -> APIRouter:
     ) -> Envelope[CallOut]:
         return Envelope(data=await service.get_by_id(access, id))
 
-    @router.patch("/{id}", summary="Оновити дзвінок")
+    @router.patch("/{id}", summary="Оновити дзвінок", responses=refusals(401, 403, 404, 409))
     async def update_call(
         id: uuid.UUID,  # noqa: A002
         payload: UpdateCallRequest,
@@ -182,7 +184,11 @@ def create_calls_router() -> APIRouter:
     # The published summary is Ukrainian and has to match the sibling backend
     # character for character, so the lone Cyrillic word whose letters all look
     # Latin stays exactly as it is.
-    @router.post("/{id}/link", summary="Прив'язати дзвінок до контакту або угоди")  # noqa: RUF001
+    @router.post(
+        "/{id}/link",
+        summary="Прив'язати дзвінок до контакту або угоди",  # noqa: RUF001
+        responses=refusals(401, 403, 404, 409),
+    )
     async def link_call(
         id: uuid.UUID,  # noqa: A002
         payload: LinkCallRequest,
@@ -195,6 +201,7 @@ def create_calls_router() -> APIRouter:
         "/{id}/recording",
         summary="Отримати запис розмови",
         description="Якщо запису немає — 404 `CALL_RECORDING_UNAVAILABLE`.",
+        responses=refusals(401, 403, 404),
     )
     async def get_call_recording(
         id: uuid.UUID,  # noqa: A002
@@ -208,6 +215,7 @@ def create_calls_router() -> APIRouter:
         status_code=status.HTTP_204_NO_CONTENT,
         response_class=Response,
         summary="Видалити дзвінок",
+        responses=refusals(401, 403, 404, 409),
     )
     async def delete_call(
         id: uuid.UUID,  # noqa: A002

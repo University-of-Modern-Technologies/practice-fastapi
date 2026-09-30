@@ -12,6 +12,7 @@ from typing import Annotated
 from fastapi import APIRouter, Cookie, Response, status
 
 from app.core.errors import UnauthorizedError
+from app.core.openapi import refusals
 from app.core.responses import Envelope
 from app.modules.auth.dependencies import AuthConfigDep, AuthServiceDep, CurrentAuth
 from app.modules.auth.schemas import AuthenticatedUser, AuthPayload, LoginRequest
@@ -47,7 +48,7 @@ def create_auth_router() -> APIRouter:
     """Builds the router; the prefix is applied by the application factory."""
     router = APIRouter(tags=["Auth"])
 
-    @router.post("/login", summary="Увійти до системи")
+    @router.post("/login", summary="Увійти до системи", responses=refusals(401))
     async def login(
         payload: LoginRequest,
         response: Response,
@@ -58,7 +59,7 @@ def create_auth_router() -> APIRouter:
         _set_refresh_cookie(response, config, result.refresh_token)
         return _to_payload(result)
 
-    @router.post("/refresh", summary="Оновити пару токенів")
+    @router.post("/refresh", summary="Оновити пару токенів", responses=refusals(401))
     async def refresh(
         response: Response,
         service: AuthServiceDep,
@@ -89,7 +90,7 @@ def create_auth_router() -> APIRouter:
         response.delete_cookie(**refresh_cookie_kwargs(config))
         return response
 
-    @router.get("/me", summary="Отримати поточного користувача")
+    @router.get("/me", summary="Отримати поточного користувача", responses=refusals(401))
     async def me(auth: CurrentAuth, service: AuthServiceDep) -> Envelope[AuthenticatedUser]:
         return Envelope(data=await service.me(auth.user_id))
 

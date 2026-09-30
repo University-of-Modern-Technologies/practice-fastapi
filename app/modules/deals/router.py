@@ -12,6 +12,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query, Request, Response, status
 
+from app.core.openapi import refusals
 from app.core.responses import Envelope, Page
 from app.db.enums import PermissionScope
 from app.events.dependencies import PublisherDep
@@ -74,7 +75,7 @@ def create_deals_router() -> APIRouter:
     """Builds the router; the prefix is applied by the application factory."""
     router = APIRouter(tags=["Deals"])
 
-    @router.get("", summary="Переглянути угоди")
+    @router.get("", summary="Переглянути угоди", responses=refusals(401, 403))
     async def list_deals(
         access: ReadAccess,
         service: DealsServiceDep,
@@ -85,7 +86,12 @@ def create_deals_router() -> APIRouter:
             data=Page(items=items, page=params.page, page_size=params.page_size, total=total)
         )
 
-    @router.post("", status_code=status.HTTP_201_CREATED, summary="Створити угоду")
+    @router.post(
+        "",
+        status_code=status.HTTP_201_CREATED,
+        summary="Створити угоду",
+        responses=refusals(401, 403, 404),
+    )
     async def create_deal(
         payload: CreateDealRequest,
         access: WriteAccess,
@@ -93,7 +99,7 @@ def create_deals_router() -> APIRouter:
     ) -> Envelope[DealOut]:
         return Envelope(data=await service.create(access, payload))
 
-    @router.get("/{id}", summary="Отримати угоду")
+    @router.get("/{id}", summary="Отримати угоду", responses=refusals(401, 403, 404))
     async def get_deal(
         id: uuid.UUID,  # noqa: A002
         access: ReadAccess,
@@ -101,7 +107,9 @@ def create_deals_router() -> APIRouter:
     ) -> Envelope[DealOut]:
         return Envelope(data=await service.get_by_id(access, id))
 
-    @router.patch("/{id}", summary="Оновити угоду без зміни stage")
+    @router.patch(
+        "/{id}", summary="Оновити угоду без зміни stage", responses=refusals(401, 403, 404, 409)
+    )
     async def update_deal(
         id: uuid.UUID,  # noqa: A002
         payload: UpdateDealRequest,
@@ -116,6 +124,7 @@ def create_deals_router() -> APIRouter:
         summary="Перевести угоду на інший stage",
         description="Дозволені переходи: LEAD → QUALIFIED, QUALIFIED → PROPOSAL, "
         "PROPOSAL → WON/LOST.",
+        responses=refusals(401, 403, 404, 409),
     )
     async def transition_deal(
         id: uuid.UUID,  # noqa: A002
@@ -130,6 +139,7 @@ def create_deals_router() -> APIRouter:
         status_code=status.HTTP_204_NO_CONTENT,
         response_class=Response,
         summary="Видалити угоду",
+        responses=refusals(401, 403, 404, 409),
     )
     async def delete_deal(
         id: uuid.UUID,  # noqa: A002

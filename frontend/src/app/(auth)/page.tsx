@@ -1,6 +1,6 @@
 'use client';
 
-import { Col, Row, Tag, Typography } from 'antd';
+import { Col, Row, Typography } from 'antd';
 import Link from 'next/link';
 import { MoneyValue, PageHeader } from '@/components';
 import { useHasPermission } from '@/shared/hooks';
@@ -14,7 +14,7 @@ import {
   useStockHealth,
 } from './dashboard.queries';
 
-const PERIOD_HINT = `За ${DASHBOARD_RANGE_LABEL}`;
+const PERIOD_HINT = DASHBOARD_RANGE_LABEL.charAt(0).toUpperCase() + DASHBOARD_RANGE_LABEL.slice(1);
 
 export default function DashboardPage() {
   const user = useAuthStore((state) => state.user);
@@ -39,9 +39,6 @@ export default function DashboardPage() {
       <PageHeader
         title={`Вітаємо, ${user?.name ?? ''}`}
         description="Стан справ і розділи, доступні вашій ролі"
-        actions={user?.roles.map((role) => (
-          <Tag key={role}>{role}</Tag>
-        ))}
       />
 
       {showMetrics ? (

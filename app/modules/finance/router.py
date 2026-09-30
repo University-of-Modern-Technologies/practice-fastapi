@@ -25,6 +25,7 @@ from typing import Annotated, cast
 from fastapi import APIRouter, Depends, Query, Request
 
 from app.core.logging import get_logger
+from app.core.openapi import refusals
 from app.core.responses import Envelope, Page
 from app.db.enums import PermissionScope
 from app.events.dependencies import PublisherDep
@@ -134,7 +135,9 @@ def create_finance_router() -> APIRouter:
     """Builds the router; the prefix is applied by the application factory."""
     router = APIRouter(tags=["Finance"])
 
-    @router.get("/statements", summary="Переглянути банківські виписки")
+    @router.get(
+        "/statements", summary="Переглянути банківські виписки", responses=refusals(401, 403)
+    )
     async def list_statements(
         access: ReadAccess,
         service: FinanceServiceDep,
@@ -150,6 +153,7 @@ def create_finance_router() -> APIRouter:
         summary="Імпортувати виписку з банку",
         description="Повторний виклик не створює дублів: ключ ідемпотентності — `externalId`. "
         "Недоступний банк — 502 `BANK_PROVIDER_UNAVAILABLE`.",
+        responses=refusals(401, 403, 409, 502),
     )
     async def import_statement(
         access: WriteAccess,
@@ -157,7 +161,9 @@ def create_finance_router() -> APIRouter:
     ) -> Envelope[ImportStatementOut]:
         return Envelope(data=await service.import_statement(access))
 
-    @router.get("/transactions", summary="Переглянути банківські транзакції")
+    @router.get(
+        "/transactions", summary="Переглянути банківські транзакції", responses=refusals(401, 403)
+    )
     async def list_transactions(
         access: ReadAccess,
         service: FinanceServiceDep,
@@ -174,7 +180,8 @@ def create_finance_router() -> APIRouter:
         # The published description is Ukrainian and has to match the sibling
         # backend character for character, so the Cyrillic letters whose shapes
         # are also Latin stay exactly as they are.
-        description="Для стану `SUGGESTED` у відповіді — перелік замовлень-кандидатів.",  # noqa: RUF001
+        description="Для стану `SUGGESTED` у відповіді — перелік замовлень-кандидатів.",  # noqa: RUF001,
+        responses=refusals(401, 403, 404),
     )
     async def get_transaction(
         id: uuid.UUID,  # noqa: A002
@@ -183,7 +190,11 @@ def create_finance_router() -> APIRouter:
     ) -> Envelope[BankTransactionDetailOut]:
         return Envelope(data=await service.get_transaction(access, id))
 
-    @router.post("/transactions/{id}/match", summary="Звести транзакцію із замовленням")
+    @router.post(
+        "/transactions/{id}/match",
+        summary="Звести транзакцію із замовленням",
+        responses=refusals(401, 403, 404, 409, 422),
+    )
     async def match_transaction(
         id: uuid.UUID,  # noqa: A002
         payload: MatchTransactionRequest,
@@ -192,7 +203,11 @@ def create_finance_router() -> APIRouter:
     ) -> Envelope[BankTransactionOut]:
         return Envelope(data=await service.match(access, id, payload))
 
-    @router.delete("/transactions/{id}/match", summary="Зняти зведення транзакції")
+    @router.delete(
+        "/transactions/{id}/match",
+        summary="Зняти зведення транзакції",
+        responses=refusals(401, 403, 404, 409),
+    )
     async def unmatch_transaction(
         id: uuid.UUID,  # noqa: A002
         version: TransactionVersion,
@@ -205,7 +220,8 @@ def create_finance_router() -> APIRouter:
         "/reconcile",
         summary="Виконати автозведення платежів",
         description="Правило застосовується лише до надходжень у станах "  # noqa: RUF001
-        "`UNMATCHED` і `SUGGESTED`.",  # noqa: RUF001
+        "`UNMATCHED` і `SUGGESTED`.",  # noqa: RUF001,
+        responses=refusals(401, 403),
     )
     async def reconcile(
         access: WriteAccess,
@@ -213,7 +229,9 @@ def create_finance_router() -> APIRouter:
     ) -> Envelope[ReconcileOut]:
         return Envelope(data=await service.reconcile(access))
 
-    @router.get("/summary", summary="Отримати фінансовий підсумок за період")
+    @router.get(
+        "/summary", summary="Отримати фінансовий підсумок за період", responses=refusals(401, 403)
+    )
     async def finance_summary(
         access: ReadAccess,
         service: FinanceServiceDep,

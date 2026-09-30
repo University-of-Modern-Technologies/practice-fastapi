@@ -15,7 +15,9 @@ import { ThemeProvider } from './theme-provider';
  */
 export function AppProviders({ children }: { children: ReactNode }) {
   return (
-    <AntdRegistry>
+    // `layer` puts the component styles into the "antd" cascade layer that
+    // globals.css orders below Tailwind's utilities.
+    <AntdRegistry layer>
       <ThemeProvider>
         <QueryProvider>
           <AntdProvider>

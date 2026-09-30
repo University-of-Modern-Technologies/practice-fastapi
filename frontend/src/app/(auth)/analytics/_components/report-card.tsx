@@ -1,7 +1,7 @@
 'use client';
 
-import { DownloadOutlined } from '@ant-design/icons';
 import { Alert, Button, Card, Skeleton } from 'antd';
+import { Download } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { EmptyState } from '@/components';
 import { Money } from '@/lib/money';
@@ -64,7 +64,7 @@ interface ExportButtonProps {
  */
 export function ExportButton({ onExport, isExporting }: ExportButtonProps) {
   return (
-    <Button size="small" icon={<DownloadOutlined />} loading={isExporting} onClick={onExport}>
+    <Button size="small" icon={<Download size={14} />} loading={isExporting} onClick={onExport}>
       CSV
     </Button>
   );

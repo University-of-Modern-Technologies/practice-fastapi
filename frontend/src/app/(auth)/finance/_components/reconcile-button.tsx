@@ -43,12 +43,7 @@ export function ReconcileButton({ onReconciled }: ReconcileButtonProps) {
   };
 
   return (
-    <Button
-      type="primary"
-      icon={<Scale size={16} />}
-      loading={reconcile.isPending}
-      onClick={run}
-    >
+    <Button type="primary" icon={<Scale size={16} />} loading={reconcile.isPending} onClick={run}>
       Звести автоматично
     </Button>
   );

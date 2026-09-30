@@ -78,9 +78,7 @@ describe('toTransactionListQuery', () => {
   });
 
   it('відкидає стан зведення й напрямок, яких немає в переліку', () => {
-    const query = toTransactionListQuery(
-      params({ matchStatus: 'ALMOST', direction: 'SIDEWAYS' }),
-    );
+    const query = toTransactionListQuery(params({ matchStatus: 'ALMOST', direction: 'SIDEWAYS' }));
 
     expect(query).not.toHaveProperty('matchStatus');
     expect(query).not.toHaveProperty('direction');
@@ -226,7 +224,9 @@ describe('isModuleUnavailable', () => {
   // payment is gone would send them to an administrator for nothing.
   it('не плутає відсутній розділ із відсутнім платежем або випискою', () => {
     expect(
-      isModuleUnavailable(new ApiError({ status: 404, code: 'TRANSACTION_NOT_FOUND', message: '' })),
+      isModuleUnavailable(
+        new ApiError({ status: 404, code: 'TRANSACTION_NOT_FOUND', message: '' }),
+      ),
     ).toBe(false);
     expect(
       isModuleUnavailable(new ApiError({ status: 404, code: 'STATEMENT_NOT_FOUND', message: '' })),

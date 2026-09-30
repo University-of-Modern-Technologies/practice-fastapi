@@ -14,6 +14,7 @@ from typing import Annotated, cast
 from fastapi import APIRouter, Depends, Request
 
 from app.core.logging import get_logger
+from app.core.openapi import refusals
 from app.core.responses import Envelope
 from app.db.enums import PermissionScope
 from app.modules.ai.provider import AiProvider
@@ -91,7 +92,11 @@ def create_ai_router() -> APIRouter:
     """Builds the router; the prefix is applied by the application factory."""
     router = APIRouter(tags=["AI"])
 
-    @router.post("/summaries/deal", summary="Скласти стислий переказ угоди")
+    @router.post(
+        "/summaries/deal",
+        summary="Скласти стислий переказ угоди",
+        responses=refusals(401, 403, 502, 503, 504),
+    )
     async def summarise_deal(
         payload: SummariseDealRequest,
         _access: UseAccess,
@@ -99,7 +104,11 @@ def create_ai_router() -> APIRouter:
     ) -> Envelope[DealSummaryOut]:
         return Envelope(data=await service.summarise_deal(payload))
 
-    @router.post("/classify/inquiry", summary="Класифікувати звернення клієнта")
+    @router.post(
+        "/classify/inquiry",
+        summary="Класифікувати звернення клієнта",
+        responses=refusals(401, 403, 502, 503, 504),
+    )
     async def classify_inquiry(
         payload: ClassifyInquiryRequest,
         _access: UseAccess,

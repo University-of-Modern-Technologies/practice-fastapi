@@ -19,6 +19,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import AppError, ConflictError, NotFoundError
+from app.core.reporting import default_report_window_to
 from app.db.enums import OrderStatus, PaymentMatchStatus, PermissionScope, TransactionDirection
 from app.db.models.audit import AuditLog
 from app.db.models.finance import BankStatement, BankTransaction
@@ -1021,14 +1022,14 @@ async def test_the_summary_reads_every_figure_from_one_query() -> None:
     assert len(session.statements) == 1
 
 
-async def test_an_unnamed_window_uses_the_shared_fixed_default() -> None:
-    """The default does not depend on imported statements or the current day."""
+async def test_an_unnamed_window_uses_the_shared_default() -> None:
+    """The default does not depend on imported statements: 1 January to today."""
     session = FakeSession()
 
     result = await make_service(session).summary(ACCESS, FinanceSummaryParams())
 
     assert result.from_ == datetime(2026, 1, 1, tzinfo=UTC)
-    assert result.to == datetime(2026, 2, 1, tzinfo=UTC)
+    assert result.to == default_report_window_to()
     # The grouped query is the only read: no latest-statement lookup precedes it.
     assert len(session.statements) == 1
 
@@ -1040,7 +1041,7 @@ async def test_a_missing_bound_uses_the_shared_default_while_an_explicit_one_win
     lower_bound_result = await make_service(lower_bound_session).summary(ACCESS, lower_bound)
 
     assert lower_bound_result.from_ == datetime(2026, 1, 10, tzinfo=UTC)
-    assert lower_bound_result.to == datetime(2026, 2, 1, tzinfo=UTC)
+    assert lower_bound_result.to == default_report_window_to()
 
     upper_bound_session = FakeSession()
     upper_bound = FinanceSummaryParams.model_validate({"to": "2026-01-20T00:00:00Z"})

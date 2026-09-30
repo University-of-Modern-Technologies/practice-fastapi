@@ -14,7 +14,11 @@ import {
 } from '../_hooks';
 import { useTransactions } from '../finance.queries';
 import { isModuleUnavailable, toTransactionListQuery } from '../finance.service';
-import { TRANSACTION_FILTERS, type BankTransaction, type TransactionFilter } from '../finance.types';
+import {
+  TRANSACTION_FILTERS,
+  type BankTransaction,
+  type TransactionFilter,
+} from '../finance.types';
 
 const LIST_DEFAULTS = { sortBy: 'bookedAt', sortOrder: 'desc' } as const;
 

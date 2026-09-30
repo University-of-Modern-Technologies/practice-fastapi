@@ -30,6 +30,7 @@ from typing import Annotated, Self
 from pydantic import AwareDatetime, Field, StringConstraints, model_validator
 
 from app.core.pagination import DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, SortOrder
+from app.core.reporting import MAX_REPORT_WINDOW_DAYS
 from app.core.responses import CamelModel
 from app.core.serializers import Money, UtcDate, UtcDatetime
 from app.db.enums import OrderStatus, PaymentMatchStatus, TransactionDirection
@@ -57,11 +58,9 @@ __all__ = [
     "TransactionListParams",
 ]
 
-#: Window a summary covers when the caller names none.
-
-#: Widest window one summary may scan, so a single request cannot walk years
-#: of ledger.
-MAX_SUMMARY_DAYS = 366
+#: Widest window one summary may scan: the shared reporting ceiling, so the
+#: default window, which ends today, is always one the summary accepts.
+MAX_SUMMARY_DAYS = MAX_REPORT_WINDOW_DAYS
 
 #: An amount as it arrives from a client: a string, always.
 MoneyString = Annotated[str, StringConstraints(strip_whitespace=True, pattern=MONEY_STRING_PATTERN)]

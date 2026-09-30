@@ -38,4 +38,4 @@ export { DeleteConfirm } from './delete-confirm';
 export { ConflictAlert } from './conflict-alert';
 
 // Loading placeholders
-export { DashboardSkeleton, FormPageSkeleton, TablePageSkeleton } from './skeletons';
+export { DashboardSkeleton, FormPageSkeleton, ShellSkeleton, TablePageSkeleton } from './skeletons';
