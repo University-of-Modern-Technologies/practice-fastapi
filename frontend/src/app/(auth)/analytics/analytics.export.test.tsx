@@ -158,7 +158,11 @@ describe('Аналітика — вивантаження звіту', () => {
     const [csvButton] = screen.getAllByRole('button', { name: /CSV/ });
     fireEvent.click(csvButton as HTMLElement);
 
-    expect(await screen.findByText('Помилка на сервері')).toBeInTheDocument();
+    // The message is drawn by a toast after the rejected promise settles; under
+    // a loaded full run that can take longer than findByText's default second.
+    expect(
+      await screen.findByText('Помилка на сервері', undefined, { timeout: 5000 }),
+    ).toBeInTheDocument();
   });
 
   it('не показує кнопку вивантаження і не падає, коли модуля аналітики немає', async () => {

@@ -77,7 +77,7 @@ test('наскрізний сценарій: контакт → угода → �
 
   await test.step('сесія відновлюється зі збереженої cookie', async () => {
     await page.goto('/');
-    // The guard shows a spinner until the refresh call answers, so a menu item
+    // The guard shows the shell outline until the refresh call answers, so a menu item
     // being visible means the cold start really did rebuild the session.
     await expect(page.getByRole('link', { name: 'Контакти', exact: true })).toBeVisible({
       timeout: FIRST_LOAD_TIMEOUT,

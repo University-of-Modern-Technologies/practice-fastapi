@@ -6,6 +6,7 @@ import { Suspense, useEffect } from 'react';
 import { ApiError } from '@/shared/api';
 import { useLogin } from '@/shared/auth';
 import { useAuthStore } from '@/shared/stores';
+import { Brand } from '@/templates/layouts';
 import { loginSchema, type LoginFormValues } from './login.validation';
 
 /** Only same-origin paths are honoured, so the parameter cannot bounce the user off-site. */
@@ -35,9 +36,16 @@ function LoginForm() {
   };
 
   return (
-    <Card style={{ width: '100%', maxWidth: 400 }}>
-      <div className="mb-6 text-center">
-        <Typography.Title level={3} style={{ marginBottom: 4 }}>
+    <Card
+      className="shadow-[0_12px_40px_-12px_rgba(15,23,42,0.18)]"
+      style={{ width: '100%', maxWidth: 400 }}
+      styles={{ body: { padding: 32 } }}
+    >
+      <div className="mb-6 flex flex-col items-center text-center">
+        <div className="mb-5">
+          <Brand />
+        </div>
+        <Typography.Title level={1} style={{ margin: '0 0 4px', fontSize: 22, fontWeight: 600 }}>
           Вхід
         </Typography.Title>
         <Typography.Text type="secondary">Увійдіть, щоб продовжити роботу</Typography.Text>

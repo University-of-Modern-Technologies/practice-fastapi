@@ -1,7 +1,16 @@
 'use client';
 
 import { Alert, Card, Col, Row, Skeleton, Statistic } from 'antd';
-import { Bar, BarChart, CartesianGrid, Cell, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
+import {
+  Bar,
+  BarChart,
+  CartesianGrid,
+  Cell,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from 'recharts';
 import { EmptyState, MoneyValue } from '@/components';
 // The build reports the window's totals without naming a currency: every
 // statement it knows is in one, and a figure that summed several would be

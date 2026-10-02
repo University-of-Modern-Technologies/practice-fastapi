@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { NAVIGATION, navigationLinks, visibleNavigation, type NavigationNode } from './navigation';
+import {
+  NAVIGATION,
+  activeNavigationKey,
+  navigationLinks,
+  navigationTrail,
+  visibleNavigation,
+  type NavigationNode,
+} from './navigation';
 
 const allowAll = () => true;
 
@@ -22,6 +29,16 @@ describe('navigationLinks', () => {
     const gathering = navigationLinks(NAVIGATION).filter((link) => link.key === 'warehouse');
 
     expect(gathering).toHaveLength(0);
+  });
+
+  // The menu keys every node, headings included, so a heading sharing a key
+  // with a page would light up or open the wrong entry.
+  it('keys every node uniquely, headings included', () => {
+    const all = (nodes: readonly NavigationNode[]): readonly string[] =>
+      nodes.flatMap((node) => [node.key, ...all(node.children ?? [])]);
+    const every = all(NAVIGATION);
+
+    expect(new Set(every).size).toBe(every.length);
   });
 
   it('keeps every destination unique, so the active one is unambiguous', () => {
@@ -81,5 +98,27 @@ describe('visibleNavigation', () => {
 
   it('leaves the tree untouched when everything is permitted', () => {
     expect(keys(visibleNavigation(NAVIGATION, allowAll))).toEqual(keys(NAVIGATION));
+  });
+});
+
+describe('navigationTrail', () => {
+  it('walks from the heading down to a nested destination', () => {
+    expect(keys(navigationTrail(NAVIGATION, 'stock'))).toEqual(['inventory', 'warehouse', 'stock']);
+  });
+
+  it('is empty for a key the tree does not have', () => {
+    expect(navigationTrail(NAVIGATION, 'nowhere')).toEqual([]);
+  });
+});
+
+describe('activeNavigationKey', () => {
+  const links = navigationLinks(NAVIGATION);
+
+  it('keeps a record page lit under its list', () => {
+    expect(activeNavigationKey('/contacts/42', links)).toBe('contacts');
+  });
+
+  it('prefers the longest match', () => {
+    expect(activeNavigationKey('/warehouse/movements', links)).toBe('movements');
   });
 });

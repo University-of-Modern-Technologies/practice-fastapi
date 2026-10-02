@@ -56,10 +56,10 @@ describe('toWireRange', () => {
 });
 
 describe('resolveRange', () => {
-  it('fills in the January reporting window when the query string names none', () => {
+  it('fills in the window from 1 January 2026 to today when the query string names none', () => {
     const range = resolveRange(undefined, undefined);
 
-    expect(range).toEqual({ from: '2026-01-01', to: '2026-01-31' });
+    expect(range).toEqual({ from: '2026-01-01', to: new Date().toISOString().slice(0, 10) });
     expect(describeRangeIssue(range)).toBeNull();
   });
 
@@ -79,7 +79,7 @@ describe('describeRangeIssue', () => {
   });
 
   it('refuses a window wider than the API scans', () => {
-    expect(describeRangeIssue({ from: '2024-01-01', to: '2026-01-01' })).toContain(
+    expect(describeRangeIssue({ from: '2020-01-01', to: '2026-01-01' })).toContain(
       String(MAX_RANGE_DAYS),
     );
   });

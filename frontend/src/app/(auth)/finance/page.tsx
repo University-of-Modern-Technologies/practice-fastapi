@@ -3,12 +3,7 @@
 import { Alert, Button, Space } from 'antd';
 import Link from 'next/link';
 import { useEffect, useState } from 'react';
-import {
-  DateRangeFilter,
-  ModuleUnavailable,
-  PageHeader,
-  PermissionGate,
-} from '@/components';
+import { DateRangeFilter, ModuleUnavailable, PageHeader, PermissionGate } from '@/components';
 import { useListParams, useReportError } from '@/shared/hooks';
 import {
   FinanceSummaryCard,
@@ -170,9 +165,7 @@ function FinanceOverview() {
 
       {isBankDown ? <BankDownNotice onClose={() => setIsBankDown(false)} /> : null}
 
-      {lastRun ? (
-        <ReconcileSummaryNotice {...lastRun} onClose={() => setLastRun(null)} />
-      ) : null}
+      {lastRun ? <ReconcileSummaryNotice {...lastRun} onClose={() => setLastRun(null)} /> : null}
 
       <FinanceSummaryCard
         summary={summary.data}
@@ -192,9 +185,7 @@ function FinanceOverview() {
         }
       />
 
-      {range.issue ? (
-        <Alert type="error" showIcon className="mb-4" message={range.issue} />
-      ) : null}
+      {range.issue ? <Alert type="error" showIcon className="mb-4" message={range.issue} /> : null}
 
       <StatementsTable
         page={statements.data}

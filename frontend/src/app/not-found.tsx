@@ -1,17 +1,22 @@
 import { Button, Result } from 'antd';
-import Link from 'next/link';
+import { StatusScreen } from '@/components/status-screen';
+import { Brand } from '@/templates/layouts';
 
 export default function NotFound() {
   return (
-    <Result
-      status="404"
-      title="Сторінку не знайдено"
-      subTitle="Схоже, такої адреси не існує."
-      extra={
-        <Link href="/">
-          <Button type="primary">На головну</Button>
-        </Link>
-      }
-    />
+    <StatusScreen brand={<Brand />}>
+      <Result
+        status="404"
+        title="Сторінку не знайдено"
+        subTitle="Схоже, такої адреси не існує."
+        extra={
+          // A button that is itself the link: a <button> inside an <a> is
+          // invalid markup and announces the control twice.
+          <Button type="primary" href="/">
+            На головну
+          </Button>
+        }
+      />
+    </StatusScreen>
   );
 }

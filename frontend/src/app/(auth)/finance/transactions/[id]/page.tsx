@@ -115,11 +115,7 @@ function TransactionCard({
   );
 }
 
-export default function FinanceTransactionPage({
-  params,
-}: {
-  params: Promise<{ id: string }>;
-}) {
+export default function FinanceTransactionPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
   const { data: transaction, isLoading, isError, error, isFetching, refetch } = useTransaction(id);
 
@@ -148,11 +144,7 @@ export default function FinanceTransactionPage({
 
   return (
     <PermissionGate resource="finance" action="read">
-      <TransactionCard
-        transaction={transaction}
-        onReload={refetch}
-        isReloading={isFetching}
-      />
+      <TransactionCard transaction={transaction} onReload={refetch} isReloading={isFetching} />
     </PermissionGate>
   );
 }

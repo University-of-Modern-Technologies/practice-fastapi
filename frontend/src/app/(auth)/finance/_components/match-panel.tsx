@@ -197,9 +197,8 @@ export function MatchPanel({ transaction, onConflict }: MatchPanelProps) {
           the rent is paid.
         */}
         <Typography.Paragraph className="mb-2">
-          Цей платіж не зведено із замовленням. Це робочий стан, а не помилка:
-          виписка банку й книга замовлень — два незалежні записи, і збігаються
-          вони не завжди.
+          Цей платіж не зведено із замовленням. Це робочий стан, а не помилка: виписка банку й книга
+          замовлень — два незалежні записи, і збігаються вони не завжди.
         </Typography.Paragraph>
         <Typography.Text type="secondary">
           {canWrite

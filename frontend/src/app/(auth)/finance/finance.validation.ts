@@ -1,21 +1,12 @@
 import { Money } from '@/lib/money';
-import { DEFAULT_REPORT_RANGE } from '@/shared/constants';
+import { MAX_REPORT_RANGE_DAYS, defaultReportRange } from '@/shared/constants';
 import type { MoneyWire } from '@/types/domain';
 import type { BankTransaction, MatchCandidate } from './finance.types';
 
 const DAY_MS = 86_400_000;
 
 /** Widest window the summary scans in one request; anything larger answers 400. */
-export const MAX_SUMMARY_DAYS = 366;
-/**
- * Window applied when the query string names none. A fixed month rather than a
- * stretch measured backwards from the clock; see `shared/constants/reporting`.
- *
- * The summary always opens on this reporting window, independently of the
- * statement list. That makes its request deterministic and lets the card load
- * while the list is still pending.
- */
-export const DEFAULT_SUMMARY_RANGE = DEFAULT_REPORT_RANGE;
+export const MAX_SUMMARY_DAYS = MAX_REPORT_RANGE_DAYS;
 
 /** A calendar day as the picker writes it into the query string. */
 const CALENDAR_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
@@ -35,13 +26,18 @@ export interface WireRange {
   readonly to: string;
 }
 
+/**
+ * Fills in what the user has not picked, from the shared reporting window (see
+ * `shared/constants/reporting`), independently of the statement list — so the
+ * card can load while the list is still pending.
+ */
 export const resolveSummaryRange = (
   from: string | undefined,
   to: string | undefined,
-): CalendarRange => ({
-  from: readDate(from) ?? DEFAULT_SUMMARY_RANGE.from,
-  to: readDate(to) ?? DEFAULT_SUMMARY_RANGE.to,
-});
+): CalendarRange => {
+  const fallback = defaultReportRange();
+  return { from: readDate(from) ?? fallback.from, to: readDate(to) ?? fallback.to };
+};
 
 /**
  * A calendar day names a whole day, not its first millisecond. The interval is

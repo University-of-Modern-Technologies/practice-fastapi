@@ -85,9 +85,12 @@ describe('Фінанси — підсумок за період', () => {
     expect(http.get).toHaveBeenCalledWith(
       '/finance/summary',
       expect.objectContaining({
+        // From the fixed start to the end of today, the shared reporting window.
         params: {
           from: '2026-01-01T00:00:00.000Z',
-          to: '2026-02-01T00:00:00.000Z',
+          to: new Date(
+            Date.parse(new Date().toISOString().slice(0, 10)) + 86_400_000,
+          ).toISOString(),
         },
       }),
     );
