@@ -12,6 +12,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Path, status
 
+from app.core.openapi import refusals
 from app.core.responses import Envelope
 from app.modules.auth.dependencies import CurrentAuth
 from app.modules.rbac.dependencies import RbacServiceDep, ensure_scope_all, require_permission
@@ -39,6 +40,7 @@ def create_rbac_router() -> APIRouter:
     @router.get(
         "/check/{resource}/{action}",
         summary="Перевірити дозвіл поточного користувача",
+        responses=refusals(401),
     )
     async def check(
         auth: CurrentAuth,
@@ -49,7 +51,7 @@ def create_rbac_router() -> APIRouter:
         scope = await rbac.get_permission_scope(auth.user_id, resource, action)
         return Envelope(data=PermissionCheckOut(allowed=scope is not None, scope=scope))
 
-    @router.get("/roles", tags=["Roles"], summary="Переглянути ролі")
+    @router.get("/roles", tags=["Roles"], summary="Переглянути ролі", responses=refusals(401, 403))
     async def list_roles(scope: ReadScope, rbac: RbacServiceDep) -> Envelope[list[RoleOut]]:
         ensure_scope_all(scope)
         return Envelope(data=await rbac.list_roles())
@@ -59,6 +61,7 @@ def create_rbac_router() -> APIRouter:
         tags=["Roles"],
         status_code=status.HTTP_201_CREATED,
         summary="Створити роль",
+        responses=refusals(401, 403, 409),
     )
     async def create_role(
         payload: CreateRoleRequest, scope: CreateScope, rbac: RbacServiceDep
@@ -66,7 +69,12 @@ def create_rbac_router() -> APIRouter:
         ensure_scope_all(scope)
         return Envelope(data=await rbac.create_role(payload))
 
-    @router.put("/roles/{id}/permissions", tags=["Roles"], summary="Замінити дозволи ролі")
+    @router.put(
+        "/roles/{id}/permissions",
+        tags=["Roles"],
+        summary="Замінити дозволи ролі",
+        responses=refusals(401, 403, 404),
+    )
     async def replace_role_permissions(
         id: uuid.UUID,  # noqa: A002
         payload: ReplaceRolePermissionsRequest,

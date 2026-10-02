@@ -75,8 +75,10 @@ def _install_openapi(app: FastAPI) -> None:
                     continue
                 responses = operation.setdefault("responses", {})
                 # The framework advertises 422 for schema violations; this API
-                # answers 400 instead, so the generated entry would be a lie.
-                responses.pop("422", None)
+                # answers 400 instead, so the generated entry would be a lie. A
+                # 422 a route declares itself is a real refusal and stays.
+                if "HTTPValidationError" in str(responses.get("422", "")):
+                    responses.pop("422")
                 responses.setdefault(
                     "400", {"description": "Invalid request", "content": error_content}
                 )

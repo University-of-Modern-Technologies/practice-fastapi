@@ -128,7 +128,12 @@ def create_health_router(
             },
         )
 
-    @router.get("/ready", summary="Readiness probe")
+    # The 503 body is the probe report, not the error envelope.
+    @router.get(
+        "/ready",
+        summary="Readiness probe",
+        responses={503: {"description": "Одна або кілька залежностей недоступні"}},  # noqa: RUF001
+    )
     async def ready() -> JSONResponse:
         if not phase_source.is_accepting_traffic:
             return JSONResponse(

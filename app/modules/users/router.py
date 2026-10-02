@@ -12,6 +12,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query, Response, status
 
+from app.core.openapi import refusals
 from app.core.pagination import DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE
 from app.core.responses import Envelope, Page
 from app.db.enums import PermissionScope
@@ -45,7 +46,7 @@ def create_users_router() -> APIRouter:
     """Builds the router; the prefix is applied by the application factory."""
     router = APIRouter(tags=["Users"])
 
-    @router.get("", summary="Переглянути користувачів")
+    @router.get("", summary="Переглянути користувачів", responses=refusals(401, 403))
     async def list_users(
         scope: ReadScope,
         service: UsersServiceDep,
@@ -56,14 +57,19 @@ def create_users_router() -> APIRouter:
         items, total = await service.list_users(page, page_size)
         return Envelope(data=Page(items=items, page=page, page_size=page_size, total=total))
 
-    @router.post("", status_code=status.HTTP_201_CREATED, summary="Створити користувача")
+    @router.post(
+        "",
+        status_code=status.HTTP_201_CREATED,
+        summary="Створити користувача",
+        responses=refusals(401, 403, 404, 409),
+    )
     async def create_user(
         payload: CreateUserRequest, scope: CreateScope, service: UsersServiceDep
     ) -> Envelope[UserOut]:
         ensure_scope_all(scope)
         return Envelope(data=await service.create(payload))
 
-    @router.get("/{id}", summary="Отримати користувача")
+    @router.get("/{id}", summary="Отримати користувача", responses=refusals(401, 403, 404))
     async def get_user(
         id: uuid.UUID,  # noqa: A002
         auth: CurrentAuth,
@@ -73,7 +79,7 @@ def create_users_router() -> APIRouter:
         ensure_scope_covers(scope, auth, id)
         return Envelope(data=await service.get_by_id(id))
 
-    @router.patch("/{id}", summary="Оновити користувача")
+    @router.patch("/{id}", summary="Оновити користувача", responses=refusals(401, 403, 404, 409))
     async def update_user(
         id: uuid.UUID,  # noqa: A002
         payload: UpdateUserRequest,
@@ -83,7 +89,9 @@ def create_users_router() -> APIRouter:
         ensure_scope_all(scope)
         return Envelope(data=await service.update(id, payload))
 
-    @router.post("/{id}/disable", summary="Деактивувати користувача")
+    @router.post(
+        "/{id}/disable", summary="Деактивувати користувача", responses=refusals(401, 403, 404)
+    )
     async def disable_user(
         id: uuid.UUID,  # noqa: A002
         scope: DisableScope,
@@ -92,7 +100,12 @@ def create_users_router() -> APIRouter:
         ensure_scope_all(scope)
         return Envelope(data=await service.disable(id))
 
-    @router.get("/{id}/sessions", tags=["Sessions"], summary="Переглянути сесії користувача")
+    @router.get(
+        "/{id}/sessions",
+        tags=["Sessions"],
+        summary="Переглянути сесії користувача",
+        responses=refusals(401, 403, 404),
+    )
     async def list_user_sessions(
         id: uuid.UUID,  # noqa: A002
         auth: CurrentAuth,
@@ -108,6 +121,7 @@ def create_users_router() -> APIRouter:
         status_code=status.HTTP_204_NO_CONTENT,
         response_class=Response,
         summary="Відкликати сесію користувача",
+        responses=refusals(401, 403, 404),
     )
     async def revoke_user_session(
         id: uuid.UUID,  # noqa: A002

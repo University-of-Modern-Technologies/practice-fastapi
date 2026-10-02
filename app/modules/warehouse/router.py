@@ -12,6 +12,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query, Request, status
 
+from app.core.openapi import refusals
 from app.core.responses import Envelope, Page
 from app.db.enums import PermissionScope
 from app.events.dependencies import PublisherDep
@@ -76,7 +77,12 @@ def create_warehouse_router() -> APIRouter:
     """Builds the router; the prefix is applied by the application factory."""
     router = APIRouter()
 
-    @router.get("/warehouses", tags=["Warehouses"], summary="Переглянути склади")
+    @router.get(
+        "/warehouses",
+        tags=["Warehouses"],
+        summary="Переглянути склади",
+        responses=refusals(401, 403),
+    )
     async def list_warehouses(
         _access: ReadAccess, service: ServiceDep, params: WarehouseParams
     ) -> Envelope[Page[WarehouseOut]]:
@@ -85,7 +91,12 @@ def create_warehouse_router() -> APIRouter:
             data=Page(items=items, page=params.page, page_size=params.page_size, total=total)
         )
 
-    @router.get("/warehouses/{id}", tags=["Warehouses"], summary="Отримати склад")
+    @router.get(
+        "/warehouses/{id}",
+        tags=["Warehouses"],
+        summary="Отримати склад",
+        responses=refusals(401, 403, 404),
+    )
     async def get_warehouse(
         id: uuid.UUID,  # noqa: A002
         _access: ReadAccess,
@@ -98,13 +109,19 @@ def create_warehouse_router() -> APIRouter:
         tags=["Warehouses"],
         status_code=status.HTTP_201_CREATED,
         summary="Створити склад",
+        responses=refusals(401, 403, 409),
     )
     async def create_warehouse(
         payload: CreateWarehouseRequest, access: WriteAccess, service: ServiceDep
     ) -> Envelope[WarehouseOut]:
         return Envelope(data=await service.create_warehouse(access, payload))
 
-    @router.patch("/warehouses/{id}", tags=["Warehouses"], summary="Оновити склад")
+    @router.patch(
+        "/warehouses/{id}",
+        tags=["Warehouses"],
+        summary="Оновити склад",
+        responses=refusals(401, 403, 404),
+    )
     async def update_warehouse(
         id: uuid.UUID,  # noqa: A002
         payload: UpdateWarehouseRequest,
@@ -113,7 +130,9 @@ def create_warehouse_router() -> APIRouter:
     ) -> Envelope[WarehouseOut]:
         return Envelope(data=await service.update_warehouse(access, id, payload))
 
-    @router.get("/stock", tags=["Stock"], summary="Переглянути рівні запасів")
+    @router.get(
+        "/stock", tags=["Stock"], summary="Переглянути рівні запасів", responses=refusals(401, 403)
+    )
     async def list_stock(
         _access: ReadAccess, service: ServiceDep, params: StockParams
     ) -> Envelope[Page[StockLevelOut]]:
@@ -126,6 +145,7 @@ def create_warehouse_router() -> APIRouter:
         "/stock/{warehouse_id}/{product_id}",
         tags=["Stock"],
         summary="Отримати рівень запасів позиції на складі",
+        responses=refusals(401, 403, 404),
     )
     async def get_stock(
         warehouse_id: uuid.UUID,
@@ -135,37 +155,67 @@ def create_warehouse_router() -> APIRouter:
     ) -> Envelope[StockLevelOut]:
         return Envelope(data=await service.get_stock(warehouse_id, product_id))
 
-    @router.post("/stock/receive", tags=["Stock"], summary="Оприбуткувати запас")
+    @router.post(
+        "/stock/receive",
+        tags=["Stock"],
+        summary="Оприбуткувати запас",
+        responses=refusals(401, 403, 404, 409),
+    )
     async def receive_stock(
         payload: ReceiveStockRequest, access: WriteAccess, service: ServiceDep
     ) -> Envelope[StockLevelOut]:
         return Envelope(data=await service.receive(access, payload))
 
-    @router.post("/stock/issue", tags=["Stock"], summary="Списати запас")
+    @router.post(
+        "/stock/issue",
+        tags=["Stock"],
+        summary="Списати запас",
+        responses=refusals(401, 403, 404, 409),
+    )
     async def issue_stock(
         payload: IssueStockRequest, access: WriteAccess, service: ServiceDep
     ) -> Envelope[StockLevelOut]:
         return Envelope(data=await service.issue(access, payload))
 
-    @router.post("/stock/reserve", tags=["Stock"], summary="Зарезервувати запас")
+    @router.post(
+        "/stock/reserve",
+        tags=["Stock"],
+        summary="Зарезервувати запас",
+        responses=refusals(401, 403, 404, 409),
+    )
     async def reserve_stock(
         payload: ReserveStockRequest, access: WriteAccess, service: ServiceDep
     ) -> Envelope[StockLevelOut]:
         return Envelope(data=await service.reserve(access, payload))
 
-    @router.post("/stock/release", tags=["Stock"], summary="Зняти резерв")
+    @router.post(
+        "/stock/release",
+        tags=["Stock"],
+        summary="Зняти резерв",
+        responses=refusals(401, 403, 404, 409),
+    )
     async def release_stock(
         payload: ReleaseStockRequest, access: WriteAccess, service: ServiceDep
     ) -> Envelope[StockLevelOut]:
         return Envelope(data=await service.release(access, payload))
 
-    @router.post("/stock/adjust", tags=["Stock"], summary="Скоригувати запас")
+    @router.post(
+        "/stock/adjust",
+        tags=["Stock"],
+        summary="Скоригувати запас",
+        responses=refusals(401, 403, 404, 409),
+    )
     async def adjust_stock(
         payload: AdjustStockRequest, access: WriteAccess, service: ServiceDep
     ) -> Envelope[StockLevelOut]:
         return Envelope(data=await service.adjust(access, payload))
 
-    @router.get("/movements", tags=["Stock movements"], summary="Переглянути журнал рухів запасів")
+    @router.get(
+        "/movements",
+        tags=["Stock movements"],
+        summary="Переглянути журнал рухів запасів",
+        responses=refusals(401, 403),
+    )
     async def list_movements(
         _access: ReadAccess, service: ServiceDep, params: MovementParams
     ) -> Envelope[Page[StockMovementOut]]:

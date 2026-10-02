@@ -12,6 +12,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Path, Request, Response, status
 
+from app.core.openapi import refusals
 from app.core.responses import Envelope
 from app.db.enums import PermissionScope
 from app.modules.auth.dependencies import CurrentAuth, SessionDep
@@ -70,19 +71,21 @@ def create_settings_router() -> APIRouter:
     """Builds the router; the prefix is applied by the application factory."""
     router = APIRouter(tags=["Settings"])
 
-    @router.get("", summary="Переглянути всі налаштування організації")
+    @router.get(
+        "", summary="Переглянути всі налаштування організації", responses=refusals(401, 403)
+    )
     async def list_settings(
         _access: ReadAccess, service: SettingsServiceDep
     ) -> Envelope[list[SettingOut]]:
         return Envelope(data=await service.list())
 
-    @router.get("/{key}", summary="Отримати налаштування за ключем")
+    @router.get("/{key}", summary="Отримати налаштування за ключем", responses=refusals(401, 403))
     async def get_setting(
         key: SettingKey, _access: ReadAccess, service: SettingsServiceDep
     ) -> Envelope[SettingOut]:
         return Envelope(data=await service.get_by_key(key))
 
-    @router.put("/{key}", summary="Записати значення налаштування")
+    @router.put("/{key}", summary="Записати значення налаштування", responses=refusals(401, 403))
     async def upsert_setting(
         key: SettingKey,
         payload: UpsertSettingRequest,
@@ -96,6 +99,7 @@ def create_settings_router() -> APIRouter:
         status_code=status.HTTP_204_NO_CONTENT,
         response_class=Response,
         summary="Скинути налаштування до типового значення",
+        responses=refusals(401, 403, 404),
     )
     async def reset_setting(
         key: SettingKey, access: WriteAccess, service: SettingsServiceDep

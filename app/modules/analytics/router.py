@@ -17,6 +17,7 @@ from fastapi import APIRouter, Depends, Query, Request, Response
 from fastapi.responses import JSONResponse
 
 from app.core.errors import ValidationFailedError
+from app.core.openapi import refusals
 from app.core.responses import Envelope
 from app.db.enums import PermissionScope
 from app.modules.analytics.export import ANALYTICS_EXPORT_DESCRIPTORS, EXPORT_FORMATS, render_csv
@@ -101,7 +102,7 @@ def create_analytics_router() -> APIRouter:
     """Builds the router; the prefix is applied by the application factory."""
     router = APIRouter(tags=["Analytics"])
 
-    @router.get("/sales-summary", summary="Виторг за періодами")
+    @router.get("/sales-summary", summary="Виторг за періодами", responses=refusals(401, 403))
     async def sales_summary(
         _access: ReadAccess,
         service: AnalyticsServiceDep,
@@ -109,7 +110,11 @@ def create_analytics_router() -> APIRouter:
     ) -> Envelope[SalesSummaryReport]:
         return Envelope(data=await service.sales_summary(params.to_query()))
 
-    @router.get("/deal-funnel", summary="Воронка угод та конверсія між стадіями")
+    @router.get(
+        "/deal-funnel",
+        summary="Воронка угод та конверсія між стадіями",
+        responses=refusals(401, 403),
+    )
     async def deal_funnel(
         _access: ReadAccess,
         service: AnalyticsServiceDep,
@@ -117,7 +122,9 @@ def create_analytics_router() -> APIRouter:
     ) -> Envelope[DealFunnelReport]:
         return Envelope(data=await service.deal_funnel(params.to_query()))
 
-    @router.get("/top-products", summary="Товари з найбільшим виторгом")
+    @router.get(
+        "/top-products", summary="Товари з найбільшим виторгом", responses=refusals(401, 403)
+    )
     async def top_products(
         _access: ReadAccess,
         service: AnalyticsServiceDep,
@@ -125,7 +132,7 @@ def create_analytics_router() -> APIRouter:
     ) -> Envelope[TopProductsReport]:
         return Envelope(data=await service.top_products(params.to_query()))
 
-    @router.get("/owner-performance", summary="Результати менеджерів")
+    @router.get("/owner-performance", summary="Результати менеджерів", responses=refusals(401, 403))
     async def owner_performance(
         _access: ReadAccess,
         service: AnalyticsServiceDep,
@@ -133,7 +140,7 @@ def create_analytics_router() -> APIRouter:
     ) -> Envelope[OwnerPerformanceReport]:
         return Envelope(data=await service.owner_performance(params.to_query()))
 
-    @router.get("/stock-health", summary="Залишки нижче порогу")
+    @router.get("/stock-health", summary="Залишки нижче порогу", responses=refusals(401, 403))
     async def stock_health(
         _access: ReadAccess,
         service: AnalyticsServiceDep,
@@ -146,7 +153,9 @@ def create_analytics_router() -> APIRouter:
     # sixth report needs a new descriptor entry and nothing here. The
     # permission dependency is the same one guarding the report itself, since
     # `{report}` can only ever name one of the five already gated above.
-    @router.get("/{report}/export", summary="Вивантаження звіту, csv чи json")
+    @router.get(
+        "/{report}/export", summary="Вивантаження звіту, csv чи json", responses=refusals(401, 403)
+    )
     async def export_report(
         report: str,
         _access: ReadAccess,
