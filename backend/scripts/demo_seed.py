@@ -135,9 +135,7 @@ async def clear_previous_run(
         await connection.execute(users.delete().where(users.c.id.in_(batch)))
 
 
-def user_rows(
-    fixture: Sequence[Mapping[str, Any]], password_hash: str
-) -> list[dict[str, Any]]:
+def user_rows(fixture: Sequence[Mapping[str, Any]], password_hash: str) -> list[dict[str, Any]]:
     return [
         {
             "id": uuid.UUID(row["id"]),

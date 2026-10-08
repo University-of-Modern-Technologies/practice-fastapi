@@ -120,14 +120,37 @@ async def test_malformed_json_is_told_apart_from_a_wrong_shape(
     assert response.json()["error"]["code"] == "INVALID_JSON"
 
 
-def test_the_published_schema_never_advertises_422(openapi_schema: dict[str, Any]) -> None:
+#: The framework's own models for its validation answer: a 422 with `detail`.
+FRAMEWORK_VALIDATION_MODELS = ("HTTPValidationError", "ValidationError")
+
+
+def test_the_framework_validation_422_never_reaches_the_published_schema(
+    openapi_schema: dict[str, Any],
+) -> None:
+    """A schema violation is answered with 400, so the framework's 422 is a lie.
+
+    A 422 a route declares itself is a real refusal — a carrier rejecting a
+    shipment, a ticket move the workflow forbids — and stays in the schema.
+    Like every other refusal it carries the error envelope, which is how it is
+    told apart from the generated one pointing at the framework's `detail`.
+    """
+    envelope = {"$ref": "#/components/schemas/ErrorResponse"}
     offenders = [
         f"{method.upper()} {path}"
         for path, method, operation in iter_operations(openapi_schema)
         if "422" in operation.get("responses", {})
+        and operation["responses"]["422"]
+        .get("content", {})
+        .get("application/json", {})
+        .get("schema")
+        != envelope
     ]
+    components = openapi_schema.get("components", {}).get("schemas", {})
+    leftovers = [name for name in FRAMEWORK_VALIDATION_MODELS if name in components]
 
-    assert offenders == [], "A 422 in the schema is a promise this API never keeps"
+    message = "The framework's validation 422 reached the published schema: this API answers 400"
+    assert offenders == [], message
+    assert leftovers == [], message
 
 
 def test_every_operation_documents_the_error_envelope(openapi_schema: dict[str, Any]) -> None:

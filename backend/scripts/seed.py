@@ -11,13 +11,13 @@ Run with ``python -m scripts.seed``.
 from __future__ import annotations
 
 import asyncio
-import os
 import uuid
 from collections.abc import Mapping, Sequence
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import Any, cast
 
+from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy import Table, func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncConnection, create_async_engine
@@ -188,19 +188,29 @@ GRANTS: Mapping[str, Sequence[tuple[str, PermissionScope]]] = {
 }
 
 
+class SeedSettings(BaseSettings):
+    """The values only this script reads, from the environment or `.env`."""
+
+    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+
+    seed_user_password: str = ""
+    seed_allow_production: bool = False
+
+
 def read_seed_password() -> str:
-    """Reads and validates the demo password from the environment.
+    """Reads and validates the demo password from the environment or `.env`.
 
     The value is read here rather than through application settings: nothing the
     application serves needs it, and a fixture that only this script uses has no
     business widening the configuration the application validates on startup.
     """
-    settings = get_settings()
-    if settings.is_production:
-        message = "The training seed is local-only and cannot run in production."
+    seed_settings = SeedSettings()
+    # The production stack is a training stand, so it may be seeded on purpose.
+    if get_settings().is_production and not seed_settings.seed_allow_production:
+        message = "The training seed runs in production only with SEED_ALLOW_PRODUCTION=true."
         raise RuntimeError(message)
 
-    password = os.environ.get("SEED_USER_PASSWORD", "")
+    password = seed_settings.seed_user_password
     if len(password) < MIN_PASSWORD_LENGTH or password == PLACEHOLDER_PASSWORD:
         message = "SEED_USER_PASSWORD must contain at least 12 non-placeholder characters."
         raise RuntimeError(message)

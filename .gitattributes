@@ -8,11 +8,6 @@ Dockerfile text eol=lf
 *.yml text eol=lf
 *.yaml text eol=lf
 .env.example text eol=lf
-# Read by sh and by tools that choke on a carriage return.
-.husky/* text eol=lf
-*.sql text eol=lf
-.nvmrc text eol=lf
-.python-version text eol=lf
 
 *.png binary
 *.jpg binary
