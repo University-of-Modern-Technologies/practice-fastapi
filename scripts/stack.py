@@ -152,6 +152,7 @@ def setup() -> None:
         write_env_file(source, target, generated)
         print(paint("32", f"Created {name}"))
     portainer_password()
+    install_hooks()
 
     env = read_env()
     busy = [
@@ -198,6 +199,51 @@ def build() -> None:
 def test() -> None:
     run(["uv", "run", "pytest"], cwd=BACKEND_ROOT)
     run(["npm", "test"], cwd=FRONTEND_ROOT)
+
+
+def check() -> None:
+    # The same steps the CI jobs run, so a green `check` means a green pipeline.
+    check_backend()
+    check_web()
+
+
+def check_backend() -> None:
+    run(["uv", "run", "ruff", "format", "--check", "."], cwd=BACKEND_ROOT)
+    run(["uv", "run", "ruff", "check", "."], cwd=BACKEND_ROOT)
+    run(["uv", "run", "mypy"], cwd=BACKEND_ROOT)
+    run(["uv", "run", "pytest"], cwd=BACKEND_ROOT)
+
+
+def check_web() -> None:
+    run(["npm", "run", "ci"], cwd=FRONTEND_ROOT)
+
+
+def test_integration() -> None:
+    # Talks to the storage of `start:infra`; it never starts containers itself.
+    run(["uv", "run", "pytest", "-m", "integration", *sys.argv[2:]], cwd=BACKEND_ROOT)
+
+
+def install_hooks() -> None:
+    # prek comes with this project's dev dependencies; `install` wires it into git.
+    if not (REPO_ROOT / ".git").exists():
+        print(
+            paint(
+                "33",
+                "Not a git repository: after `git init`, run setup again for the pre-commit hook.",
+            )
+        )
+        return
+    prek = shutil.which("prek")
+    if prek is None:
+        print(paint("33", "The pre-commit hook was not installed: prek is missing, run `uv sync`."))
+        return
+    result = subprocess.run(
+        [prek, "install"], cwd=REPO_ROOT, capture_output=True, text=True, check=False
+    )
+    if result.returncode != 0:
+        print(paint("33", f"The pre-commit hook was not installed: {result.stderr.strip()}"))
+    else:
+        print(paint("32", "Installed the pre-commit hook (format and lint of staged files)"))
 
 
 def dev() -> None:
@@ -281,6 +327,10 @@ COMMANDS = {
     "prod:stop": prod_stop,
     "build": build,
     "test": test,
+    "check": check,
+    "check:backend": check_backend,
+    "check:web": check_web,
+    "test:integration": test_integration,
     "start:api": start_api,
     "start:infra": start_infra,
     "dev": dev,

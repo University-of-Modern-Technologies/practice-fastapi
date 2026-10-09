@@ -45,6 +45,7 @@ from app.modules.auth.types import (
     AuthContext,
     AuthResult,
 )
+from app.modules.calls import create_calls_router
 from app.modules.contacts import create_contacts_router
 from app.modules.contacts.router import get_contacts_service
 from app.modules.contacts.schemas import (
@@ -56,6 +57,8 @@ from app.modules.contacts.schemas import (
 from app.modules.contacts.types import ContactAccess
 from app.modules.deals import create_deals_router
 from app.modules.deals.types import DEAL_CONCURRENT_MODIFICATION
+from app.modules.finance import create_finance_router
+from app.modules.helpdesk import create_helpdesk_router
 from app.modules.integrations import create_integrations_router
 from app.modules.orders import create_orders_router
 from app.modules.orders.types import ORDER_CONCURRENT_MODIFICATION
@@ -415,6 +418,9 @@ def all_routers() -> list[tuple[str, APIRouter]]:
         ("rbac", create_rbac_router),
         ("users", create_users_router),
         ("audit", create_audit_router),
+        ("helpdesk", create_helpdesk_router),
+        ("calls", create_calls_router),
+        ("finance", create_finance_router),
         ("contacts", create_contacts_router),
         ("deals", create_deals_router),
         ("products", create_products_router),

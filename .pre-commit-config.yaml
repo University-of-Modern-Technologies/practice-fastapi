@@ -1,0 +1,34 @@
+# The pre-commit hook, run by prek (`uv run poe setup` installs it): format and
+# lint only what is staged, with each package's own tools and config. Tests stay
+# in `uv run poe check` and CI — a hook has to be fast enough that nobody is
+# tempted to skip it.
+#
+# The hooks are local on purpose: ruff comes from the backend's own lock file,
+# so the hook, `check` and CI run exactly the same version.
+
+repos:
+  - repo: local
+    hooks:
+      - id: backend-ruff-check
+        name: ruff check (backend)
+        language: system
+        entry: uv run --project backend ruff check --fix --force-exclude
+        files: ^backend/.*\.pyi?$
+
+      - id: backend-ruff-format
+        name: ruff format (backend)
+        language: system
+        entry: uv run --project backend ruff format --force-exclude
+        files: ^backend/.*\.pyi?$
+
+      - id: frontend-eslint
+        name: eslint (frontend)
+        language: system
+        entry: node scripts/hooks/run-in.mjs frontend eslint --fix --no-warn-ignored --
+        files: ^frontend/.*\.(ts|tsx|js|jsx|cjs|mjs)$
+
+      - id: frontend-prettier
+        name: prettier (frontend)
+        language: system
+        entry: node scripts/hooks/run-in.mjs frontend prettier --write --ignore-unknown --
+        files: ^frontend/.*\.(ts|tsx|js|jsx|cjs|mjs|json|md|css|ya?ml)$

@@ -6,7 +6,7 @@ requires-python = "==3.13.*"
 dependencies = []
 
 [dependency-groups]
-dev = ["poethepoet==0.48.0"]
+dev = ["poethepoet==0.48.0", "prek==0.5.3"]
 
 [tool.uv]
 package = false
@@ -19,6 +19,10 @@ stop = { cmd = "python scripts/stack.py stop", help = "Stop the stack; data is k
 "prod:stop" = { cmd = "python scripts/stack.py prod:stop", help = "Stop the production stack; data is kept" }
 build = { cmd = "python scripts/stack.py build", help = "Build the production images" }
 test = { cmd = "python scripts/stack.py test", help = "Run the backend and web client test suites" }
+check = { cmd = "python scripts/stack.py check", help = "Run every check CI runs: formatting, lint, types, unit tests, build" }
+"check:backend" = { cmd = "python scripts/stack.py check:backend", help = "Run the backend checks of CI" }
+"check:web" = { cmd = "python scripts/stack.py check:web", help = "Run the web client checks of CI" }
+"test:integration" = { cmd = "python scripts/stack.py test:integration", help = "Run the integration tests against start:infra" }
 "start:api" = { cmd = "python scripts/stack.py start:api", help = "Run only the API and its storage in Docker" }
 "start:infra" = { cmd = "python scripts/stack.py start:infra", help = "Run only PostgreSQL, Redis and MongoDB" }
 dev = { cmd = "python scripts/stack.py dev", help = "Run the API on this machine against start:infra" }
