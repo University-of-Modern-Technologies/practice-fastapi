@@ -1,7 +1,7 @@
 """Fixtures for the scenarios that need real storage.
 
 These scenarios are a run of their own: `uv run pytest -m integration`, against
-the storage `uv run poe start:infra` brings up from the repository root. A plain
+the storage `uv run poe docker:db` brings up from the repository root. A plain
 `uv run pytest` deselects them and never touches a server. The tests do not
 start Docker themselves.
 
@@ -84,9 +84,9 @@ _TEST_DATABASE_NAME = re.compile(r"(^|[-_])(test|testing)([-_]|$)", re.IGNORECAS
 #: Where `CREATE DATABASE` is issued from — every PostgreSQL server has it.
 MAINTENANCE_DATABASE = "postgres"
 
-START_HINT = "Start the storage from the repository root: uv run poe start:infra"
+START_HINT = "Start the storage from the repository root: uv run poe docker:db"
 SEPARATE_RUN_HINT = (
-    "start the storage from the repository root with `uv run poe start:infra`, "
+    "start the storage from the repository root with `uv run poe docker:db`, "
     "then run `uv run pytest -m integration` in backend/"
 )
 
