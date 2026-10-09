@@ -143,3 +143,36 @@ describe('Картка угоди — дозволи', () => {
     expect(screen.queryByRole('button', { name: 'Виграно' })).not.toBeInTheDocument();
   });
 });
+
+describe('Картка угоди — збереження після перечитування', () => {
+  // A 409 re-read used to bring in the new version while the fields kept the
+  // old values — the next save then wrote them over the other person's change.
+  it('після «Перечитати» зберігає поточні значення з поточною версією', async () => {
+    vi.mocked(http.patch).mockReset();
+    vi.mocked(http.patch).mockRejectedValueOnce(conflict('DEAL_CONCURRENT_MODIFICATION'));
+    await openCard('LEAD');
+
+    const title = screen.getByLabelText('Назва') as HTMLInputElement;
+    fireEvent.change(title, { target: { value: 'Моя назва' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Зберегти' }));
+    const reload = await screen.findByRole('button', { name: 'Перечитати' });
+
+    // Somebody else renamed the deal and moved its version on.
+    vi.mocked(http.get).mockResolvedValue({ ...deal('LEAD'), title: 'Чужа назва', version: 4 });
+    fireEvent.click(reload);
+    await waitFor(() => expect(title.value).toBe('Чужа назва'));
+
+    vi.mocked(http.patch).mockResolvedValueOnce({
+      ...deal('LEAD'),
+      title: 'Чужа назва',
+      version: 5,
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Зберегти' }));
+
+    await waitFor(() => expect(http.patch).toHaveBeenCalledTimes(2));
+    expect(vi.mocked(http.patch).mock.calls[1]?.[1]).toMatchObject({
+      version: 4,
+      title: 'Чужа назва',
+    });
+  });
+});

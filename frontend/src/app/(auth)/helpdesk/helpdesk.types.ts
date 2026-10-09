@@ -1,4 +1,4 @@
-import type { Id, IsoDate, IsoDateTime } from '@/types/domain';
+import type { Id, IsoDateTime } from '@/types/domain';
 
 /**
  * A ticket as the API returns it. `number` is the human handle operators quote
@@ -84,8 +84,9 @@ export interface TicketListQuery {
   readonly contactId?: Id;
   readonly assigneeId?: Id;
   readonly ownerId?: Id;
-  readonly openedFrom?: IsoDate;
-  readonly openedTo?: IsoDate;
+  /** Kyiv day boundaries as UTC instants: the API filters by date-time, the link keeps the day. */
+  readonly openedFrom?: IsoDateTime;
+  readonly openedTo?: IsoDateTime;
   readonly sortBy?: TicketSortField;
   readonly sortOrder?: 'asc' | 'desc';
 }

@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { DateTime } from '@/lib/date-time';
 import { ApiError } from '@/shared/api';
+import { DEFAULT_REPORT_FROM, defaultReportRange } from '@/shared/constants';
 import {
   AnalyticsService,
   isModuleUnavailable,
@@ -36,17 +38,19 @@ vi.mock('@/shared/api', async (importOriginal) => {
 const RANGE = { from: '2026-01-01T00:00:00.000Z', to: '2026-01-31T00:00:00.000Z' };
 
 describe('toWireRange', () => {
-  it('turns a calendar day into the instant that opens it', () => {
+  // Every date on screen is drawn in Kyiv, so a picked day starts at Kyiv
+  // midnight — in January that is 22:00 UTC of the day before.
+  it('turns a calendar day into the instant that opens it in Kyiv', () => {
     expect(toWireRange({ from: '2026-01-01', to: '2026-01-31' }).from).toBe(
-      '2026-01-01T00:00:00.000Z',
+      '2025-12-31T22:00:00.000Z',
     );
   });
 
-  it('ends the window at the next midnight, so the last day is included', () => {
+  it('ends the window at the next Kyiv midnight, so the last day is included', () => {
     // The interval is half-open: ending at the day's own midnight would ask for
     // a window holding nothing that happened on it.
     expect(toWireRange({ from: '2026-01-01', to: '2026-01-31' }).to).toBe(
-      '2026-02-01T00:00:00.000Z',
+      '2026-01-31T22:00:00.000Z',
     );
   });
 
@@ -59,7 +63,7 @@ describe('resolveRange', () => {
   it('fills in the window from 1 January 2026 to today when the query string names none', () => {
     const range = resolveRange(undefined, undefined);
 
-    expect(range).toEqual({ from: '2026-01-01', to: new Date().toISOString().slice(0, 10) });
+    expect(range).toEqual({ from: '2026-01-01', to: DateTime.today() });
     expect(describeRangeIssue(range)).toBeNull();
   });
 
@@ -76,6 +80,14 @@ describe('describeRangeIssue', () => {
 
   it('refuses a window that runs backwards', () => {
     expect(describeRangeIssue({ from: '2026-02-01', to: '2026-01-01' })).toContain('раніша');
+  });
+
+  it('keeps the default window inside the API maximum years from now', () => {
+    const range = defaultReportRange(Date.parse('2035-06-01T12:00:00.000Z'));
+
+    expect(range.to).toBe('2035-06-01');
+    expect(range.from > DEFAULT_REPORT_FROM).toBe(true);
+    expect(describeRangeIssue(range)).toBeNull();
   });
 
   it('refuses a window wider than the API scans', () => {

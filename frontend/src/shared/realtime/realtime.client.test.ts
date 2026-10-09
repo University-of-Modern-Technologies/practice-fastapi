@@ -67,6 +67,8 @@ const createHarness = (
     readonly url?: string;
     readonly token?: string | null;
     readonly renewedToken?: string | null;
+    /** The renewal cannot reach the API: the promise rejects. */
+    readonly renewalFails?: boolean;
   } = {},
 ): Harness => {
   const sockets: FakeSocket[] = [];
@@ -78,6 +80,7 @@ const createHarness = (
     getToken: () => state.token,
     renewSession: () => {
       state.renewals += 1;
+      if (overrides.renewalFails) return Promise.reject(new Error('offline'));
       const renewed = overrides.renewedToken ?? null;
       state.token = renewed;
       return Promise.resolve(renewed);
@@ -304,29 +307,33 @@ describe('createRealtimeClient — heartbeat', () => {
 });
 
 describe('createRealtimeClient — reconnection', () => {
-  it('backs off exponentially up to the ceiling', () => {
-    const harness = createHarness();
+  // A server that is down closes every attempt with 1006 before `open`. The
+  // first one costs a renewal, which cannot reach the API either; after that
+  // the client simply backs off.
+  it('backs off exponentially up to the ceiling', async () => {
+    const harness = createHarness({ renewalFails: true });
     harness.client.start();
 
     const expected = [1_000, 2_000, 4_000, 8_000, 16_000, 30_000, 30_000];
-    expected.forEach((delay, index) => {
+    for (const [index, delay] of expected.entries()) {
       harness.last().fireClose(1006);
       expect(harness.client.getStatus()).toBe('reconnecting');
 
-      vi.advanceTimersByTime(delay - 1);
+      await vi.advanceTimersByTimeAsync(delay - 1);
       expect(harness.sockets).toHaveLength(index + 1);
 
-      vi.advanceTimersByTime(1);
+      await vi.advanceTimersByTimeAsync(1);
       expect(harness.sockets).toHaveLength(index + 2);
-    });
+    }
+    expect(harness.renewals).toBe(1);
   });
 
-  it('resets the backoff once a connection succeeds', () => {
-    const harness = createHarness();
+  it('resets the backoff once a connection succeeds', async () => {
+    const harness = createHarness({ renewalFails: true });
     harness.client.start();
 
     harness.last().fireClose(1006);
-    vi.advanceTimersByTime(1_000);
+    await vi.advanceTimersByTimeAsync(1_000);
     harness.last().open();
 
     harness.last().fireClose(1001);
@@ -369,6 +376,44 @@ describe('createRealtimeClient — refused handshake', () => {
     expect(harness.renewals).toBe(1);
     expect(harness.sockets).toHaveLength(1);
     expect(harness.client.getStatus()).toBe('unauthorized');
+  });
+
+  // The Node gateway answers a bad token with HTTP 401 on the upgrade, so the
+  // page never sees 1008 — only 1006, before `open`.
+  it('renews once when the upgrade is refused before the socket opened', async () => {
+    const harness = createHarness({ renewedToken: 'token-2' });
+    harness.client.start();
+    harness.last().fireClose(1006);
+
+    await vi.runAllTimersAsync();
+
+    expect(harness.renewals).toBe(1);
+    expect(harness.sockets).toHaveLength(2);
+    expect(harness.last().protocols).toEqual(['bearer', 'token-2']);
+  });
+
+  it('stops when the session is gone after a refused upgrade', async () => {
+    const harness = createHarness({ renewedToken: null });
+    harness.client.start();
+    harness.last().fireClose(1006);
+
+    await vi.runAllTimersAsync();
+
+    expect(harness.renewals).toBe(1);
+    expect(harness.sockets).toHaveLength(1);
+    expect(harness.client.getStatus()).toBe('unauthorized');
+  });
+
+  it('does not renew on 1006 from a connection that was already open', () => {
+    const harness = createHarness({ renewedToken: 'token-2' });
+    harness.client.start();
+    harness.last().open();
+
+    harness.last().fireClose(1006);
+    vi.advanceTimersByTime(1_000);
+
+    expect(harness.renewals).toBe(0);
+    expect(harness.sockets).toHaveLength(2);
   });
 
   it('treats 1008 on a live connection as an ordinary drop', () => {

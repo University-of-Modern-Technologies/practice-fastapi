@@ -72,7 +72,10 @@ function CallCard({
   isReloading,
 }: {
   readonly call: Call;
-  readonly onReload: () => unknown;
+  readonly onReload: () => Promise<{
+    readonly data?: Call | undefined;
+    readonly isError?: boolean;
+  }>;
   readonly isReloading: boolean;
 }) {
   const router = useRouter();
@@ -131,7 +134,7 @@ function CallCard({
   };
 
   const deleteAction = (
-    <PermissionGate resource="calls" action="delete" fallback={null}>
+    <PermissionGate resource="calls" action="delete" ownerId={call.ownerId} fallback={null}>
       <DeleteConfirm
         onConfirm={onDelete}
         isPending={remove.isPending}
@@ -146,7 +149,7 @@ function CallCard({
   );
 
   const linkAction = (
-    <PermissionGate resource="calls" action="write" fallback={null}>
+    <PermissionGate resource="calls" action="write" ownerId={call.ownerId} fallback={null}>
       <Button icon={<Link2 size={16} />} onClick={() => setIsLinking(true)}>
         {call.contactId === null && call.dealId === null ? 'Привʼязати' : 'Змінити привʼязку'}
       </Button>
@@ -192,6 +195,7 @@ function CallCard({
       <PermissionGate
         resource="calls"
         action="write"
+        ownerId={call.ownerId}
         fallback={
           <Card
             title="Нотатки"

@@ -1,5 +1,6 @@
 import { ORDER_STATUSES } from '@/shared/constants';
 import { http, type Page, type QueryValue } from '@/shared/api';
+import { ORDER_SEARCH_MAX_LENGTH, withListLimits } from '@/shared/api/list-limits';
 import { listQuery } from '@/shared/api/query-builder';
 import type { ListParams } from '@/shared/hooks';
 import type { Id } from '@/types/domain';
@@ -23,8 +24,6 @@ const ROUTES = {
   item: (id: Id, itemId: Id): string => `/orders/${id}/items/${itemId}`,
   transitions: (id: Id): string => `/orders/${id}/transitions`,
 } as const;
-
-const ORDER_SEARCH_MAX_LENGTH = 64;
 
 /**
  * Turns the query string state into the shape the API expects. Filters live in
@@ -70,7 +69,9 @@ const toUpdateBody = (input: UpdateOrderInput): Readonly<Record<string, unknown>
 export const OrdersService = {
   list: (query: OrderListQuery, signal?: AbortSignal): Promise<Page<Order>> =>
     http.get<Page<Order>>(ROUTES.collection, {
-      params: query as Readonly<Record<string, QueryValue>>,
+      params: withListLimits(query, ORDER_SEARCH_MAX_LENGTH) as Readonly<
+        Record<string, QueryValue>
+      >,
       ...(signal ? { signal } : {}),
     }),
 

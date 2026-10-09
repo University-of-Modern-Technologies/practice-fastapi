@@ -1,5 +1,5 @@
 import type { CallDirection, CallDisposition } from '@/shared/constants';
-import type { Id, IsoDate, IsoDateTime } from '@/types/domain';
+import type { Id, IsoDateTime } from '@/types/domain';
 
 /**
  * A call as the API returns it.
@@ -68,8 +68,9 @@ export interface CallListQuery {
   readonly contactId?: Id;
   readonly dealId?: Id;
   readonly ownerId?: Id;
-  readonly startedFrom?: IsoDate;
-  readonly startedTo?: IsoDate;
+  /** Kyiv day boundaries as UTC instants: the API filters by date-time, the link keeps the day. */
+  readonly startedFrom?: IsoDateTime;
+  readonly startedTo?: IsoDateTime;
   /** Narrows to the calls that have been attributed to someone, or to those that have not. */
   readonly hasContact?: boolean;
   readonly sortBy?: CallSortField;

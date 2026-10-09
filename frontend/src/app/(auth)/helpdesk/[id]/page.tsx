@@ -167,7 +167,7 @@ export default function TicketPage({ params }: { params: Promise<{ id: string }>
   };
 
   const deleteAction = (
-    <PermissionGate resource="helpdesk" action="delete" fallback={null}>
+    <PermissionGate resource="helpdesk" action="delete" ownerId={ticket.ownerId} fallback={null}>
       <DeleteConfirm
         onConfirm={onDelete}
         isPending={remove.isPending}
@@ -224,6 +224,7 @@ export default function TicketPage({ params }: { params: Promise<{ id: string }>
           <PermissionGate
             resource="helpdesk"
             action="write"
+            ownerId={ticket.ownerId}
             fallback={<Typography.Text type="secondary">Немає прав на зміну стану</Typography.Text>}
           >
             <Space wrap>
@@ -251,6 +252,7 @@ export default function TicketPage({ params }: { params: Promise<{ id: string }>
       <PermissionGate
         resource="helpdesk"
         action="write"
+        ownerId={ticket.ownerId}
         fallback={
           <Card
             title="Дані звернення"

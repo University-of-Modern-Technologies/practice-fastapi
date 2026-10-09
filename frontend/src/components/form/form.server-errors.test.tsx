@@ -79,6 +79,25 @@ describe('applyServerErrors', () => {
     expect(applied).toHaveBeenCalledWith(false);
   });
 
+  // The Python base writes the path inside the request part, without `body.`.
+  it('кладе на поле повідомлення у форматі Python-бази', async () => {
+    save(bodyErrors('email: value is not a valid email address'));
+
+    expect(
+      await within(itemOf('Пошта')).findByText('value is not a valid email address'),
+    ).toBeInTheDocument();
+    expect(applied).toHaveBeenCalledWith(true);
+  });
+
+  // The Node base sends zod's `flattenError`: the message has a colon but no
+  // field path, and splitting it there would invent a field called "Too small".
+  it('не вигадує поле з повідомлення Node-бази, де шляху немає', () => {
+    save(bodyErrors('Too small: expected string to have >=2 characters'));
+
+    expect(applied).toHaveBeenCalledWith(false);
+    expect(screen.queryByText('expected string to have >=2 characters')).not.toBeInTheDocument();
+  });
+
   it('лишає загальному повідомленню помилку без назви поля', () => {
     save(bodyErrors('Тіло запиту завелике'));
 
@@ -99,5 +118,37 @@ describe('applyServerErrors', () => {
   ])('не падає, коли %s', (_name, error) => {
     expect(() => save(error)).not.toThrow();
     expect(applied).toHaveBeenCalledWith(false);
+  });
+});
+
+/** A form with a list, the shape order lines and similar repeated rows take. */
+const ListHarness = ({ error }: { readonly error: unknown }) => {
+  const [form] = Form.useForm();
+
+  return (
+    <Form form={form} layout="vertical" initialValues={{ items: [{ quantity: 1 }] }}>
+      <Form.List name="items">
+        {(rows) =>
+          rows.map((row) => (
+            <Form.Item key={row.key} name={[row.name, 'quantity']} label="Кількість">
+              <Input />
+            </Form.Item>
+          ))
+        }
+      </Form.List>
+      <button type="button" onClick={() => applied(applyServerErrors(form, error))}>
+        Зберегти
+      </button>
+    </Form>
+  );
+};
+
+describe('applyServerErrors — вкладені шляхи', () => {
+  it('знаходить поле рядка списку за шляхом з індексом', async () => {
+    renderWithProviders(<ListHarness error={bodyErrors('items.0.quantity: має бути більше 0')} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Зберегти' }));
+
+    expect(await within(itemOf('Кількість')).findByText('має бути більше 0')).toBeInTheDocument();
+    expect(applied).toHaveBeenCalledWith(true);
   });
 });

@@ -4,7 +4,7 @@ import { Button, Card, Space, Typography } from 'antd';
 import Link from 'next/link';
 import type { ReactNode } from 'react';
 import { PermissionGate } from '@/components';
-import { useHasPermission } from '@/shared/hooks';
+import { useCanActOn, useHasPermission } from '@/shared/hooks';
 import { useResolvedContact, contactLabel } from '../../contacts/contacts.queries';
 import { dealLabel, useResolvedDeal } from '../../deals/deals.queries';
 import { useResolvedUser, userLabel } from '../../users/users.queries';
@@ -92,6 +92,8 @@ export function CallLinks({
   const canReadContacts = useHasPermission('contacts', 'read');
   const canReadDeals = useHasPermission('deals', 'read');
   const canReadUsers = useHasPermission('users', 'read');
+  // Detaching is a write on this call: under an `OWN` grant only its owner may.
+  const canUnlink = useCanActOn('calls', 'write', call.ownerId);
 
   const contact = useResolvedContact(
     canReadContacts && call.contactId !== null ? call.contactId : undefined,
@@ -107,7 +109,7 @@ export function CallLinks({
         name={contact ? contactLabel(contact) : null}
         pending="Ще не привʼязано до контакту"
         unresolved="Контакт недоступний для читання"
-        onUnlink={onUnlinkContact}
+        onUnlink={canUnlink ? onUnlinkContact : undefined}
         isUnlinking={isUnlinking}
       />
 
@@ -117,7 +119,7 @@ export function CallLinks({
         name={deal ? dealLabel(deal) : null}
         pending="Ще не привʼязано до угоди"
         unresolved="Угода недоступна для читання"
-        onUnlink={onUnlinkDeal}
+        onUnlink={canUnlink ? onUnlinkDeal : undefined}
         isUnlinking={isUnlinking}
       />
 

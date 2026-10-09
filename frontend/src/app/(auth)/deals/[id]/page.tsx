@@ -131,7 +131,7 @@ export default function DealPage({ params }: { params: Promise<{ id: string }> }
   };
 
   const deleteAction = (
-    <PermissionGate resource="deals" action="delete" fallback={null}>
+    <PermissionGate resource="deals" action="delete" ownerId={deal.ownerId} fallback={null}>
       <DeleteConfirm
         onConfirm={onDelete}
         isPending={remove.isPending}
@@ -188,6 +188,7 @@ export default function DealPage({ params }: { params: Promise<{ id: string }> }
           <PermissionGate
             resource="deals"
             action="write"
+            ownerId={deal.ownerId}
             fallback={
               <Typography.Text type="secondary">Немає прав на зміну стадії</Typography.Text>
             }
@@ -218,6 +219,7 @@ export default function DealPage({ params }: { params: Promise<{ id: string }> }
       <PermissionGate
         resource="deals"
         action="write"
+        ownerId={deal.ownerId}
         fallback={
           <Card
             title="Дані угоди"

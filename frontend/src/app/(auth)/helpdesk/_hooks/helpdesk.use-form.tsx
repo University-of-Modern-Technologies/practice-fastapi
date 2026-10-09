@@ -1,15 +1,10 @@
 'use client';
 
 import { Col, Form, Input, Row, Select, type FormInstance } from 'antd';
-import { useCallback, useMemo, useState, type ReactNode } from 'react';
+import { useCallback, useMemo, type ReactNode } from 'react';
 import { ConflictAlert, ReferenceSelect, applyServerErrors, zodRule } from '@/components';
 import { ApiError } from '@/shared/api';
-import {
-  useHasPermission,
-  useMutationFeedback,
-  useUnsavedChanges,
-  useVersionConflict,
-} from '@/shared/hooks';
+import { useHasPermission, useMutationFeedback, useRecordForm } from '@/shared/hooks';
 import {
   contactLabel,
   useContactOptions,
@@ -51,8 +46,9 @@ interface UseTicketFormOptions {
   /** Absent on the create route; present, and the form edits that record. */
   readonly ticket?: Ticket | undefined;
   readonly onSaved: (ticket: Ticket) => void;
-  /** Re-reads the record after a lost race, so the next save carries the current version. */
-  readonly onReload?: (() => unknown) | undefined;
+  /** Re-reads the record after a lost race; the form then shows it with its version. */
+  readonly onReload?:
+    (() => Promise<{ readonly data?: Ticket | undefined; readonly isError?: boolean }>) | undefined;
   readonly isReloading?: boolean | undefined;
 }
 
@@ -74,6 +70,20 @@ interface UseTicketFormResult {
 }
 
 /**
+ * A ticket as the form shows it. Every field is named, absent ones included,
+ * so a re-read clears a value the other person removed instead of keeping ours.
+ */
+const toTicketValues = (ticket: Ticket): Partial<TicketFormValues> => ({
+  subject: ticket.subject,
+  body: ticket.body,
+  channel: ticket.channel,
+  priority: ticket.priority,
+  ownerId: ticket.ownerId,
+  contactId: ticket.contactId ?? undefined,
+  assigneeId: ticket.assigneeId ?? undefined,
+});
+
+/**
  * The one form behind both helpdesk routes. `status` is absent from it by
  * design: the status only moves through
  * `POST /helpdesk/tickets/:id/transitions`, so a field for it here would offer
@@ -86,9 +96,15 @@ export const useTicketForm = ({
   isReloading = false,
 }: UseTicketFormOptions): UseTicketFormResult => {
   const [form] = Form.useForm<TicketFormValues>();
-  const [isDirty, setIsDirty] = useState(false);
   const { reportSuccess, reportFailure } = useMutationFeedback();
-  const { hasConflict, handleError: handleConflict, clearConflict } = useVersionConflict();
+  // `base` is the copy on screen: its values are in the fields and its version
+  // is the one a save sends, even after a fresher copy reached the cache.
+  const { base, markDirty, adopt, hasConflict, handleConflict, reload } = useRecordForm({
+    form,
+    record: ticket,
+    toValues: toTicketValues,
+    onReload,
+  });
 
   const create = useCreateTicket();
   const update = useUpdateTicket(ticket?.id ?? '');
@@ -99,22 +115,10 @@ export const useTicketForm = ({
   const canReadContacts = useHasPermission('contacts', 'read');
   const canReadUsers = useHasPermission('users', 'read');
 
-  useUnsavedChanges(isDirty);
-
+  // Read once, at mount; every later copy reaches the fields through the hook.
   const initialValues = useMemo<Partial<TicketFormValues>>(
-    () =>
-      ticket
-        ? {
-            subject: ticket.subject,
-            body: ticket.body,
-            channel: ticket.channel,
-            priority: ticket.priority,
-            ownerId: ticket.ownerId,
-            ...(ticket.contactId === null ? {} : { contactId: ticket.contactId }),
-            ...(ticket.assigneeId === null ? {} : { assigneeId: ticket.assigneeId }),
-          }
-        : { channel: 'EMAIL', priority: 'NORMAL' },
-    [ticket],
+    () => (base ? toTicketValues(base) : { channel: 'EMAIL', priority: 'NORMAL' }),
+    [base],
   );
 
   const handleError = useCallback(
@@ -134,7 +138,7 @@ export const useTicketForm = ({
         }
         // Handing a record to somebody else is refused with 403 rather than
         // with a code of its own, so the status is what identifies it here.
-        if (error.isForbidden && ticket && form.getFieldValue('ownerId') !== ticket.ownerId) {
+        if (error.isForbidden && base && form.getFieldValue('ownerId') !== base.ownerId) {
           form.setFields([
             { name: 'ownerId', errors: ['Немає прав призначити звернення іншому власнику'] },
           ]);
@@ -145,27 +149,26 @@ export const useTicketForm = ({
       if (applyServerErrors(form, error)) return;
       reportFailure(error);
     },
-    [form, handleConflict, reportFailure, ticket],
+    [base, form, handleConflict, reportFailure],
   );
 
   const handleSaved = useCallback(
     (saved: Ticket, text: string) => {
-      setIsDirty(false);
-      clearConflict();
+      adopt(saved);
       reportSuccess(text);
       onSaved(saved);
     },
-    [clearConflict, onSaved, reportSuccess],
+    [adopt, onSaved, reportSuccess],
   );
 
   const submit = useCallback(() => {
     void form
       .validateFields()
       .then((values) => {
-        if (ticket) {
+        if (base) {
           const input: UpdateTicketInput = {
-            // The version read with the record; a stale one answers 409.
-            version: ticket.version,
+            // The version of the copy the user edited; a stale one answers 409.
+            version: base.version,
             subject: values.subject.trim(),
             body: values.body.trim(),
             channel: values.channel,
@@ -201,11 +204,7 @@ export const useTicketForm = ({
       // A form that failed its own rules has already marked the offending
       // fields; there is nothing further to report.
       .catch(() => undefined);
-  }, [create, form, handleError, handleSaved, ticket, update]);
-
-  const reload = useCallback(() => {
-    void Promise.resolve(onReload?.()).finally(() => clearConflict());
-  }, [clearConflict, onReload]);
+  }, [base, create, form, handleError, handleSaved, update]);
 
   const userPicker = (placeholder: string): ReactNode =>
     canReadUsers ? (
@@ -303,7 +302,7 @@ export const useTicketForm = ({
       initialValues,
       layout: 'vertical',
       requiredMark: false,
-      onValuesChange: () => setIsDirty(true),
+      onValuesChange: markDirty,
       onFinish: submit,
     },
     fields,

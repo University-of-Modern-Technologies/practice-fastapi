@@ -7,6 +7,7 @@ export {
   type SortOrder,
 } from './use-list-params';
 export { useMutationFeedback, type DomainMessages } from './use-mutation-feedback';
-export { useHasPermission, usePermissionScope } from './use-permission';
+export { canActOn, useCanActOn, useHasPermission, usePermissionScope } from './use-permission';
+export { useRecordForm } from './use-record-form';
 export { useUnsavedChanges } from './use-unsaved-changes';
 export { useVersionConflict } from './use-version-conflict';

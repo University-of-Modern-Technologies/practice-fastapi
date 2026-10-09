@@ -54,8 +54,8 @@ export const priceBoundSchema = z
 export interface ProductFormValues {
   readonly sku: string;
   readonly name: string;
-  readonly description?: string;
-  readonly category?: string;
+  readonly description?: string | undefined;
+  readonly category?: string | undefined;
   readonly unitPrice: string;
   readonly currency: string;
   readonly isActive: boolean;

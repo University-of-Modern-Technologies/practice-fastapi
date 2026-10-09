@@ -72,6 +72,17 @@ describe('DealsService', () => {
     });
   });
 
+  // A reference picker passes whatever was typed straight to `list`. Past the
+  // contract's `maxLength: 160` and `maximum: 100` the API answers 400 and the
+  // picker shows nothing at all.
+  it('holds search and page size to the bounds the API accepts', async () => {
+    await DealsService.list({ page: 1, pageSize: 500, search: 'я'.repeat(200) });
+
+    expect(get).toHaveBeenCalledWith('/deals', {
+      params: { page: 1, pageSize: 100, search: 'я'.repeat(160) },
+    });
+  });
+
   it('creates a deal at the collection route', async () => {
     const input = { title: 'Пілот', amount: '1200.00' };
 

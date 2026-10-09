@@ -66,8 +66,18 @@ export const ERROR_CODE = {
 export type ErrorCode = (typeof ERROR_CODE)[keyof typeof ERROR_CODE];
 
 /**
- * Shape of `details` on a 400 `VALIDATION_ERROR`. Both backends flatten their
- * validator the same way, which is what lets a message land on its own field.
+ * Shape of `details` on a 400 `VALIDATION_ERROR`. Both backends group the
+ * messages by request part, but they do not word them alike:
+ *
+ * - the Python base writes the field path inside the part in front of each
+ *   message — `"email: value is not a valid email address"`,
+ *   `"items.0.quantity: …"` — so a message can be put back on its field;
+ * - the Node base sends zod's `flattenError`, which keys by the request part
+ *   only and drops the rest of the path: `"Too small: expected string to have
+ *   >=2 characters"` says what is wrong but not where.
+ *
+ * `applyServerErrors` places the first kind and leaves the second to the
+ * generic notification.
  */
 export interface ValidationDetails {
   readonly formErrors?: readonly string[];

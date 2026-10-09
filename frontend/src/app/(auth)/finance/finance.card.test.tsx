@@ -132,6 +132,27 @@ describe('Платіж — стан «потрібен вибір»', () => {
     });
   });
 
+  // The payment was matched by someone else meanwhile. That is a 409 too, but
+  // not a lost race: the operator reads the domain's own sentence, and the card
+  // re-reads itself instead of offering a choice that has already been made.
+  it('на «вже зведено» каже саме це й перечитує платіж', async () => {
+    showCard(twoCandidates, ['finance:read', 'finance:write', 'orders:read']);
+    const { ApiError } = await import('@/shared/api');
+    vi.mocked(http.post).mockRejectedValue(
+      new ApiError({ status: 409, code: 'TRANSACTION_ALREADY_MATCHED', message: 'Matched' }),
+    );
+
+    await screen.findByText('SO-1001');
+    const readsBefore = vi.mocked(http.get).mock.calls.length;
+    fireEvent.click(screen.getAllByRole('button', { name: /Звести з цим/ })[0] as HTMLElement);
+
+    expect(
+      await screen.findByText('Транзакцію вже зведено — спершу зніміть наявне зведення'),
+    ).toBeInTheDocument();
+    expect(screen.queryByText('Запис змінив інший користувач')).not.toBeInTheDocument();
+    await waitFor(() => expect(vi.mocked(http.get).mock.calls.length).toBeGreaterThan(readsBefore));
+  });
+
   it('дає сказати, що не підходить жоден, а не змушує вибрати з переліку', async () => {
     showCard(twoCandidates, ['finance:read', 'finance:write', 'orders:read']);
 

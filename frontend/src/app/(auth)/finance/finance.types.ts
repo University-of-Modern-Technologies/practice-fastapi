@@ -252,8 +252,9 @@ export interface TransactionListQuery {
   readonly statementId?: Id;
   readonly matchStatus?: PaymentMatchStatus;
   readonly direction?: TransactionDirection;
-  readonly bookedFrom?: IsoDate;
-  readonly bookedTo?: IsoDate;
+  /** Kyiv day boundaries as UTC instants: the API filters by date-time, the link keeps the day. */
+  readonly bookedFrom?: IsoDateTime;
+  readonly bookedTo?: IsoDateTime;
   /** Money, so a string — the same shape every amount crosses the wire in. */
   readonly minAmount?: MoneyWire;
   readonly maxAmount?: MoneyWire;

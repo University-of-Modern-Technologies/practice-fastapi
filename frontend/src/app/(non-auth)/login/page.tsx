@@ -7,11 +7,11 @@ import { ApiError } from '@/shared/api';
 import { useLogin } from '@/shared/auth';
 import { useAuthStore } from '@/shared/stores';
 import { Brand } from '@/templates/layouts';
-import { loginSchema, type LoginFormValues } from './login.validation';
+import { loginSchema, safeNext, type LoginFormValues } from './login.validation';
 
-/** Only same-origin paths are honoured, so the parameter cannot bounce the user off-site. */
-const safeNext = (value: string | null): string =>
-  value && value.startsWith('/') && !value.startsWith('//') ? value : '/';
+/** The page's own origin; prerendering has none, and then nothing but `/` is trusted. */
+const currentOrigin = (): string =>
+  typeof window === 'undefined' ? 'http://localhost' : window.location.origin;
 
 const describe = (error: unknown): string => {
   if (error instanceof ApiError && error.status === 401) return 'Невірна пошта або пароль';
@@ -24,7 +24,9 @@ function LoginForm() {
   const searchParams = useSearchParams();
   const status = useAuthStore((state) => state.status);
   const login = useLogin();
-  const next = safeNext(searchParams.get('next'));
+  // Only a path on this site is honoured, so the parameter cannot bounce the
+  // user off-site after they have typed their password.
+  const next = safeNext(searchParams.get('next'), currentOrigin());
 
   useEffect(() => {
     // Covers both a successful sign-in and arriving here with a live session.

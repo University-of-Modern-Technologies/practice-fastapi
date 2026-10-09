@@ -12,6 +12,14 @@ export const CLOSE_CODE_GOING_AWAY = 1001;
 /** Sent on a failed handshake and on a missed heartbeat. */
 export const CLOSE_CODE_POLICY_VIOLATION = 1008;
 
+/**
+ * Reported by the browser itself when a socket ended without a close frame.
+ * Before `open` this is how a refused upgrade looks: a gateway that answers the
+ * handshake with HTTP 401 (or 403) never gets to send 1008, and the page sees
+ * only 1006 — the same code an unreachable server produces.
+ */
+export const CLOSE_CODE_ABNORMAL = 1006;
+
 /** Used by the client itself when it tears a socket down on purpose. */
 export const CLOSE_CODE_NORMAL = 1000;
 

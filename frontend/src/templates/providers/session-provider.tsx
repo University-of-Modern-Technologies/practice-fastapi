@@ -1,8 +1,8 @@
 'use client';
 
 import { useEffect, type ReactNode } from 'react';
-import { onSession, restoreSession } from '@/shared/api';
-import { applySession, clearSession } from '@/shared/auth';
+import { onSession } from '@/shared/api';
+import { applySession, clearSession, resumeSession } from '@/shared/auth';
 
 /**
  * Bridges the HTTP layer and the store. The access token lives in memory, so a
@@ -17,11 +17,10 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       else clearSession();
     });
 
-    void restoreSession().then((token) => {
-      // A cold load with no valid cookie is an ordinary anonymous visit, not an
-      // error: the status has to move off `unknown` so the guard can act.
-      if (!token) clearSession();
-    });
+    // A cold load with no valid cookie is an ordinary anonymous visit, and an
+    // API that cannot answer is a third outcome: either way the status moves
+    // off `unknown`, so the guard never waits on a skeleton forever.
+    void resumeSession();
 
     return unsubscribe;
   }, []);

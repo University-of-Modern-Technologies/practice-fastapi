@@ -93,14 +93,25 @@ const send = async (path: string, options: RequestOptions): Promise<Response> =>
  */
 let renewal: Promise<string | null> | null = null;
 
+/**
+ * Resolves with the new access token, or with null when the session is gone.
+ *
+ * Only a 401 means "gone": the refresh cookie is missing, expired or revoked.
+ * A 5xx, a rate limit or a dropped connection says nothing about the session —
+ * the cookie may be perfectly valid — so those reject instead, and whoever
+ * asked keeps the session and offers to try again. Signing the user out
+ * because the API restarted would cost them whatever they were typing.
+ */
 const renewSession = async (): Promise<string | null> => {
   const response = await send('/auth/refresh', { method: 'POST', anonymous: true });
 
-  if (!response.ok) {
+  if (response.status === 401) {
     setAccessToken(null);
     onSessionChange(null);
     return null;
   }
+
+  if (!response.ok) throw await toApiError(response);
 
   const { data } = (await response.json()) as Envelope<Session>;
   setAccessToken(data.accessToken);
@@ -115,7 +126,11 @@ const renewOnce = (): Promise<string | null> => {
   return renewal;
 };
 
-/** Restores a session from the refresh cookie on a cold page load. */
+/**
+ * Restores a session from the refresh cookie on a cold page load. Resolves
+ * with null for an anonymous visitor; rejects when the API could not answer,
+ * which is not the same thing and must not be shown as a sign-in form.
+ */
 export const restoreSession = (): Promise<string | null> => renewOnce();
 
 const parse = async <T>(response: Response): Promise<T> => {
@@ -140,6 +155,8 @@ const withRenewal = async <T>(
   // Anything other than an expired access token is the caller's to handle.
   if (response.status !== 401 || options.anonymous) throw await toApiError(response);
 
+  // A renewal that could not reach the API rejects here with its own error:
+  // the caller sees a failed request, not a lost session.
   const renewed = await renewOnce();
   if (!renewed) throw await toApiError(response);
 

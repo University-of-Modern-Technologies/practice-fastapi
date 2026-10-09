@@ -59,11 +59,11 @@ export const totalBoundSchema = z
 
 /** The fields of the order card itself; the lines are edited separately. */
 export interface OrderFormValues {
-  readonly ownerId?: string;
-  readonly contactId?: string;
-  readonly dealId?: string;
+  readonly ownerId?: string | undefined;
+  readonly contactId?: string | undefined;
+  readonly dealId?: string | undefined;
   readonly currency: string;
-  readonly discountTotal?: string;
-  readonly taxTotal?: string;
-  readonly notes?: string;
+  readonly discountTotal?: string | undefined;
+  readonly taxTotal?: string | undefined;
+  readonly notes?: string | undefined;
 }

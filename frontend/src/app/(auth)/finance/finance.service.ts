@@ -1,4 +1,5 @@
 import { ApiError, http, listQuery, type Page, type QueryValue } from '@/shared/api';
+import { SEARCH_MAX_LENGTH, withListLimits } from '@/shared/api/list-limits';
 import type { ListParams } from '@/shared/hooks';
 import type { Id } from '@/types/domain';
 import { readAmountFilter } from './finance.validation';
@@ -31,8 +32,6 @@ const ROUTES = {
   summary: '/finance/summary',
 } as const;
 
-const SEARCH_MAX_LENGTH = 64;
-
 /**
  * Turns the query string state into the shape the API expects. Every filter is
  * text in the URL, so a hand-edited link has to be narrowed down here — an
@@ -52,8 +51,8 @@ export const toTransactionListQuery = (
     .text('statementId')
     .oneOf('matchStatus', PAYMENT_MATCH_STATUSES)
     .oneOf('direction', TRANSACTION_DIRECTIONS)
-    .text('bookedFrom')
-    .text('bookedTo')
+    .dayStart('bookedFrom')
+    .dayEnd('bookedTo')
     .sort(isTransactionSortField)
     .build<TransactionListQuery>();
 
@@ -114,7 +113,7 @@ export const isVersionConflict = (error: unknown): boolean =>
 export const FinanceService = {
   statements: (query: StatementListQuery, signal?: AbortSignal): Promise<Page<BankStatement>> =>
     http.get<Page<BankStatement>>(ROUTES.statements, {
-      params: query as Readonly<Record<string, QueryValue>>,
+      params: withListLimits(query) as Readonly<Record<string, QueryValue>>,
       ...(signal ? { signal } : {}),
     }),
 
@@ -130,7 +129,7 @@ export const FinanceService = {
     signal?: AbortSignal,
   ): Promise<Page<BankTransaction>> =>
     http.get<Page<BankTransaction>>(ROUTES.transactions, {
-      params: query as Readonly<Record<string, QueryValue>>,
+      params: withListLimits(query) as Readonly<Record<string, QueryValue>>,
       ...(signal ? { signal } : {}),
     }),
 

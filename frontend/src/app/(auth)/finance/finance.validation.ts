@@ -1,5 +1,5 @@
 import { Money } from '@/lib/money';
-import { MAX_REPORT_RANGE_DAYS, defaultReportRange } from '@/shared/constants';
+import { MAX_REPORT_RANGE_DAYS, defaultReportRange, toReportWindow } from '@/shared/constants';
 import type { MoneyWire } from '@/types/domain';
 import type { BankTransaction, MatchCandidate } from './finance.types';
 
@@ -7,9 +7,6 @@ const DAY_MS = 86_400_000;
 
 /** Widest window the summary scans in one request; anything larger answers 400. */
 export const MAX_SUMMARY_DAYS = MAX_REPORT_RANGE_DAYS;
-
-/** A calendar day as the picker writes it into the query string. */
-const CALENDAR_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 
 const isReadableInstant = (value: string): boolean => !Number.isNaN(Date.parse(value));
 
@@ -40,20 +37,11 @@ export const resolveSummaryRange = (
 };
 
 /**
- * A calendar day names a whole day, not its first millisecond. The interval is
- * half-open, so the end is pushed to the following midnight — otherwise picking
- * "today" would ask for a window containing none of today's payments.
+ * A calendar day names a whole day of the display zone, not its first UTC
+ * millisecond: the window starts at Kyiv midnight of `from` and ends, open, at
+ * Kyiv midnight after `to`. See `shared/constants/reporting`.
  */
-export const toWireRange = (range: CalendarRange): WireRange => {
-  const start = CALENDAR_PATTERN.test(range.from)
-    ? Date.parse(`${range.from}T00:00:00.000Z`)
-    : Date.parse(range.from);
-  const end = CALENDAR_PATTERN.test(range.to)
-    ? Date.parse(`${range.to}T00:00:00.000Z`) + DAY_MS
-    : Date.parse(range.to);
-
-  return { from: new Date(start).toISOString(), to: new Date(end).toISOString() };
-};
+export const toWireRange = (range: CalendarRange): WireRange => toReportWindow(range);
 
 /** Says what is wrong with the chosen window, or nothing when it is usable. */
 export const describeRangeIssue = (range: CalendarRange): string | null => {

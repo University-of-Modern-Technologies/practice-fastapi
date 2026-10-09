@@ -18,7 +18,7 @@ import {
   StatusTag,
 } from '@/components';
 import { ORDER_STATUS, ORDER_STATUS_TRANSITIONS, isOrderEditable } from '@/shared/constants';
-import { useHasPermission, useMutationFeedback } from '@/shared/hooks';
+import { useCanActOn, useMutationFeedback } from '@/shared/hooks';
 import { AddItemModal, OrderItemsTable, OrderTotals, StatusTransitionModal } from '../_components';
 import { useOrderForm } from '../_hooks';
 import {
@@ -74,11 +74,13 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
   const { id } = use(params);
   const router = useRouter();
   const { reportSuccess, reportFailureWith } = useMutationFeedback();
-  const canWrite = useHasPermission('orders', 'write');
   const [isAdding, setIsAdding] = useState(false);
   const [isMoving, setIsMoving] = useState(false);
 
   const { data: order, isLoading, isError, isFetching, refetch } = useOrder(id);
+  // An `OWN` grant covers only the caller's own orders; the API refuses the
+  // rest, so lines and transitions are not offered on somebody else's.
+  const canWrite = useCanActOn('orders', 'write', order?.ownerId);
   const remove = useDeleteOrder(id);
   const duplicate = useDuplicateOrder(id);
   const updateItem = useUpdateOrderItem(id);
@@ -137,7 +139,7 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
   };
 
   const duplicateAction = (
-    <PermissionGate resource="orders" action="write" fallback={null}>
+    <PermissionGate resource="orders" action="write" ownerId={order.ownerId} fallback={null}>
       <Button icon={<CopyPlus size={16} />} loading={duplicate.isPending} onClick={onDuplicate}>
         Повторити
       </Button>
@@ -145,7 +147,7 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
   );
 
   const deleteAction = (
-    <PermissionGate resource="orders" action="delete" fallback={null}>
+    <PermissionGate resource="orders" action="delete" ownerId={order.ownerId} fallback={null}>
       <DeleteConfirm
         onConfirm={onDelete}
         isPending={remove.isPending}
@@ -198,6 +200,7 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
       <PermissionGate
         resource="orders"
         action="write"
+        ownerId={order.ownerId}
         fallback={
           <Card
             title="Дані замовлення"

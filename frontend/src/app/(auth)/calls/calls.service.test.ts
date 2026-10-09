@@ -70,8 +70,23 @@ describe('toCallListQuery', () => {
       pageSize: 20,
       direction: 'INBOUND',
       disposition: 'NO_ANSWER',
-      startedFrom: '2026-08-01',
+      // The API validates a date-time with an offset; the picked day opens at
+      // Kyiv midnight, which in August is 21:00 UTC the day before.
+      startedFrom: '2026-07-31T21:00:00.000Z',
     });
+  });
+
+  it('закриває період останньою мілісекундою дня за Києвом', () => {
+    const query = toCallListQuery(params({ startedTo: '2026-08-01' }));
+
+    expect(query.startedTo).toBe('2026-08-01T20:59:59.999Z');
+  });
+
+  it('відкидає дату, якої не буває, замість надіслати 400', () => {
+    const query = toCallListQuery(params({ startedFrom: '2026-02-31', startedTo: 'вчора' }));
+
+    expect(query).not.toHaveProperty('startedFrom');
+    expect(query).not.toHaveProperty('startedTo');
   });
 
   // A hand-edited link is the one place a value the API never agreed to can

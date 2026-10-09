@@ -1,5 +1,6 @@
 import {
   BEARER_SUBPROTOCOL,
+  CLOSE_CODE_ABNORMAL,
   CLOSE_CODE_NORMAL,
   CLOSE_CODE_POLICY_VIOLATION,
   parseDomainEvent,
@@ -52,7 +53,10 @@ export interface RealtimeClientOptions {
   readonly url: string;
   /** Read at connect time, never cached: the access token lives 15 minutes. */
   readonly getToken: () => string | null;
-  /** Single attempt to renew the session after a refused handshake. */
+  /**
+   * Single attempt to renew the session after a refused handshake. Null means
+   * the session is gone; a rejection means the API could not be reached.
+   */
   readonly renewSession: () => Promise<string | null>;
   readonly onEvent: (event: RealtimeDomainEvent, topic: string) => void;
   readonly socketFactory?: RealtimeSocketFactory;
@@ -258,7 +262,7 @@ export const createRealtimeClient = (options: RealtimeClientOptions): RealtimeCl
     }
   };
 
-  const handleClose = (code: number): void => {
+  const handleClose = (code: number, wasOpened: boolean): void => {
     stopHeartbeat();
     socket = null;
     confirmed.clear();
@@ -269,24 +273,41 @@ export const createRealtimeClient = (options: RealtimeClientOptions): RealtimeCl
       return;
     }
 
-    // 1008 also covers a missed server-side heartbeat, so a refused handshake
-    // is the case where no `connected` frame ever arrived.
-    if (code === CLOSE_CODE_POLICY_VIOLATION && status !== 'open') {
+    // A refused handshake reaches the page in one of two shapes. 1008 also
+    // covers a missed server-side heartbeat, so it counts only while no
+    // `connected` frame has arrived. A gateway that refuses the upgrade with
+    // HTTP 401 is seen as 1006 before `open` — indistinguishable, from here,
+    // from a server that is down; the renewal is what tells the two apart.
+    const isRefusedHandshake =
+      (code === CLOSE_CODE_POLICY_VIOLATION && status !== 'open') ||
+      (code === CLOSE_CODE_ABNORMAL && !wasOpened);
+
+    if (isRefusedHandshake) {
       if (renewalTried) {
-        setStatus('unauthorized');
+        // A fresh token was refused too. 1008 is the gateway's own verdict on
+        // it; 1006 may still be an outage, so that one keeps backing off.
+        if (code === CLOSE_CODE_POLICY_VIOLATION) setStatus('unauthorized');
+        else scheduleReconnect();
         return;
       }
       renewalTried = true;
-      void options.renewSession().then((token) => {
-        if (!started) return;
-        if (!token) {
-          setStatus('unauthorized');
-          return;
-        }
-        attempt = 0;
-        connect();
-      });
       setStatus('reconnecting');
+      options.renewSession().then(
+        (token) => {
+          if (!started) return;
+          if (!token) {
+            setStatus('unauthorized');
+            return;
+          }
+          attempt = 0;
+          connect();
+        },
+        () => {
+          // The renewal could not reach the API either: an outage rather than
+          // a refusal, and the session itself is still there.
+          if (started) scheduleReconnect();
+        },
+      );
       return;
     }
 
@@ -312,8 +333,11 @@ export const createRealtimeClient = (options: RealtimeClientOptions): RealtimeCl
     // every proxy access log.
     const opened = createSocket(url, [BEARER_SUBPROTOCOL, token]);
     socket = opened;
+    /** Whether this socket ever got past the HTTP upgrade. */
+    let wasOpened = false;
 
     opened.onopen = () => {
+      wasOpened = true;
       startHeartbeat();
     };
     opened.onmessage = (event) => {
@@ -322,7 +346,7 @@ export const createRealtimeClient = (options: RealtimeClientOptions): RealtimeCl
     opened.onclose = (event) => {
       if (socket !== opened) return;
       detach(opened);
-      handleClose(event.code);
+      handleClose(event.code, wasOpened);
     };
     opened.onerror = () => {
       // `error` is always followed by `close`; the close handler owns recovery.
