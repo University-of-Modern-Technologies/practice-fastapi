@@ -305,7 +305,8 @@ def test() -> None:
 
 
 def check() -> None:
-    # The same steps the CI jobs run, so a green `check` means a green pipeline.
+    # The API and web client jobs of CI; integration tests, the migrations check
+    # and the image build run there as well (`test:integration`, `docker:build`).
     check_api()
     check_web()
 
