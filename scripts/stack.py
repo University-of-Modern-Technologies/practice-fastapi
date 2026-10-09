@@ -127,14 +127,16 @@ def portainer_password() -> str:
     return PORTAINER_PASSWORD_FILE.read_text(encoding="utf-8").strip()
 
 
-def print_addresses() -> None:
+def print_addresses(*, docs: bool = True) -> None:
+    # Production mode serves no API docs (API_DOCS_ENABLED is off there).
     http = read_env().get("HTTP_PORT", "8080")
     password = read_env(BACKEND_ROOT / ".env").get(
         "SEED_USER_PASSWORD", "the SEED_USER_PASSWORD value from backend/.env"
     )
     print()
     print(paint("32", f"Ready: http://localhost:{http}"))
-    print(f"  API docs:  http://localhost:{http}/api/docs")
+    if docs:
+        print(f"  API docs:  http://localhost:{http}/api/docs")
     print(f"  Health:    http://localhost:{http}/api/health/ready")
     print()
     print("  Sign in as admin@crm-training.example")
@@ -246,7 +248,7 @@ def docker_prod() -> None:
     require_env()
     require_docker()
     compose("prod", ["up", "-d", "--build", "--wait"])
-    print_addresses()
+    print_addresses(docs=False)
 
 
 def docker_build() -> None:

@@ -11,9 +11,9 @@ repeated per route, so a sixth report cannot be published without a check.
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
-from typing import Annotated
+from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, Query, Request, Response
+from fastapi import APIRouter, Depends, Path, Query, Request, Response
 from fastapi.responses import JSONResponse
 
 from app.core.errors import ValidationFailedError
@@ -22,6 +22,7 @@ from app.core.responses import Envelope
 from app.db.enums import PermissionScope
 from app.modules.analytics.export import ANALYTICS_EXPORT_DESCRIPTORS, EXPORT_FORMATS, render_csv
 from app.modules.analytics.schemas import (
+    AnalyticsExportRows,
     DealFunnelParams,
     DealFunnelReport,
     OwnerPerformanceParams,
@@ -97,6 +98,63 @@ TopProductsQueryParams = Annotated[TopProductsParams, Query()]
 OwnerPerformanceQueryParams = Annotated[OwnerPerformanceParams, Query()]
 StockHealthQueryParams = Annotated[StockHealthParams, Query()]
 
+#: Only documents the choice: an unknown name is refused by the handler with
+#: the same envelope as before, not by the framework.
+ExportedReport = Annotated[
+    str, Path(json_schema_extra={"enum": list(ANALYTICS_EXPORT_DESCRIPTORS)})
+]
+
+
+def _inline_definitions(schema: dict[str, Any], definitions: dict[str, Any]) -> dict[str, Any]:
+    """Replaces a reference to a local definition with the definition itself.
+
+    A query model's schema points at its enums under ``$defs``, a section the
+    description does not have; the referenced schemas are flat, so one level
+    of substitution is enough.
+    """
+    reference = schema.get("$ref")
+    if not isinstance(reference, str):
+        return schema
+    rest = {key: value for key, value in schema.items() if key != "$ref"}
+    return {**definitions[reference.rsplit("/", 1)[-1]], **rest}
+
+
+def _export_query_parameters() -> list[dict[str, Any]]:
+    """The query the export accepts: ``format`` and every report's own query.
+
+    The handler hands the raw query to the report the path names, so a
+    parameter is declared for the description only, built from the same
+    models that validate it. Validation stays where it is, which is what keeps
+    an error for one report's parameter shaped as that report shapes it.
+    """
+    parameters: dict[str, dict[str, Any]] = {
+        "format": {
+            "name": "format",
+            "in": "query",
+            "required": False,
+            "schema": {"type": "string", "enum": list(EXPORT_FORMATS), "default": "csv"},
+        }
+    }
+    reports: dict[str, list[str]] = {}
+    for report, descriptor in ANALYTICS_EXPORT_DESCRIPTORS.items():
+        model_schema = descriptor.params_model.model_json_schema(by_alias=True)
+        definitions = model_schema.get("$defs", {})
+        for name, schema in model_schema.get("properties", {}).items():
+            reports.setdefault(name, []).append(report)
+            parameters.setdefault(
+                name,
+                {
+                    "name": name,
+                    "in": "query",
+                    "required": False,
+                    "schema": _inline_definitions(schema, definitions),
+                },
+            )
+    for name, used_by in reports.items():
+        if len(used_by) < len(ANALYTICS_EXPORT_DESCRIPTORS):
+            parameters[name]["description"] = "Застосовується до: " + ", ".join(used_by)
+    return list(parameters.values())
+
 
 def create_analytics_router() -> APIRouter:
     """Builds the router; the prefix is applied by the application factory."""
@@ -154,10 +212,20 @@ def create_analytics_router() -> APIRouter:
     # permission dependency is the same one guarding the report itself, since
     # `{report}` can only ever name one of the five already gated above.
     @router.get(
-        "/{report}/export", summary="Вивантаження звіту, csv чи json", responses=refusals(401, 403)
+        "/{report}/export",
+        summary="Вивантаження звіту, csv чи json",
+        responses={
+            200: {
+                "model": AnalyticsExportRows,
+                "description": "Рядки звіту: text/csv за замовчуванням, JSON для format=json",
+                "content": {"text/csv": {"schema": {"type": "string"}}},
+            },
+            **refusals(401, 403),
+        },
+        openapi_extra={"parameters": _export_query_parameters()},
     )
     async def export_report(
-        report: str,
+        report: ExportedReport,
         _access: ReadAccess,
         service: AnalyticsServiceDep,
         request: Request,

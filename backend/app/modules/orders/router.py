@@ -11,7 +11,7 @@ from __future__ import annotations
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query, Request, Response, status
+from fastapi import APIRouter, Depends, Path, Query, Request, Response, status
 
 from app.core.openapi import refusals
 from app.core.responses import Envelope, Page
@@ -37,6 +37,8 @@ from app.modules.rbac.dependencies import require_permission
 ReadScope = Annotated[PermissionScope, Depends(require_permission("orders", "read"))]
 WriteScope = Annotated[PermissionScope, Depends(require_permission("orders", "write"))]
 DeleteScope = Annotated[PermissionScope, Depends(require_permission("orders", "delete"))]
+#: A path segment published under the contract's name; the handler keeps a readable one.
+ItemId = Annotated[uuid.UUID, Path(alias="itemId")]
 
 ListParams = Annotated[OrderListParams, Query()]
 #: Optimistic locking on a request that carries no body.
@@ -80,9 +82,9 @@ def _access(auth: AuthContext, scope: PermissionScope, request: Request) -> Orde
 
 def create_orders_router() -> APIRouter:
     """Builds the router; the prefix is applied by the application factory."""
-    router = APIRouter(tags=["Orders"])
+    router = APIRouter()
 
-    @router.get("", summary="Переглянути замовлення", responses=refusals(401, 403))
+    @router.get("", tags=["Orders"], summary="Переглянути замовлення", responses=refusals(401, 403))
     async def list_orders(
         request: Request,
         auth: CurrentAuth,
@@ -98,6 +100,7 @@ def create_orders_router() -> APIRouter:
     @router.post(
         "",
         status_code=status.HTTP_201_CREATED,
+        tags=["Orders"],
         summary="Створити замовлення",
         responses=refusals(401, 403, 404, 409),
     )
@@ -113,6 +116,7 @@ def create_orders_router() -> APIRouter:
     @router.post(
         "/{id}/duplicate",
         status_code=status.HTTP_201_CREATED,
+        tags=["Orders"],
         summary="Повторити замовлення",
         responses=refusals(401, 403, 404, 409),
     )
@@ -125,7 +129,9 @@ def create_orders_router() -> APIRouter:
     ) -> Envelope[OrderOut]:
         return Envelope(data=await service.duplicate(_access(auth, scope, request), id))
 
-    @router.get("/{id}", summary="Отримати замовлення", responses=refusals(401, 403, 404))
+    @router.get(
+        "/{id}", tags=["Orders"], summary="Отримати замовлення", responses=refusals(401, 403, 404)
+    )
     async def get_order(
         id: uuid.UUID,  # noqa: A002
         request: Request,
@@ -135,7 +141,12 @@ def create_orders_router() -> APIRouter:
     ) -> Envelope[OrderOut]:
         return Envelope(data=await service.get_by_id(_access(auth, scope, request), id))
 
-    @router.patch("/{id}", summary="Оновити замовлення", responses=refusals(401, 403, 404, 409))
+    @router.patch(
+        "/{id}",
+        tags=["Orders"],
+        summary="Оновити замовлення",
+        responses=refusals(401, 403, 404, 409),
+    )
     # A path parameter, a body and the three standard dependencies; there is
     # nothing here to bundle that would not just hide a parameter.
     async def update_order(  # noqa: PLR0913, PLR0917
@@ -151,6 +162,7 @@ def create_orders_router() -> APIRouter:
     @router.post(
         "/{id}/items",
         status_code=status.HTTP_201_CREATED,
+        tags=["Order items"],
         summary="Додати позицію до замовлення",
         responses=refusals(401, 403, 404, 409),
     )
@@ -165,13 +177,14 @@ def create_orders_router() -> APIRouter:
         return Envelope(data=await service.add_item(_access(auth, scope, request), id, payload))
 
     @router.patch(
-        "/{id}/items/{item_id}",
+        "/{id}/items/{itemId}",
+        tags=["Order items"],
         summary="Оновити позицію замовлення",
         responses=refusals(401, 403, 404, 409),
     )
     async def update_order_item(  # noqa: PLR0913, PLR0917
         id: uuid.UUID,  # noqa: A002
-        item_id: uuid.UUID,
+        item_id: ItemId,
         payload: UpdateOrderItemRequest,
         request: Request,
         auth: CurrentAuth,
@@ -183,13 +196,14 @@ def create_orders_router() -> APIRouter:
         )
 
     @router.delete(
-        "/{id}/items/{item_id}",
+        "/{id}/items/{itemId}",
+        tags=["Order items"],
         summary="Видалити позицію із замовлення",
         responses=refusals(401, 403, 404, 409),
     )
     async def remove_order_item(  # noqa: PLR0913, PLR0917
         id: uuid.UUID,  # noqa: A002
-        item_id: uuid.UUID,
+        item_id: ItemId,
         version: VersionQuery,
         request: Request,
         auth: CurrentAuth,
@@ -202,6 +216,7 @@ def create_orders_router() -> APIRouter:
 
     @router.post(
         "/{id}/transitions",
+        tags=["Order transitions"],
         summary="Змінити статус замовлення",
         responses=refusals(401, 403, 404, 409),
     )
@@ -219,6 +234,7 @@ def create_orders_router() -> APIRouter:
         "/{id}",
         status_code=status.HTTP_204_NO_CONTENT,
         response_class=Response,
+        tags=["Orders"],
         summary="Видалити замовлення",
         responses=refusals(401, 403, 404, 409),
     )

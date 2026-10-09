@@ -16,7 +16,7 @@ from datetime import date
 from decimal import Decimal
 from typing import Annotated, Literal, Self
 
-from pydantic import BeforeValidator, Field, field_validator, model_validator
+from pydantic import BeforeValidator, Field, WithJsonSchema, field_validator, model_validator
 
 from app.core.pagination import DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, SortOrder
 from app.core.responses import CamelModel
@@ -61,7 +61,13 @@ def _parse_currency(value: object) -> object:
     return code.upper()
 
 
-AmountIn = Annotated[Decimal, BeforeValidator(_parse_amount)]
+#: Published as what the validator accepts, a decimal string; the schema the
+#: framework derives for a ``Decimal`` would also offer a JSON number.
+AmountIn = Annotated[
+    Decimal,
+    BeforeValidator(_parse_amount),
+    WithJsonSchema({"type": "string", "pattern": AMOUNT_PATTERN.pattern}),
+]
 CurrencyIn = Annotated[str, BeforeValidator(_parse_currency)]
 Probability = Annotated[int, Field(ge=MIN_PROBABILITY, le=MAX_PROBABILITY)]
 #: Optimistic locking counter as the client echoes it back.

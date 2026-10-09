@@ -85,7 +85,7 @@ def test_a_secured_operation_documents_the_missing_token(schema: dict[str, Any])
 
 def test_the_versioned_product_update_documents_its_conflict(schema: dict[str, Any]) -> None:
     """The case that showed the gap: a stale version answers 409."""
-    responses = schema["paths"]["/api/v1/products/{product_id}"]["patch"]["responses"]
+    responses = schema["paths"]["/api/v1/products/{id}"]["patch"]["responses"]
 
     assert responses["409"]["content"]["application/json"]["schema"] == {
         "$ref": "#/components/schemas/ErrorResponse"

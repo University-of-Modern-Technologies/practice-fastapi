@@ -8,6 +8,7 @@ from typing import Any
 from pydantic import Field
 
 from app.core.responses import CamelModel
+from app.modules.settings.registry import SETTING_KEYS
 from app.modules.settings.types import SettingSource
 
 MAX_DESCRIPTION_LENGTH = 255
@@ -26,7 +27,9 @@ class SettingOut(CamelModel):
     one shape fewer to keep in step.
     """
 
-    key: str
+    #: Typed as a string so a cached entry is read back as it was written; the
+    #: enum documents the closed set the service renders, which is the registry.
+    key: str = Field(json_schema_extra={"enum": list(SETTING_KEYS)})
     value: Any
     description: str
     updated_by_id: uuid.UUID | None

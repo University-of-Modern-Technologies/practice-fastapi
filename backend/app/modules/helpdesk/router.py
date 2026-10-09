@@ -84,9 +84,11 @@ DeleteAccess = Annotated[TicketAccess, Depends(get_delete_access)]
 
 def create_helpdesk_router() -> APIRouter:
     """Builds the router; the prefix is applied by the application factory."""
-    router = APIRouter(tags=["Helpdesk"])
+    router = APIRouter()
 
-    @router.get("/tickets", summary="Переглянути звернення", responses=refusals(401, 403))
+    @router.get(
+        "/tickets", tags=["Helpdesk"], summary="Переглянути звернення", responses=refusals(401, 403)
+    )
     async def list_tickets(
         access: ReadAccess,
         service: HelpdeskServiceDep,
@@ -100,6 +102,7 @@ def create_helpdesk_router() -> APIRouter:
     @router.post(
         "/tickets",
         status_code=status.HTTP_201_CREATED,
+        tags=["Helpdesk"],
         summary="Створити звернення",
         # The published description is Ukrainian and has to match the sibling
         # backend character for character, so the lone Cyrillic vowel that
@@ -114,7 +117,12 @@ def create_helpdesk_router() -> APIRouter:
     ) -> Envelope[TicketOut]:
         return Envelope(data=await service.create(access, payload))
 
-    @router.get("/tickets/{id}", summary="Отримати звернення", responses=refusals(401, 403, 404))
+    @router.get(
+        "/tickets/{id}",
+        tags=["Helpdesk"],
+        summary="Отримати звернення",
+        responses=refusals(401, 403, 404),
+    )
     async def get_ticket(
         id: uuid.UUID,  # noqa: A002
         access: ReadAccess,
@@ -124,6 +132,7 @@ def create_helpdesk_router() -> APIRouter:
 
     @router.patch(
         "/tickets/{id}",
+        tags=["Helpdesk"],
         summary="Оновити звернення без зміни статусу",
         responses=refusals(401, 403, 404, 409),
     )
@@ -156,6 +165,7 @@ def create_helpdesk_router() -> APIRouter:
         "/tickets/{id}",
         status_code=status.HTTP_204_NO_CONTENT,
         response_class=Response,
+        tags=["Helpdesk"],
         summary="Видалити звернення",
         responses=refusals(401, 403, 404, 409),
     )

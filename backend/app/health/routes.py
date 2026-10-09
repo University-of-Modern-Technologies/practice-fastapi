@@ -14,18 +14,20 @@ import time
 import tomllib
 from importlib import metadata
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 
 from app.core.logging import get_logger
+from app.core.responses import CamelModel
 from app.core.settings import Settings
-from app.health.lifecycle import ServiceLifecycle, service_lifecycle
+from app.health.lifecycle import LifecyclePhase, ServiceLifecycle, service_lifecycle
 from app.health.readiness import (
     DEFAULT_CHECK_TIMEOUT_SECONDS,
     ReadinessCheck,
     ReadinessCheckResult,
+    ReadinessStatus,
     is_degraded,
     is_ready,
     run_readiness_checks,
@@ -75,6 +77,34 @@ def _read_version() -> str:
 SERVICE_VERSION = _read_version()
 
 
+class LivenessReport(CamelModel):
+    """Body of ``GET /api/health/live``."""
+
+    status: Literal["ok"]
+
+
+class ReadinessCheckReport(CamelModel):
+    """One dependency check as the readiness report publishes it."""
+
+    name: str
+    status: ReadinessStatus
+    duration_ms: float
+    critical: bool
+
+
+class ReadinessReport(CamelModel):
+    """Body of ``GET /api/health/ready``, the same shape for 200 and 503.
+
+    The handler writes the body itself, so the status code can follow the
+    verdict; this model is what the description publishes for it, and a test
+    holds the two together.
+    """
+
+    status: Literal["ready", "degraded", "not_ready", "draining"]
+    phase: LifecyclePhase
+    checks: list[ReadinessCheckReport]
+
+
 def _to_public(result: ReadinessCheckResult) -> dict[str, Any]:
     """Public per-check payload: never carries the failure cause."""
     return {
@@ -111,10 +141,10 @@ def create_health_router(
     phase_source = lifecycle or service_lifecycle
 
     @router.get("/live", summary="Liveness probe")
-    async def live() -> dict[str, str]:
+    async def live() -> LivenessReport:
         # Liveness stays successful while draining: the process is healthy, it
         # is simply no longer accepting new traffic — that is what readiness says.
-        return {"status": "ok"}
+        return LivenessReport(status="ok")
 
     # Kept out of the published schema: an orchestrator probe is not part of the
     # API contract a client codes against.
@@ -133,7 +163,13 @@ def create_health_router(
     @router.get(
         "/ready",
         summary="Readiness probe",
-        responses={503: {"description": "Одна або кілька залежностей недоступні"}},  # noqa: RUF001
+        responses={
+            200: {"model": ReadinessReport},
+            503: {
+                "model": ReadinessReport,
+                "description": "One or more dependencies are unavailable",
+            },
+        },
     )
     async def ready() -> JSONResponse:
         if not phase_source.is_accepting_traffic:

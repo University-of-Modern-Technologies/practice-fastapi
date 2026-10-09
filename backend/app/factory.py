@@ -14,8 +14,10 @@ from fastapi import APIRouter, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
 
+from app.core.api_docs import install_swagger_ui
 from app.core.handlers import register_exception_handlers
 from app.core.logging import configure_logging
+from app.core.openapi import RESPONSE_DESCRIPTIONS, operation_id
 from app.core.responses import ErrorResponse
 from app.core.settings import Settings
 from app.health.readiness import ReadinessCheck
@@ -44,9 +46,22 @@ OAUTH2_REDIRECT_URL = f"{DOCS_URL}/oauth2-redirect"
 OPENAPI_URL = "/api/openapi.json"
 HEALTH_PREFIX = "/api/health"
 
-# The interactive docs load their bundle from a CDN, so the content policy is
-# lifted for those two paths only.
+# The docs page and its OAuth2 redirect boot Swagger UI from an inline script,
+# which the content policy's `script-src 'self'` would block, so the policy is
+# lifted for those two paths only. The bundle itself is served locally.
 _CSP_EXEMPT_PATHS = frozenset({DOCS_URL, OAUTH2_REDIRECT_URL})
+
+
+def _can_reject_input(path: str, operation: dict[str, Any]) -> bool:
+    """Whether an operation can answer 400 for what the client sent.
+
+    A probe that reads neither a parameter nor a body has nothing to reject.
+    The business API declares the answer on every operation, the few without
+    input included, so a client handles it the same way everywhere.
+    """
+    if not path.startswith(f"{HEALTH_PREFIX}/"):
+        return True
+    return bool(operation.get("parameters")) or "requestBody" in operation
 
 
 def _install_openapi(app: FastAPI) -> None:
@@ -73,7 +88,7 @@ def _install_openapi(app: FastAPI) -> None:
             "application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}
         }
 
-        for path_item in schema.get("paths", {}).values():
+        for path, path_item in schema.get("paths", {}).items():
             for operation in path_item.values():
                 if not isinstance(operation, dict):
                     continue
@@ -83,11 +98,12 @@ def _install_openapi(app: FastAPI) -> None:
                 # 422 a route declares itself is a real refusal and stays.
                 if "HTTPValidationError" in str(responses.get("422", "")):
                     responses.pop("422")
+                if _can_reject_input(path, operation):
+                    responses.setdefault(
+                        "400", {"description": RESPONSE_DESCRIPTIONS[400], "content": error_content}
+                    )
                 responses.setdefault(
-                    "400", {"description": "Invalid request", "content": error_content}
-                )
-                responses.setdefault(
-                    "500", {"description": "Internal server error", "content": error_content}
+                    "500", {"description": RESPONSE_DESCRIPTIONS[500], "content": error_content}
                 )
 
         # The 422 entries were the only referents of the framework's validation
@@ -120,10 +136,15 @@ def create_app(  # noqa: PLR0913
         title="Practice CRM API",
         version=SERVICE_VERSION,
         description="Навчальна CRM API",
-        docs_url=DOCS_URL,
-        openapi_url=OPENAPI_URL,
-        swagger_ui_oauth2_redirect_url=OAUTH2_REDIRECT_URL,
+        # The framework's own docs page loads Swagger UI from a CDN; the page
+        # is mounted below with local assets instead.
+        docs_url=None,
+        openapi_url=OPENAPI_URL if settings.api_docs_enabled else None,
+        swagger_ui_oauth2_redirect_url=None,
         redoc_url=None,
+        # Applied to every route as mounted, so the name is built from the
+        # full path; a route that names itself would bypass the shared rule.
+        generate_unique_id_function=operation_id,
         lifespan=lifespan,
     )
     # The lifespan does not run under the in-process test transport, so the
@@ -166,6 +187,15 @@ def create_app(  # noqa: PLR0913
     app.add_middleware(RequestIdMiddleware)
 
     register_exception_handlers(app, settings)
+
+    # Off means not mounted at all: the paths answer 404 like any unknown one.
+    if settings.api_docs_enabled:
+        install_swagger_ui(
+            app,
+            docs_url=DOCS_URL,
+            openapi_url=OPENAPI_URL,
+            oauth2_redirect_url=OAUTH2_REDIRECT_URL,
+        )
 
     app.include_router(create_health_router(settings, readiness_checks), prefix=HEALTH_PREFIX)
 

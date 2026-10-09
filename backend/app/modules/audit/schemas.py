@@ -45,7 +45,9 @@ class AuditRecordOut(CamelModel):
     action: str
     entity_type: str
     entity_id: uuid.UUID | None
-    changes: Any = None
-    metadata: Any = None
+    #: Always present on the wire, ``null`` when the action recorded nothing;
+    #: the column holds a JSON object or nothing.
+    changes: dict[str, Any] | None
+    metadata: dict[str, Any] | None
     ip_address: str | None
     created_at: UtcDatetime

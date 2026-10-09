@@ -10,7 +10,7 @@ from __future__ import annotations
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query, Request, status
+from fastapi import APIRouter, Depends, Path, Query, Request, status
 
 from app.core.openapi import refusals
 from app.core.responses import Envelope, Page
@@ -38,6 +38,9 @@ from app.modules.warehouse.types import WAREHOUSE_RESOURCE, WarehouseAccess
 
 ReadScope = Annotated[PermissionScope, Depends(require_permission(WAREHOUSE_RESOURCE, "read"))]
 WriteScope = Annotated[PermissionScope, Depends(require_permission(WAREHOUSE_RESOURCE, "write"))]
+#: Path segments published under the contract's names; the handlers keep readable ones.
+WarehouseId = Annotated[uuid.UUID, Path(alias="warehouseId")]
+ProductId = Annotated[uuid.UUID, Path(alias="productId")]
 
 
 def _access(request: Request, actor_id: uuid.UUID, scope: PermissionScope) -> WarehouseAccess:
@@ -142,14 +145,14 @@ def create_warehouse_router() -> APIRouter:
         )
 
     @router.get(
-        "/stock/{warehouse_id}/{product_id}",
+        "/stock/{warehouseId}/{productId}",
         tags=["Stock"],
         summary="Отримати рівень запасів позиції на складі",
         responses=refusals(401, 403, 404),
     )
     async def get_stock(
-        warehouse_id: uuid.UUID,
-        product_id: uuid.UUID,
+        warehouse_id: WarehouseId,
+        product_id: ProductId,
         _access: ReadAccess,
         service: ServiceDep,
     ) -> Envelope[StockLevelOut]:

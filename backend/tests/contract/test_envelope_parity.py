@@ -156,6 +156,12 @@ def test_the_framework_validation_422_never_reaches_the_published_schema(
 def test_every_operation_documents_the_error_envelope(openapi_schema: dict[str, Any]) -> None:
     for path, method, operation in iter_operations(openapi_schema):
         responses = operation.get("responses", {})
+        # A probe that reads no input has nothing to reject, and both backends
+        # leave the 400 off it.
+        takes_input = "parameters" in operation or "requestBody" in operation
+        if path.startswith("/api/health/") and not takes_input:
+            assert "400" not in responses, f"{method.upper()} {path} documents a 400"
+            continue
         assert "400" in responses, f"{method.upper()} {path} does not document a 400"
         schema = responses["400"]["content"]["application/json"]["schema"]
         assert schema == {"$ref": "#/components/schemas/ErrorResponse"}

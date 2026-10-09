@@ -35,10 +35,11 @@ UpdateScope = Annotated[PermissionScope, Depends(require_permission("users", "up
 
 def create_rbac_router() -> APIRouter:
     """Builds the router; the prefix is applied by the application factory."""
-    router = APIRouter(tags=["RBAC"])
+    router = APIRouter()
 
     @router.get(
         "/check/{resource}/{action}",
+        tags=["RBAC"],
         summary="Перевірити дозвіл поточного користувача",
         responses=refusals(401),
     )

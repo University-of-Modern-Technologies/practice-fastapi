@@ -45,6 +45,8 @@ __all__ = [
     "MAX_LIMIT",
     "MAX_RANGE_DAYS",
     "MAX_STOCK_THRESHOLD",
+    "AnalyticsExportRow",
+    "AnalyticsExportRows",
     "DealFunnelConversion",
     "DealFunnelParams",
     "DealFunnelReport",
@@ -344,3 +346,18 @@ class StockHealthReport(CamelModel):
     threshold: int
     limit: int
     items: list[StockHealthRow]
+
+
+#: A row of an export: the row model of whichever report the path names.
+AnalyticsExportRow = (
+    SalesSummaryBucket | DealFunnelStage | TopProductRow | OwnerPerformanceRow | StockHealthRow
+)
+
+
+class AnalyticsExportRows(CamelModel):
+    """Body of ``GET /analytics/{report}/export?format=json``.
+
+    The rows the CSV would carry, each serialised exactly as in the report.
+    """
+
+    data: list[AnalyticsExportRow]

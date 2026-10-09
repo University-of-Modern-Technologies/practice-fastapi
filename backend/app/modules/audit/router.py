@@ -10,7 +10,7 @@ from __future__ import annotations
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Path, Query
 
 from app.core.openapi import refusals
 from app.core.responses import Envelope, Page
@@ -29,13 +29,16 @@ AuditServiceDep = Annotated[AuditService, Depends(get_audit_service)]
 ReadScope = Annotated[PermissionScope, Depends(require_permission("audit", "read"))]
 ListParams = Annotated[AuditListParams, Query()]
 HistoryParams = Annotated[AuditHistoryParams, Query()]
+#: Path segments published under the contract's names; the handlers keep readable ones.
+ResourceId = Annotated[uuid.UUID, Path(alias="resourceId")]
+RecordId = Annotated[uuid.UUID, Path(alias="id")]
 
 
 def create_audit_router() -> APIRouter:
     """Builds the router; the prefix is applied by the application factory."""
-    router = APIRouter(tags=["Audit"])
+    router = APIRouter()
 
-    @router.get("", summary="Переглянути журнал змін", responses=refusals(401, 403))
+    @router.get("", tags=["Audit"], summary="Переглянути журнал змін", responses=refusals(401, 403))
     async def list_records(
         auth: CurrentAuth,
         scope: ReadScope,
@@ -63,13 +66,16 @@ def create_audit_router() -> APIRouter:
     # Declared before the single-record route so a two-segment path is never
     # mistaken for an identifier.
     @router.get(
-        "/{resource}/{resource_id}", summary="Історія одного запису", responses=refusals(401, 403)
+        "/{resource}/{resourceId}",
+        tags=["Resource history"],
+        summary="Історія одного запису",
+        responses=refusals(401, 403),
     )
     # Two path segments plus the three standard dependencies; there is nothing
     # here to bundle that would not just hide a parameter.
     async def history(  # noqa: PLR0913, PLR0917
         resource: str,
-        resource_id: uuid.UUID,
+        resource_id: ResourceId,
         auth: CurrentAuth,
         scope: ReadScope,
         service: AuditServiceDep,
@@ -92,9 +98,11 @@ def create_audit_router() -> APIRouter:
             data=Page(items=items, page=params.page, page_size=params.page_size, total=total)
         )
 
-    @router.get("/{record_id}", summary="Отримати запис журналу", responses=refusals(401, 403, 404))
+    @router.get(
+        "/{id}", tags=["Audit"], summary="Отримати запис журналу", responses=refusals(401, 403, 404)
+    )
     async def get_record(
-        record_id: uuid.UUID,
+        record_id: RecordId,
         auth: CurrentAuth,
         scope: ReadScope,
         service: AuditServiceDep,
