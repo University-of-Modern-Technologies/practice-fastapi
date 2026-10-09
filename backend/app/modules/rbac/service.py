@@ -4,12 +4,19 @@ Two responsibilities live here. The first answers "may this user do this?" and
 is on the hot path of nearly every request, so the answer is cached as one
 snapshot per user. The second edits roles, and every edit that could change an
 answer drops the affected snapshots immediately — a stale permission is a
-security bug, not a stale read.
+security bug, not a stale read. Each edit is also written to the audit trail on
+the same session, so the edit and its entry commit or roll back together.
+
+The audit package is imported lazily. Its router guards itself with this
+module's permission dependency, so importing it at the top here would close an
+import cycle through that dependency.
 """
 
 from __future__ import annotations
 
 import uuid
+from dataclasses import replace
+from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -27,6 +34,10 @@ from app.modules.rbac.schemas import (
 )
 from app.modules.rbac.types import (
     DEFAULT_PERMISSIONS_TTL_SECONDS,
+    ROLE_CREATED,
+    ROLE_ENTITY_TYPE,
+    ROLE_PERMISSIONS_REPLACED,
+    Actor,
     CachedUserPermissions,
     CachePort,
     NoopCache,
@@ -36,7 +47,21 @@ from app.modules.rbac.types import (
     user_permissions_prefix,
 )
 
+if TYPE_CHECKING:
+    from app.modules.audit import AuditEvent, AuditService
+
 _ROLE_GRANTS = selectinload(Role.permissions).selectinload(RolePermission.permission)
+
+
+def _snapshot(role: RoleOut) -> dict[str, Any]:
+    """The role as the audit trail stores it: the same form the client reads."""
+    return role.model_dump(by_alias=True, mode="json")
+
+
+def _audit_event(**fields: Any) -> AuditEvent:
+    from app.modules.audit import AuditEvent  # noqa: PLC0415 (see the module docstring)
+
+    return AuditEvent(**fields)
 
 
 def to_role_out(role: Role) -> RoleOut:
@@ -69,10 +94,19 @@ class RbacService:
         session: AsyncSession,
         cache: CachePort | None = None,
         ttl_seconds: int = DEFAULT_PERMISSIONS_TTL_SECONDS,
+        audit: AuditService | None = None,
     ) -> None:
         self._session = session
         self._cache: CachePort = cache if cache is not None else NoopCache()
         self._ttl_seconds = ttl_seconds
+        self._audit = audit
+
+    def _audit_service(self) -> AuditService:
+        if self._audit is None:
+            from app.modules.audit import AuditService  # noqa: PLC0415 (see the module docstring)
+
+            self._audit = AuditService(self._session)
+        return self._audit
 
     async def get_permission_scope(
         self, user_id: uuid.UUID, resource: str, action: str
@@ -106,7 +140,7 @@ class RbacService:
         )
         return [to_role_out(role) for role in result.scalars().unique().all()]
 
-    async def create_role(self, data: CreateRoleRequest) -> RoleOut:
+    async def create_role(self, actor: Actor, data: CreateRoleRequest) -> RoleOut:
         if await self._find_role_id_by_name(data.name) is not None:
             raise ConflictError("A role with this name already exists", "ROLE_ALREADY_EXISTS")
 
@@ -117,21 +151,41 @@ class RbacService:
 
         self._add_grants(role.id, data.permissions, ids_by_key)
         await self._session.flush()
-        return await self._read_role(role.id)
+        created = await self._read_role(role.id)
+        await self._record(
+            actor,
+            _audit_event(
+                action=ROLE_CREATED,
+                entity_type=ROLE_ENTITY_TYPE,
+                entity_id=role.id,
+                changes={"after": _snapshot(created)},
+            ),
+        )
+        return created
 
     async def replace_role_permissions(
-        self, role_id: uuid.UUID, data: ReplaceRolePermissionsRequest
+        self, actor: Actor, role_id: uuid.UUID, data: ReplaceRolePermissionsRequest
     ) -> RoleOut:
         role = await self._session.get(Role, role_id)
         if role is None:
             raise NotFoundError("Role not found", "ROLE_NOT_FOUND")
 
         ids_by_key = await self._resolve_permission_ids(data.permissions)
+        before = _snapshot(await self._read_role(role_id))
         await self._session.execute(delete(RolePermission).where(RolePermission.role_id == role_id))
         self._add_grants(role_id, data.permissions, ids_by_key)
         await self._session.flush()
 
         replaced = await self._read_role(role_id)
+        await self._record(
+            actor,
+            _audit_event(
+                action=ROLE_PERMISSIONS_REPLACED,
+                entity_type=ROLE_ENTITY_TYPE,
+                entity_id=role_id,
+                changes={"before": before, "after": _snapshot(replaced)},
+            ),
+        )
         # Every holder of this role now carries a snapshot that no longer
         # matches the database.
         await self.invalidate_all_user_permissions()
@@ -213,9 +267,20 @@ class RbacService:
                 )
             )
 
+    async def _record(self, actor: Actor, event: AuditEvent) -> None:
+        """Appends an entry attributed to the caller to this transaction."""
+        await self._audit_service().record(
+            replace(event, actor_id=actor.actor_id, ip_address=actor.ip_address)
+        )
+
     async def _read_role(self, role_id: uuid.UUID) -> RoleOut:
         result = await self._session.execute(
-            select(Role).options(_ROLE_GRANTS).where(Role.id == role_id)
+            select(Role)
+            .options(_ROLE_GRANTS)
+            .where(Role.id == role_id)
+            # A role already in the session is reloaded with its grants, so a
+            # read that follows a change in the same request sees the change.
+            .execution_options(populate_existing=True)
         )
         role = result.scalars().unique().one_or_none()
         if role is None:

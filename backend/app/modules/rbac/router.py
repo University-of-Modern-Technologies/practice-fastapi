@@ -15,7 +15,12 @@ from fastapi import APIRouter, Depends, Path, status
 from app.core.openapi import refusals
 from app.core.responses import Envelope
 from app.modules.auth.dependencies import CurrentAuth
-from app.modules.rbac.dependencies import RbacServiceDep, ensure_scope_all, require_permission
+from app.modules.rbac.dependencies import (
+    CurrentActor,
+    RbacServiceDep,
+    ensure_scope_all,
+    require_permission,
+)
 from app.modules.rbac.schemas import (
     CreateRoleRequest,
     PermissionCheckOut,
@@ -65,10 +70,10 @@ def create_rbac_router() -> APIRouter:
         responses=refusals(401, 403, 409),
     )
     async def create_role(
-        payload: CreateRoleRequest, scope: CreateScope, rbac: RbacServiceDep
+        payload: CreateRoleRequest, scope: CreateScope, actor: CurrentActor, rbac: RbacServiceDep
     ) -> Envelope[RoleOut]:
         ensure_scope_all(scope)
-        return Envelope(data=await rbac.create_role(payload))
+        return Envelope(data=await rbac.create_role(actor, payload))
 
     @router.put(
         "/roles/{id}/permissions",
@@ -80,9 +85,10 @@ def create_rbac_router() -> APIRouter:
         id: uuid.UUID,  # noqa: A002
         payload: ReplaceRolePermissionsRequest,
         scope: UpdateScope,
+        actor: CurrentActor,
         rbac: RbacServiceDep,
     ) -> Envelope[RoleOut]:
         ensure_scope_all(scope)
-        return Envelope(data=await rbac.replace_role_permissions(id, payload))
+        return Envelope(data=await rbac.replace_role_permissions(actor, id, payload))
 
     return router

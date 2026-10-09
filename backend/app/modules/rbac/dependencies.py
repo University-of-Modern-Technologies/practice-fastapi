@@ -16,10 +16,10 @@ from fastapi import Depends, Request
 
 from app.core.errors import ForbiddenError
 from app.db.enums import PermissionScope
-from app.modules.auth.dependencies import CurrentAuth, SessionDep, SettingsDep
+from app.modules.auth.dependencies import ClientInfoDep, CurrentAuth, SessionDep, SettingsDep
 from app.modules.auth.types import AuthContext
 from app.modules.rbac.service import RbacService
-from app.modules.rbac.types import CachePort, NoopCache
+from app.modules.rbac.types import Actor, CachePort, NoopCache
 
 
 def get_cache(request: Request) -> CachePort:
@@ -38,6 +38,15 @@ def get_rbac_service(session: SessionDep, cache: CacheDep, settings: SettingsDep
 
 
 RbacServiceDep = Annotated[RbacService, Depends(get_rbac_service)]
+
+
+def get_actor(auth: CurrentAuth, client: ClientInfoDep) -> Actor:
+    """The caller of an administrative change, with the address it came from."""
+    return Actor(actor_id=auth.user_id, ip_address=client.ip_address)
+
+
+#: The caller of a user or role change. Import this, not the function.
+CurrentActor = Annotated[Actor, Depends(get_actor)]
 
 
 def require_permission(resource: str, action: str) -> Callable[..., Awaitable[PermissionScope]]:

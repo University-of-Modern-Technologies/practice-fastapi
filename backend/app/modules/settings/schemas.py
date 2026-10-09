@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
-from pydantic import Field
+from pydantic import Field, field_validator
 
 from app.core.responses import CamelModel
 from app.modules.settings.registry import SETTING_KEYS
@@ -44,3 +44,9 @@ class UpsertSettingRequest(CamelModel):
     #: registry declares for the key in the path.
     value: Any
     description: str | None = Field(default=None, max_length=MAX_DESCRIPTION_LENGTH)
+
+    # Trimmed before it is measured; a blank one means "use the declared one".
+    @field_validator("description", mode="before")
+    @classmethod
+    def _trim_description(cls, value: object) -> object:
+        return value.strip() if isinstance(value, str) else value

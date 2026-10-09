@@ -7,6 +7,7 @@ calling without knowing how that was established.
 
 from __future__ import annotations
 
+import ipaddress
 import uuid
 from dataclasses import dataclass
 from typing import Any
@@ -31,6 +32,9 @@ REFRESH_SECRET_BYTES = 48
 #: Separator between the session id and the secret inside a refresh token.
 REFRESH_TOKEN_SEPARATOR = "."
 
+#: Width of the ``user_agent`` column; a longer header is cut to fit.
+MAX_USER_AGENT_LENGTH = 512
+
 
 @dataclass(frozen=True, slots=True)
 class AuthContext:
@@ -38,6 +42,41 @@ class AuthContext:
 
     user_id: uuid.UUID
     session_id: uuid.UUID
+
+
+@dataclass(frozen=True, slots=True)
+class ClientInfo:
+    """Where a request came from, as recorded on the session it opens or renews."""
+
+    ip_address: str | None = None
+    user_agent: str | None = None
+
+    @classmethod
+    def of(cls, host: str | None, user_agent: str | None) -> ClientInfo:
+        """Builds the record from raw connection data, dropping what cannot be stored."""
+        return cls(
+            ip_address=normalise_ip_address(host),
+            user_agent=user_agent[:MAX_USER_AGENT_LENGTH] if user_agent else None,
+        )
+
+
+def normalise_ip_address(value: str | None) -> str | None:
+    """A peer address in the form the ``inet`` column stores, or ``None``.
+
+    Anything that is not an address — the placeholder host of an in-process
+    transport, for one — is dropped rather than allowed to fail the write. An
+    IPv4 peer seen through a dual-stack socket is unwrapped, so both servers
+    record the same text for the same client.
+    """
+    if not value:
+        return None
+    try:
+        address = ipaddress.ip_address(value)
+    except ValueError:
+        return None
+    if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped is not None:
+        return str(address.ipv4_mapped)
+    return str(address)
 
 
 @dataclass(frozen=True, slots=True)

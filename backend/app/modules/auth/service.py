@@ -8,21 +8,24 @@ status codes are the router's business.
 
 from __future__ import annotations
 
+import re
 import secrets
 import uuid
 from datetime import UTC, datetime, timedelta
+from typing import Any, cast
 
 import jwt
-from sqlalchemy import select, update
+from sqlalchemy import CursorResult, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.errors import UnauthorizedError
 from app.core.security import (
+    DUMMY_PASSWORD_HASH,
     create_access_token,
     decode_access_token,
-    hash_password,
-    verify_password,
+    hash_password_async,
+    verify_password_async,
 )
 from app.db.enums import PermissionScope
 from app.db.models.rbac import Role, RolePermission, UserRole
@@ -35,8 +38,13 @@ from app.modules.auth.types import (
     AuthConfig,
     AuthContext,
     AuthResult,
+    ClientInfo,
 )
 from app.modules.rbac.types import create_permission_key, parse_permission_key
+
+#: The session half of a refresh token, exactly as it is issued. Nothing else
+#: is accepted, so a token can only ever address a row by the id it was given.
+_SESSION_ID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.I)
 
 #: Eager-loads the role graph in one round trip. The relationships are declared
 #: ``lazy="raise"``, so an authorization decision cannot accidentally become a
@@ -95,33 +103,37 @@ def split_refresh_token(token: str) -> tuple[uuid.UUID, str]:
     separator = token.find(REFRESH_TOKEN_SEPARATOR)
     if separator < 1 or separator == len(token) - 1:
         raise UnauthorizedError("Invalid refresh token", "INVALID_REFRESH_TOKEN")
-    try:
-        session_id = uuid.UUID(token[:separator])
-    except ValueError as error:
-        raise UnauthorizedError("Invalid refresh token", "INVALID_REFRESH_TOKEN") from error
-    return session_id, token[separator + 1 :]
+    if _SESSION_ID.fullmatch(token[:separator]) is None:
+        raise UnauthorizedError("Invalid refresh token", "INVALID_REFRESH_TOKEN")
+    return uuid.UUID(token[:separator]), token[separator + 1 :]
 
 
 class AuthService:
     """Sign-in, session rotation and access-token verification."""
 
-    def __init__(self, session: AsyncSession, config: AuthConfig) -> None:
+    def __init__(
+        self, session: AsyncSession, config: AuthConfig, client: ClientInfo | None = None
+    ) -> None:
         self._session = session
         self._config = config
+        # Recorded on the session a login opens or a refresh renews; without it
+        # (a caller outside HTTP) the stored values are left as they are.
+        self._client = client
 
     async def login(self, data: LoginRequest) -> AuthResult:
         """Verifies credentials and opens a new session.
 
         A missing account, a wrong password and a disabled account are reported
         identically: any difference between them turns the endpoint into a way
-        of enumerating who has an account here.
+        of enumerating who has an account here. That includes the time taken:
+        the password is checked in every case, against a throwaway digest when
+        there is no account, so none of the three answers faster than another.
         """
         user = await self._find_user_by_email(str(data.email))
-        if (
-            user is None
-            or not user.is_active
-            or not verify_password(data.password, user.password_hash)
-        ):
+        password_matches = await verify_password_async(
+            data.password, user.password_hash if user is not None else DUMMY_PASSWORD_HASH
+        )
+        if user is None or not user.is_active or not password_matches:
             raise UnauthorizedError("Invalid email or password", "INVALID_CREDENTIALS")
         return await self._issue(user)
 
@@ -134,7 +146,11 @@ class AuthService:
         """
         session_id, secret = split_refresh_token(refresh_token)
         row = await self._session.get(SessionRow, session_id)
-        if row is None or not self._is_usable(row) or not verify_password(secret, row.token_hash):
+        if (
+            row is None
+            or not self._is_usable(row)
+            or not await verify_password_async(secret, row.token_hash)
+        ):
             raise UnauthorizedError("Invalid refresh token", "INVALID_REFRESH_TOKEN")
 
         user = await self._find_user_by_id(row.user_id)
@@ -222,10 +238,16 @@ class AuthService:
     async def _issue(self, user: User, row: SessionRow | None = None) -> AuthResult:
         """Writes a fresh refresh secret and signs a matching access token."""
         secret = secrets.token_urlsafe(REFRESH_SECRET_BYTES)
-        token_hash = hash_password(secret)
+        token_hash = await hash_password_async(secret)
         expires_at = datetime.now(tz=UTC) + timedelta(
             seconds=self._config.refresh_token_ttl_seconds
         )
+        client: dict[str, Any] = {}
+        if self._client is not None:
+            client = {
+                "ip_address": self._client.ip_address,
+                "user_agent": self._client.user_agent,
+            }
 
         if row is None:
             row = SessionRow(
@@ -233,16 +255,22 @@ class AuthService:
                 user_id=user.id,
                 token_hash=token_hash,
                 expires_at=expires_at,
+                **client,
             )
             self._session.add(row)
+            await self._session.flush()
         else:
-            row.token_hash = token_hash
-            row.expires_at = expires_at
-            # A refresh on a revoked-but-still-valid row would otherwise hand
-            # out a token the next request rejects.
-            row.revoked_at = None
-
-        await self._session.flush()
+            # The write is conditional on the row still being live. A revocation
+            # that commits while this refresh is in flight therefore wins: the
+            # row stays revoked, and the caller gets the answer any other
+            # unusable token gets instead of a fresh pair.
+            result = await self._session.execute(
+                update(SessionRow)
+                .where(SessionRow.id == row.id, SessionRow.revoked_at.is_(None))
+                .values(token_hash=token_hash, expires_at=expires_at, **client)
+            )
+            if cast("CursorResult[Any]", result).rowcount != 1:
+                raise UnauthorizedError("Invalid refresh token", "INVALID_REFRESH_TOKEN")
 
         access_token = create_access_token(
             subject=str(user.id),
