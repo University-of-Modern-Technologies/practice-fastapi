@@ -1,7 +1,6 @@
 """Realtime WebSocket channel."""
 
 from app.realtime.auth import (
-    ACCESS_TOKEN_SUBPROTOCOL_PREFIX,
     BEARER_SUBPROTOCOL,
     extract_access_token,
     select_subprotocol,
@@ -48,7 +47,6 @@ from app.realtime.types import (
 )
 
 __all__ = [
-    "ACCESS_TOKEN_SUBPROTOCOL_PREFIX",
     "BEARER_SUBPROTOCOL",
     "CLOSE_CODE_GOING_AWAY",
     "MAX_TOPIC_LENGTH",

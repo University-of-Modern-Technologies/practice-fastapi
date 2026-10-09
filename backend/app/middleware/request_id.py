@@ -8,6 +8,8 @@ traceable end to end.
 from __future__ import annotations
 
 import re
+from collections.abc import Iterator
+from contextlib import contextmanager
 from contextvars import ContextVar
 from uuid import uuid4
 
@@ -25,6 +27,9 @@ MAX_REQUEST_ID_LENGTH = 128
 # characters, CR/LF, spaces, unicode) is discarded and replaced with a freshly
 # generated id rather than reflected back to the caller.
 _SAFE_REQUEST_ID_PATTERN = re.compile(r"^[A-Za-z0-9._:-]+$")
+
+#: Key under the request's ``state`` where the id is recorded as well.
+REQUEST_ID_STATE_KEY = "request_id"
 
 _request_id: ContextVar[str | None] = ContextVar("request_id", default=None)
 
@@ -53,12 +58,37 @@ def get_request_id() -> str | None:
     return _request_id.get()
 
 
+def request_id_of(scope: Scope) -> str | None:
+    """Correlation id recorded on the request itself, if any.
+
+    The context variable is reset as this middleware unwinds, so code that runs
+    further out finds it empty. Starlette mounts the last-resort exception
+    handler exactly there, outside every user middleware; the scope is what
+    still carries the id at that point.
+    """
+    state = scope.get("state")
+    value = state.get(REQUEST_ID_STATE_KEY) if isinstance(state, dict) else None
+    return value if isinstance(value, str) else None
+
+
+@contextmanager
+def bound_request_id(request_id: str | None) -> Iterator[None]:
+    """Makes ``request_id`` the current correlation id for the enclosed block."""
+    token = _request_id.set(request_id)
+    try:
+        yield
+    finally:
+        _request_id.reset(token)
+
+
 class RequestIdMiddleware:
     """Assigns a correlation id and echoes it back on the response.
 
     Written as raw ASGI rather than on top of ``BaseHTTPMiddleware`` so the id is
     established before any other layer runs and stays available to the exception
-    handlers, which is precisely where it is needed most.
+    handlers, which is precisely where it is needed most. The one handler that
+    runs outside this layer, the last-resort one, reads the id from the scope
+    and adds the header itself.
     """
 
     def __init__(
@@ -82,6 +112,9 @@ class RequestIdMiddleware:
         inbound = Headers(scope=scope).get(self.header) if self.trust_inbound_header else None
         request_id = resolve_request_id(inbound, self.max_length)
         token = _request_id.set(request_id)
+        # Recorded on the request as well, for the reader that runs after the
+        # context variable has been reset (see `request_id_of`).
+        scope.setdefault("state", {})[REQUEST_ID_STATE_KEY] = request_id
 
         encoded = (self.header.encode("latin-1"), request_id.encode("latin-1"))
 

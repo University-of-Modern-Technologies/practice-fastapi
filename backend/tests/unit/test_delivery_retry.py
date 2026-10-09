@@ -8,7 +8,10 @@ the bottom checks that the two layers still cooperate correctly when stacked.
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
+
+import pytest
 
 from app.core.errors import AppError
 from app.modules.integrations.delivery.circuit_breaker import CircuitBreaker
@@ -21,6 +24,7 @@ from app.modules.integrations.delivery.retry import RetryingTransport, RetryOpti
 from app.modules.integrations.delivery.transport import (
     DeliveryTransportRequest,
     DeliveryTransportResponse,
+    HttpDeliveryTransport,
     TransportTimeoutError,
 )
 from app.modules.integrations.delivery.with_circuit_breaker import CircuitBreakerTransport
@@ -142,3 +146,33 @@ async def test_the_circuit_breaker_sees_every_attempt_not_just_the_first() -> No
     assert await code_of(wrapped.send(request(idempotent=True))) == DELIVERY_UNAVAILABLE
     assert transport.calls == 2
     assert breaker.snapshot().state.value == "open"
+
+
+@pytest.mark.parametrize("code", [401, 403])
+async def test_a_refusal_of_our_credentials_is_unavailable_and_not_retried(code: int) -> None:
+    transport = FakeTransport([status(code), ok()])
+    wrapped = RetryingTransport(transport, RetryOptions(delay=DelayRecorder(), max_attempts=3))
+
+    with pytest.raises(AppError) as failure:
+        await wrapped.send(request(idempotent=True))
+
+    assert failure.value.status_code == 503
+    assert failure.value.code == DELIVERY_UNAVAILABLE
+    assert transport.calls == 1
+
+
+async def test_the_http_transport_holds_one_deadline_for_the_whole_round_trip() -> None:
+    class TricklingClient:
+        """Answers within each phase's own timeout but never finishes."""
+
+        async def request(self, *args: Any, **kwargs: Any) -> Any:  # noqa: ARG002
+            await asyncio.sleep(5)
+
+    transport = HttpDeliveryTransport(
+        base_url="https://carrier.invalid",
+        client=TricklingClient(),  # type: ignore[arg-type]
+    )
+    timed = DeliveryTransportRequest(method="GET", path="/v1/shipments/1", timeout_ms=20)
+
+    with pytest.raises(TransportTimeoutError):
+        await asyncio.wait_for(transport.send(timed), timeout=2)

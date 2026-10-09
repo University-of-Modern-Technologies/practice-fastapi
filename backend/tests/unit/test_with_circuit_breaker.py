@@ -7,6 +7,8 @@ that it never touches the network once it is open.
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from app.modules.integrations.delivery.circuit_breaker import CircuitBreaker
@@ -93,3 +95,68 @@ async def test_a_network_failure_is_reported_to_the_breaker_and_reraised() -> No
 def test_kind_mirrors_the_wrapped_transport() -> None:
     wrapped = CircuitBreakerTransport(FakeTransport([OK]), CircuitBreaker())
     assert wrapped.kind is TransportKind.HTTP
+
+
+# --- regressions ----------------------------------------------------------
+
+
+@pytest.mark.parametrize("status", [401, 403])
+async def test_a_refusal_of_our_credentials_counts_against_the_breaker(status: int) -> None:
+    breaker = CircuitBreaker(failure_threshold=2)
+    refused = DeliveryTransportResponse(status=status, headers={}, body={})
+    wrapped = CircuitBreakerTransport(FakeTransport([refused]), breaker)
+
+    await wrapped.send(REQUEST)
+    await wrapped.send(REQUEST)
+
+    assert breaker.snapshot().state == "open"
+
+
+class GatedTransport:
+    """Holds every call until the test lets it answer."""
+
+    kind: TransportKind = TransportKind.HTTP
+
+    def __init__(self) -> None:
+        self.gate: asyncio.Future[DeliveryTransportResponse] = (
+            asyncio.get_running_loop().create_future()
+        )
+
+    async def send(self, request: DeliveryTransportRequest) -> DeliveryTransportResponse:  # noqa: ARG002
+        return await self.gate
+
+
+async def test_a_late_success_does_not_close_an_open_circuit() -> None:
+    now = [0.0]
+    breaker = CircuitBreaker(failure_threshold=1, cooldown_ms=1_000, now_ms=lambda: now[0])
+    slow = GatedTransport()
+    pending = asyncio.ensure_future(CircuitBreakerTransport(slow, breaker).send(REQUEST))
+    await asyncio.sleep(0)
+
+    # Another call opens the circuit while the first is still in flight.
+    await CircuitBreakerTransport(FakeTransport([SERVER_ERROR]), breaker).send(REQUEST)
+    assert breaker.snapshot().state == "open"
+
+    slow.gate.set_result(OK)
+    await pending
+
+    assert breaker.snapshot().state == "open"
+    now[0] = 500.0
+    assert breaker.try_acquire() is False
+
+
+async def test_a_cancelled_probe_gives_its_slot_back() -> None:
+    now = [0.0]
+    breaker = CircuitBreaker(failure_threshold=1, cooldown_ms=1_000, now_ms=lambda: now[0])
+    breaker.on_failure()
+    now[0] = 1_000.0
+
+    probe = asyncio.ensure_future(CircuitBreakerTransport(GatedTransport(), breaker).send(REQUEST))
+    await asyncio.sleep(0)
+    assert breaker.snapshot().state == "half-open"
+    probe.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await probe
+
+    # Without the slot back, the half-open circuit would refuse everything.
+    assert breaker.try_acquire() is True

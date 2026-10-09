@@ -31,16 +31,29 @@ app = create_app(
 
 
 def run() -> None:
-    """Entry point for `python -m app.main`."""
+    """Entry point for `python -m app.main`, the one way every mode starts.
+
+    The Docker image and the development container start here too, so `HOST`,
+    `PORT`, `SHUTDOWN_TIMEOUT_MS` and `TRUSTED_PROXIES` mean the same thing
+    however the API is run.
+    """
+    reload = settings.app_env == "development"
     uvicorn.run(
-        "app.main:app",
+        # The reloader re-imports the application in a child process, so it
+        # needs the import string; otherwise the object already built here is
+        # served, rather than a second one assembled by importing it again.
+        "app.main:app" if reload else app,
         host=settings.host,
         port=settings.port,
-        reload=settings.app_env == "development",
+        reload=reload,
         # Access logging is produced by the application's own middleware, which
         # includes the correlation id; the server's version would duplicate it.
         access_log=False,
-        timeout_graceful_shutdown=settings.shutdown_timeout_ms // 1000,
+        timeout_graceful_shutdown=settings.graceful_shutdown_seconds,
+        # X-Forwarded-For is believed only from the configured proxies; with
+        # none configured the peer address is the client.
+        proxy_headers=bool(settings.trusted_proxies),
+        forwarded_allow_ips=settings.trusted_proxies or None,
     )
 
 

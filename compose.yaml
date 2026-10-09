@@ -56,6 +56,10 @@ services:
       HOST: 0.0.0.0
       PORT: 8000
       CORS_ORIGINS: http://localhost:${HTTP_PORT:-8080}
+      # nginx reaches the API over the stack's network, and only a peer in it
+      # is believed about the client address. Docker allocates that network
+      # from this range by default; set TRUSTED_PROXIES in .env if yours differs.
+      TRUSTED_PROXIES: ${TRUSTED_PROXIES:-172.16.0.0/12}
     ports:
       - '${API_PORT:-8000}:8000'
     depends_on:
@@ -183,6 +187,8 @@ services:
       MONGO_INITDB_DATABASE: ${MONGO_DB:-practice_events}
     volumes:
       - mongo_data:/data/db
+      # The image declares this volume too; naming it stops every start from leaving an anonymous one.
+      - mongo_config:/data/configdb
     ports:
       - '127.0.0.1:${MONGO_PORT:-27017}:27017'
     healthcheck:
@@ -203,7 +209,14 @@ services:
     command: ['--admin-password-file', '/run/portainer/admin-password']
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - ./.portainer-password:/run/portainer/admin-password:ro
+      # Long syntax, so a missing file fails the start rather than Docker
+      # creating a directory in its place; `setup` and `docker:portainer` write it.
+      - type: bind
+        source: ./.portainer-password
+        target: /run/portainer/admin-password
+        read_only: true
+        bind:
+          create_host_path: false
       - portainer_data:/data
     ports:
       - '127.0.0.1:${PORTAINER_PORT:-9000}:9000'
@@ -222,5 +235,7 @@ volumes:
     name: ${PROJECT_NAME:-practice-crm-python}_redis_data
   mongo_data:
     name: ${PROJECT_NAME:-practice-crm-python}_mongo_data
+  mongo_config:
+    name: ${PROJECT_NAME:-practice-crm-python}_mongo_config
   portainer_data:
     name: ${PROJECT_NAME:-practice-crm-python}_portainer_data

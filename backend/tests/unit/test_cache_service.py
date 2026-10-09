@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import AsyncIterator
 from fnmatch import fnmatchcase
@@ -211,6 +212,24 @@ async def test_invalidate_prefix_strips_the_prefix_before_deleting(
     # Deletion goes back through the client, which prefixes again — passing the
     # scan reply through unchanged would address `crm:crm:...`.
     assert redis.deleted == [("rbac:user-permissions:1",)]
+
+
+async def test_invalidate_prefix_returns_only_after_the_last_delete(settings: Settings) -> None:
+    """The call is a barrier: a caller that reads straight after must miss."""
+
+    class SlowDeleteRedis(FakeRedis):
+        async def delete(self, *keys: str) -> None:
+            await asyncio.sleep(0.02)
+            await super().delete(*keys)
+
+    redis = SlowDeleteRedis()
+    cache = CacheService(redis, settings)
+    await cache.set("rbac:user-permissions:1", ["read"])
+    await cache.set("rbac:user-permissions:2", ["write"])
+
+    await cache.invalidate_prefix("rbac:user-permissions:")
+
+    assert redis.store == {}
 
 
 async def test_invalidate_prefix_survives_a_scan_failure(settings: Settings) -> None:

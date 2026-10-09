@@ -29,9 +29,11 @@ from typing import Any
 from uuid import uuid4
 
 from fastapi import APIRouter
+from starlette.responses import Response
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from app.core.logging import get_logger
+from app.events.sanitize import sanitize_event_payload
 from app.realtime.auth import extract_access_token, select_subprotocol
 from app.realtime.schemas import (
     FrameRejected,
@@ -47,6 +49,8 @@ from app.realtime.types import (
     ERROR_NOT_SUBSCRIBED,
     ERROR_SUBSCRIPTION_LIMIT,
     ERROR_TOPIC_FORBIDDEN,
+    HANDSHAKE_STATUS_UNAUTHORIZED,
+    HANDSHAKE_STATUS_UNAVAILABLE,
     AuthContextLike,
     CanSubscribe,
     OutboundFrame,
@@ -65,6 +69,9 @@ from app.realtime.types import (
 )
 
 logger = get_logger("realtime")
+
+#: ASGI extension that lets an application answer a handshake with plain HTTP.
+_DENIAL_RESPONSE_EXTENSION = "websocket.http.response"
 
 
 async def _deny_all(_auth: AuthContextLike, _topic: str) -> bool:
@@ -101,6 +108,11 @@ class RealtimeGateway:
     @property
     def options(self) -> RealtimeGatewayOptions:
         return self._options
+
+    @property
+    def is_closing(self) -> bool:
+        """Whether shutdown has begun; read afresh after every ``await``."""
+        return self._closing
 
     def stats(self) -> RealtimeGatewayStats:
         return RealtimeGatewayStats(
@@ -245,7 +257,11 @@ class RealtimeGateway:
         if not subscribers:
             return
 
-        frame = event_frame(parsed.topic, event)
+        # The same redaction the event log applies on the way in: a secret that
+        # slipped into a domain payload must not reach a browser either. It also
+        # reduces the payload to plain JSON, so a UUID or a Decimal in it can no
+        # longer make the write fail.
+        frame = event_frame(parsed.topic, sanitize_event_payload(event))
         # Concurrent writes: one slow peer must not hold up the whole topic.
         targets = [
             connection
@@ -272,6 +288,21 @@ class RealtimeGateway:
     # transport binding
     # ------------------------------------------------------------------
 
+    @staticmethod
+    async def _refuse(websocket: WebSocket, status_code: int, close_code: int, reason: str) -> None:
+        """Refuses a handshake before it is accepted.
+
+        The answer is a plain HTTP status — 401 for a missing or rejected token,
+        503 while shutting down — the same status the sibling deployment sends
+        from its upgrade handler. Closing an unaccepted socket instead would
+        make the ASGI server answer 403 for every reason alike. A server
+        without the denial-response extension still gets the close.
+        """
+        if _DENIAL_RESPONSE_EXTENSION in websocket.scope.get("extensions", {}):
+            await websocket.send_denial_response(Response(status_code=status_code))
+            return
+        await websocket.close(close_code, reason)
+
     async def serve(self, websocket: WebSocket) -> None:
         """Drives one client socket for its whole lifetime.
 
@@ -281,13 +312,23 @@ class RealtimeGateway:
         never from the query string.
         """
         if self._closing:
-            await websocket.close(CLOSE_CODE_GOING_AWAY, "Server shutting down")
+            await self._refuse(
+                websocket,
+                HANDSHAKE_STATUS_UNAVAILABLE,
+                CLOSE_CODE_GOING_AWAY,
+                "Server shutting down",
+            )
             return
 
         token = extract_access_token(websocket.headers)
         if token is None:
             logger.debug("Rejected unauthenticated realtime handshake")
-            await websocket.close(CLOSE_CODE_UNAUTHORIZED, "Missing access token")
+            await self._refuse(
+                websocket,
+                HANDSHAKE_STATUS_UNAUTHORIZED,
+                CLOSE_CODE_UNAUTHORIZED,
+                "Missing access token",
+            )
             return
 
         try:
@@ -296,7 +337,24 @@ class RealtimeGateway:
             # Any verification fault is a rejection; the reason never reaches
             # the client, so an attacker learns nothing from probing.
             logger.debug("Rejected realtime handshake with an invalid access token")
-            await websocket.close(CLOSE_CODE_UNAUTHORIZED, "Invalid access token")
+            await self._refuse(
+                websocket,
+                HANDSHAKE_STATUS_UNAUTHORIZED,
+                CLOSE_CODE_UNAUTHORIZED,
+                "Invalid access token",
+            )
+            return
+
+        # Verification awaits the database, and shutdown may have begun in the
+        # meantime: accepting now would register a socket that `close` has
+        # already swept past, and that nothing would ever close.
+        if self.is_closing:
+            await self._refuse(
+                websocket,
+                HANDSHAKE_STATUS_UNAVAILABLE,
+                CLOSE_CODE_GOING_AWAY,
+                "Server shutting down",
+            )
             return
 
         await websocket.accept(subprotocol=select_subprotocol(websocket.headers))

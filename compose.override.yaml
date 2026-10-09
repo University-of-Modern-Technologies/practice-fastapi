@@ -4,19 +4,8 @@ services:
     build:
       target: dependencies
     # The script installs what the lock file added since the volume was filled.
-    command:
-      [
-        'sh',
-        'scripts/sync-dev-deps.sh',
-        '/app/.venv/bin/uvicorn',
-        'app.main:app',
-        '--host',
-        '0.0.0.0',
-        '--port',
-        '8000',
-        '--no-access-log',
-        '--reload',
-      ]
+    # The entry point reloads on change because APP_ENV is development here.
+    command: ['sh', 'scripts/sync-dev-deps.sh', '/app/.venv/bin/python', '-m', 'app.main']
     volumes:
       - ./backend:/app
       - api_venv:/app/.venv

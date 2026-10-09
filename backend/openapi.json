@@ -7852,6 +7852,7 @@
             "required": false,
             "schema": {
               "default": 1,
+              "maximum": 1000000,
               "minimum": 1,
               "title": "Page",
               "type": "integer"
@@ -8690,6 +8691,7 @@
             "required": false,
             "schema": {
               "default": 1,
+              "maximum": 1000000,
               "minimum": 1,
               "title": "Page",
               "type": "integer"
@@ -9196,6 +9198,7 @@
             "required": false,
             "schema": {
               "default": 1,
+              "maximum": 1000000,
               "minimum": 1,
               "title": "Page",
               "type": "integer"
@@ -10473,6 +10476,7 @@
             }
           },
           {
+            "description": "Виключна межа: до вибірки потрапляють транзакції, проведені раніше за неї.",
             "in": "query",
             "name": "bookedTo",
             "required": false,
@@ -10486,6 +10490,7 @@
                   "type": "null"
                 }
               ],
+              "description": "Виключна межа: до вибірки потрапляють транзакції, проведені раніше за неї.",
               "title": "Bookedto"
             }
           },
@@ -10939,6 +10944,7 @@
             "required": false,
             "schema": {
               "default": 1,
+              "maximum": 1000000,
               "minimum": 1,
               "title": "Page",
               "type": "integer"
@@ -14979,6 +14985,16 @@
               }
             },
             "description": "The requested resource was not found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The operation conflicts with the current state of the resource"
           },
           "500": {
             "content": {

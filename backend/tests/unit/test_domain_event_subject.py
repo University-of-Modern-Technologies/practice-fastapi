@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+from typing import Any
 
+import pytest
+
+from app.events import types as types_module
 from app.events.types import DomainEvent, DomainEventSubject
 
 EVENT = DomainEvent(
@@ -113,3 +117,65 @@ async def test_drain_awaits_all_pending_deliveries() -> None:
     await subject.drain()
 
     assert order == ["slow"]
+
+
+class RecordingLogger:
+    def __init__(self) -> None:
+        self.errors: list[tuple[str, dict[str, Any]]] = []
+
+    def error(self, message: str, **fields: Any) -> None:
+        self.errors.append((message, fields))
+
+
+async def test_a_failing_subscriber_is_logged_not_swallowed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A suppressed failure left nothing behind: the log is the only witness."""
+    logger = RecordingLogger()
+    monkeypatch.setattr(types_module, "_logger", logger)
+
+    class BrokenSubscriber:
+        name = "broken"
+
+        async def notify(self, event: DomainEvent) -> None:  # noqa: ARG002
+            message = "subscriber is broken"
+            raise RuntimeError(message)
+
+    subject = DomainEventSubject()
+    subject.subscribe(BrokenSubscriber())
+
+    subject.publish(EVENT)
+    await subject.drain()
+
+    assert len(logger.errors) == 1
+    message, fields = logger.errors[0]
+    assert message == "Domain event subscriber failed"
+    assert fields["subscriber"] == "broken"
+    assert "subscriber is broken" in fields["err"]
+
+
+async def test_a_stalled_subscriber_does_not_hold_up_the_next_one() -> None:
+    """A WebSocket peer that stopped reading must not delay the event log."""
+    stalled = asyncio.Event()
+    order: list[str] = []
+
+    class StalledSubscriber:
+        name = "realtime"
+
+        async def notify(self, event: DomainEvent) -> None:  # noqa: ARG002
+            await stalled.wait()
+            order.append("realtime")
+
+    subject = DomainEventSubject()
+    subject.subscribe(StalledSubscriber())
+    subject.subscribe(RecordingSubscriber("event-log", order))
+
+    subject.publish(EVENT)
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+
+    assert order == ["event-log"]
+
+    stalled.set()
+    await subject.drain()
+    assert order == ["event-log", "realtime"]

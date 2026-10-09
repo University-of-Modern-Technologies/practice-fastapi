@@ -37,6 +37,21 @@ AUTH_RATE_LIMIT_NAMESPACE = "rate-limit:auth:"
 #: global one: they are the ones worth guessing against.
 AUTH_PATH_PREFIX = "/api/v1/auth"
 
+#: Authentication endpoints that only read or end an existing session. They
+#: are no use for guessing credentials, and a client calls them on every page
+#: load, so they spend the general budget only, not the strict one.
+AUTH_BUDGET_EXEMPT_PATHS = frozenset({f"{AUTH_PATH_PREFIX}/me", f"{AUTH_PATH_PREFIX}/logout"})
+
+
+def is_auth_budget_exempt(path: str) -> bool:
+    """Whether a path is left out of the strict authentication budget.
+
+    Compared case-insensitively and without a trailing slash, the way the
+    sibling backend routes it.
+    """
+    return path.lower().rstrip("/") in AUTH_BUDGET_EXEMPT_PATHS
+
+
 # A single IPv6 client is normally handed a whole /64, so the budget is applied
 # per subnet rather than per address, which the client can rotate at will.
 IPV6_SUBNET_BITS = 64
@@ -120,9 +135,11 @@ def bearer_subject(scope: Scope, secret: str) -> str | None:
 def client_identity(scope: Scope) -> str:
     """Identifies the caller a budget belongs to by address.
 
-    The peer address is used as-is: forwarded headers are attacker-controlled
-    unless a trusted proxy rewrites them, and treating them as identity would
-    hand every client an unlimited supply of budgets.
+    The peer address is used as the server resolved it. Forwarded headers are
+    attacker-controlled, so they are not read here: the server puts the
+    forwarded address into the scope only for a request from a configured
+    trusted proxy (`TRUSTED_PROXIES`), and treating the headers themselves as
+    identity would hand every client an unlimited supply of budgets.
     """
     client = scope.get("client")
     host = str(client[0]) if client else ""
@@ -165,7 +182,7 @@ class RateLimitMiddleware:
         constraint, not a replacement for the general one.
         """
         general = (self.max_requests, RATE_LIMIT_NAMESPACE)
-        if path.startswith(AUTH_PATH_PREFIX):
+        if path.startswith(AUTH_PATH_PREFIX) and not is_auth_budget_exempt(path):
             return general, (self.auth_max_requests, AUTH_RATE_LIMIT_NAMESPACE)
         return (general,)
 

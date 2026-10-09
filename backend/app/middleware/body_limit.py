@@ -58,6 +58,12 @@ class BodyLimitMiddleware:
 
         async def send_guarded(message: Message) -> None:
             nonlocal sent_start
+            if over_limit and not sent_start:
+                # The application judged a body it never saw in full — a
+                # chunked one, with no length declared up front — and usually
+                # answers 400 for the truncated payload. That verdict is
+                # dropped; the 413 below is the real one.
+                return
             if message["type"] == "http.response.start":
                 sent_start = True
             await send(message)
