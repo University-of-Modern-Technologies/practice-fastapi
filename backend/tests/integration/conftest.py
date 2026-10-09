@@ -4,10 +4,12 @@ Every fixture here is allowed to *skip*, never to fail. A developer without
 Docker running must be able to type `pytest` and get a green run with a handful
 of skips; a red one would train the team to ignore red.
 
-The connection strings come from the environment — `DATABASE_URL`, `REDIS_URL`
-and `MONGODB_URL`, the same three the application reads. The local compose stack
-publishes them on the shifted ports (5433 / 6380 / 27018) so that two backends
-can run side by side, which is why nothing here hard-codes a port.
+The connection strings come from the process environment only — `DATABASE_URL`,
+`REDIS_URL` and `MONGODB_URL`, the same three the application reads. Neither the
+`.env` files nor the parts the application assembles them from are consulted:
+running against real storage is something a developer opts into explicitly.
+Nothing here hard-codes a port, because the ports are whatever the root `.env`
+publishes.
 """
 
 from __future__ import annotations

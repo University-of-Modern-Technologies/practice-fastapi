@@ -389,7 +389,7 @@ async def test_an_unreachable_store_takes_the_instance_out_of_rotation(
 
     transport = ASGITransport(app=app, raise_app_exceptions=False)
     async with AsyncClient(transport=transport, base_url="http://testserver") as probe:
-        response = await probe.get("/health/ready")
+        response = await probe.get("/api/health/ready")
 
     assert response.status_code == 503
     body = response.json()

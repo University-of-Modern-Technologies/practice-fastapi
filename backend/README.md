@@ -1,13 +1,13 @@
 # Навчальна CRM API — FastAPI
 
 HTTP API і канал реального часу навчальної CRM на FastAPI, SQLAlchemy,
-PostgreSQL, Redis і MongoDB. Контракт описано в OpenAPI (`/docs`), і з ним
-працює веб-клієнт із теки `frontend`.
+PostgreSQL, Redis і MongoDB. Контракт описано в OpenAPI (`/api/docs`), і з
+ним працює веб-клієнт із теки `frontend`.
 
 ## Вимоги
 
 - [uv](https://docs.astral.sh/uv/) 0.11+ — Python 3.13 він поставить сам
-- Docker — для PostgreSQL 17, Redis 7 і MongoDB 8
+- Docker — для PostgreSQL 17, Redis 7 і MongoDB 7
 
 ## Запуск
 
@@ -18,7 +18,7 @@ PostgreSQL, Redis і MongoDB. Контракт описано в OpenAPI (`/docs
 **Усе в контейнерах** (з кореня репозиторію):
 
 ```bash
-uv run poe setup   # .env із новими секретами, перевірка портів
+uv run poe setup   # обидва .env із новими секретами, перевірка портів
 uv run poe start   # стек у Docker, API перезапускається при збереженні файла
 ```
 
@@ -33,18 +33,44 @@ uv run poe start:infra           # лише PostgreSQL, Redis і MongoDB
 cd backend
 uv run alembic upgrade head      # міграції
 uv run python -m scripts.seed    # базове наповнення
-uv run python -m app.main        # API на http://localhost:8000
+cd ..
+uv run poe dev                   # API на http://localhost:8000
 ```
 
-`setup` створює `.env` цієї теки з тими самими паролями сховищ, що й кореневий
-`.env`, тож застосунок на машині заходить у базу, підняту стеком. Адреси
-сховищ у шаблоні — `127.0.0.1:5432`/`6379`/`27017`: саме `127.0.0.1`, а не
-`localhost`, бо сховища слухають лише IPv4, а `localhost` на Windows спершу
-пробує IPv6 і втрачає на цьому по дві секунди на кожне з'єднання.
+Документація — http://localhost:8000/api/docs, схема — `/api/openapi.json`.
+Повний стек при цьому зупиняють (`uv run poe stop`): його контейнер `api`
+займає той самий порт 8000 і працює з тією самою базою.
 
-Документація — `/docs`, схема — `/openapi.json`. Повний стек при цьому
-зупиняють (`uv run poe stop`): його контейнер `api` слухає інший порт, але
-працює з тією самою базою.
+## Оточення
+
+Налаштування лежать у двох файлах, і бекенд читає обидва:
+
+| Файл | Що в ньому |
+|---|---|
+| `.env` у корені репозиторію | спільне для стека й бекенда: `APP_ENV`, порти (`API_PORT`, `POSTGRES_PORT`, `REDIS_PORT`, `MONGO_PORT`…), `POSTGRES_DB`/`POSTGRES_USER`/`POSTGRES_PASSWORD`, `MONGO_DB`/`MONGO_USER`/`MONGO_PASSWORD` |
+| `backend/.env` | лише бекенда: JWT-секрети, `SEED_USER_PASSWORD`, `SEED_ALLOW_PRODUCTION`, `LOG_LEVEL`, CORS, ліміти, кеш, журнал подій, `WS_PATH`, інтеграції |
+
+Пріоритет — змінна середовища процесу, потім `backend/.env`, потім кореневий
+`.env`. Шляхи до файлів рахуються від теки бекенда, тож міграції, наповнення й
+тести знаходять їх, хоч би з якої теки їх запущено. Файла може й не бути.
+
+`DATABASE_URL`, `REDIS_URL` і `MONGODB_URL` окремо задавати не треба — вони
+збираються з частин:
+
+| Адреса | Із чого | Хост і порт за замовчуванням |
+|---|---|---|
+| `DATABASE_URL` | `POSTGRES_HOST`, `POSTGRES_PORT`, `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB` | `127.0.0.1:5432` |
+| `REDIS_URL` | `REDIS_HOST`, `REDIS_PORT` | `127.0.0.1:6379` |
+| `MONGODB_URL` | `MONGO_HOST`, `MONGO_PORT`, `MONGO_USER`, `MONGO_PASSWORD`, `MONGO_DB` | `127.0.0.1:27017` |
+
+Явно заданий `DATABASE_URL`, `REDIS_URL` чи `MONGODB_URL` завжди перемагає
+зібраний. Хост за замовчуванням — саме `127.0.0.1`, а не `localhost`: сховища
+слухають лише IPv4, а `localhost` на Windows спершу пробує IPv6 і втрачає на
+цьому по дві секунди на кожне з'єднання. У Docker compose задає хости `postgres`,
+`redis` і `mongo`.
+
+API слухає порт `PORT`, а без нього — `API_PORT` із кореневого `.env`; типово
+8000.
 
 ## База даних
 
@@ -57,8 +83,9 @@ uv run alembic upgrade head
 uv run python -m scripts.seed
 ```
 
-Обидві команди читають `.env` цієї теки. Наповнення відмовляється працювати з
-паролем `change-me`, а в `production` — без `SEED_ALLOW_PRODUCTION=true`.
+Обидві команди читають ті самі два `.env`, що й застосунок, і `DATABASE_URL`
+їм не потрібен. Наповнення відмовляється працювати з паролем `change-me`, а в
+`production` — без `SEED_ALLOW_PRODUCTION=true`.
 
 ### Демонстраційний набір даних
 
@@ -67,7 +94,7 @@ uv run python -m scripts.seed
 
 ```bash
 uv run poe db:seed:demo           # з кореня репозиторію: у стеку, в контейнері
-uv run python -m scripts.demo_seed  # проти бази, до якої веде .env
+uv run python -m scripts.demo_seed  # проти бази, до якої ведуть .env
 ```
 
 Це **окрема команда й окремі дані**. Базовий seed вона не чіпає: видаляє лише
@@ -105,13 +132,14 @@ uv run pytest                  # тести
 
 `pytest` збирає всі рівні одразу, але інтеграційні тести пропускаються, поки не
 піднято сховища: у підсумку прогону вони видні як `skipped`. Піднятого стека
-самого по собі не досить — тести читають адреси сховищ зі змінних середовища
-процесу, а не з `.env`, тому їх треба задати явно в тому самому терміналі:
+самого по собі не досить — тести читають адреси сховищ лише зі змінних
+середовища процесу, а не з `.env` і не з частин, тому їх треба задати явно в
+тому самому терміналі (порти й паролі — з кореневого `.env`):
 
 ```powershell
-$env:DATABASE_URL = 'postgresql://practice_crm:<POSTGRES_PASSWORD з .env>@127.0.0.1:5432/practice_crm'
-$env:REDIS_URL = 'redis://127.0.0.1:6379'
-$env:MONGODB_URL = 'mongodb://practice_crm:<MONGO_PASSWORD з .env>@127.0.0.1:27017/practice_events?authSource=admin'
+$env:DATABASE_URL = 'postgresql://practice_crm:<POSTGRES_PASSWORD>@127.0.0.1:<POSTGRES_PORT>/practice_crm'
+$env:REDIS_URL = 'redis://127.0.0.1:<REDIS_PORT>'
+$env:MONGODB_URL = 'mongodb://practice_crm:<MONGO_PASSWORD>@127.0.0.1:<MONGO_PORT>/practice_events?authSource=admin'
 uv run pytest
 ```
 
@@ -125,7 +153,7 @@ app/
   cache/         фасад Redis: get / set / remember / delete / invalidate_prefix
   events/        журнал подій у MongoDB (append-only, TTL-індекс)
   realtime/      WebSocket-шлюз із RBAC на підписках
-  observability/ реєстр метрик і /metrics під токеном
+  observability/ реєстр метрик і /api/metrics під токеном
   health/        проби живучості й готовності
   container.py   композиційний корінь: увесь граф об'єктів
   lifespan.py    підключення/відключення, публікація графа на app.state
@@ -159,8 +187,9 @@ tests/
 | `integrations` | 4 | доставка: тарифи, відправлення, стан інтеграції |
 | `ai` | 2 | стислий переказ угоди, класифікація звернення |
 
-Поза контрактом: `/health/{live,ready,startup,info}`, `/docs`, `/openapi.json`,
-`/metrics` (лише коли задано `METRICS_TOKEN`) і WebSocket на `WS_PATH`.
+Поза контрактом, але теж під `/api`: `/api/health/{live,ready,startup,info}`,
+`/api/docs`, `/api/openapi.json`, `/api/metrics` (лише коли задано
+`METRICS_TOKEN`) і WebSocket на `WS_PATH` (типово `/api/v1/realtime`).
 
 ## Зовнішні служби
 
@@ -169,7 +198,7 @@ tests/
 асистент відповідає офлайн-моком із шаблонними відповідями. Обидва варіанти
 детерміновані, тож свіжий checkout проходить наскрізний сценарій без жодного
 зовнішнього акаунта. Решта змінних (таймаути, пороги circuit breaker'а, ліміти
-токенів) — у `.env.example`.
+токенів) — у `backend/.env.example`.
 
 Клієнт доставки й провайдер асистента створюються один раз на процес у
 `app/container.py` і публікуються на `app.state`: стан circuit breaker'а мусить
@@ -177,15 +206,14 @@ tests/
 
 ## Порти
 
-Порти стека змінюються в кореневому `.env`, порт API на машині — у `.env` цієї
-теки.
+Порти змінюються в кореневому `.env`. API займає 8000 і в контейнері, і на
+машині, тож одночасно працює щось одне з двох.
 
-| Порт | Сервіс |
-|---|---|
-| 8080 | застосунок через nginx |
-| 3000 | API напряму (контейнер) |
-| 8000 | API на машині (`uv run poe dev`) |
-| 3100 | веб-клієнт |
-| 5432 | PostgreSQL |
-| 6379 | Redis |
-| 27017 | MongoDB |
+| Порт | Змінна | Сервіс |
+|---|---|---|
+| 8080 | `HTTP_PORT` | застосунок через nginx |
+| 8000 | `API_PORT` | API — у контейнері чи на машині (`uv run poe dev`) |
+| 3000 | `WEB_PORT` | веб-клієнт |
+| 5432 | `POSTGRES_PORT` | PostgreSQL |
+| 6379 | `REDIS_PORT` | Redis |
+| 27017 | `MONGO_PORT` | MongoDB |

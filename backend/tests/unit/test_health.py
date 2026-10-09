@@ -24,14 +24,14 @@ def _declared_version() -> str:
 
 
 async def test_liveness_needs_no_dependencies(client: AsyncClient) -> None:
-    response = await client.get("/health/live")
+    response = await client.get("/api/health/live")
 
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
 
 
 async def test_readiness_reports_ready_without_checks(client: AsyncClient) -> None:
-    response = await client.get("/health/ready")
+    response = await client.get("/api/health/ready")
 
     assert response.status_code == 200
     assert response.json()["status"] == "ready"
@@ -40,14 +40,14 @@ async def test_readiness_reports_ready_without_checks(client: AsyncClient) -> No
 async def test_readiness_fails_while_draining(client: AsyncClient) -> None:
     service_lifecycle.begin_draining()
 
-    response = await client.get("/health/ready")
+    response = await client.get("/api/health/ready")
 
     assert response.status_code == 503
     assert response.json()["status"] == "draining"
 
 
 async def test_info_exposes_no_secrets(client: AsyncClient) -> None:
-    body = (await client.get("/health/info")).json()
+    body = (await client.get("/api/health/info")).json()
 
     assert set(body) == {"name", "version", "nodeEnv", "phase", "uptimeSeconds"}
     # The service name matches the distribution, and the version is read from
@@ -57,13 +57,13 @@ async def test_info_exposes_no_secrets(client: AsyncClient) -> None:
 
 
 async def test_the_probes_stay_out_of_the_published_schema(client: AsyncClient) -> None:
-    paths = (await client.get("/openapi.json")).json()["paths"]
+    paths = (await client.get("/api/openapi.json")).json()["paths"]
 
-    assert "/health/live" in paths
-    assert "/health/ready" in paths
-    assert "/health/startup" not in paths
-    assert "/health/info" not in paths
-    assert paths["/health/live"]["get"]["tags"] == ["Health"]
+    assert "/api/health/live" in paths
+    assert "/api/health/ready" in paths
+    assert "/api/health/startup" not in paths
+    assert "/api/health/info" not in paths
+    assert paths["/api/health/live"]["get"]["tags"] == ["Health"]
 
 
 async def test_failing_critical_check_takes_the_instance_out_of_rotation(
@@ -82,7 +82,7 @@ async def test_failing_critical_check_takes_the_instance_out_of_rotation(
 
     transport = ASGITransport(app=app, raise_app_exceptions=False)
     async with AsyncClient(transport=transport, base_url="http://testserver") as probe:
-        response = await probe.get("/health/ready")
+        response = await probe.get("/api/health/ready")
 
     assert response.status_code == 503
     body = response.json()

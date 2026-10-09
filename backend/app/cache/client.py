@@ -119,7 +119,7 @@ async def close_redis_client(client: CacheRedis) -> None:
 
 
 def create_cache_readiness_check(client: CacheRedis) -> ReadinessCheck:
-    """Probe for ``/health/ready``.
+    """Probe for ``/api/health/ready``.
 
     Marked non-critical on purpose: a cache outage costs latency, not
     correctness, and must never pull the instance out of the load balancer.

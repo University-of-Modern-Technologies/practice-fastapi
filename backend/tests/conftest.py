@@ -23,9 +23,9 @@ TEST_SECRET = "test-secret-value-that-is-long-enough"
 
 @pytest.fixture
 def settings() -> Settings:
-    # `_env_file=None` keeps a developer's local `.env` out of the fixture: it
-    # would otherwise supply values the tests never asked for — a configured
-    # metrics token, say, which mounts a second scrape endpoint.
+    # `_env_file=None` keeps both of a developer's local `.env` files out of the
+    # fixture: they would otherwise supply values the tests never asked for — a
+    # configured metrics token, say, which mounts a second scrape endpoint.
     return Settings(
         _env_file=None,
         app_env="test",

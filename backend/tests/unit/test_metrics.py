@@ -174,8 +174,10 @@ async def test_in_flight_gauge_returns_to_zero(
 
 
 async def test_scrape_requires_the_bearer_token(metrics_client: AsyncClient) -> None:
-    anonymous = await metrics_client.get("/metrics")
-    wrong = await metrics_client.get("/metrics", headers={"authorization": "Bearer not-the-token"})
+    anonymous = await metrics_client.get("/api/metrics")
+    wrong = await metrics_client.get(
+        "/api/metrics", headers={"authorization": "Bearer not-the-token"}
+    )
 
     # 404 rather than 401: an unauthorised scraper learns nothing at all.
     assert anonymous.status_code == 404
@@ -189,7 +191,7 @@ async def test_a_non_ascii_token_is_rejected_like_any_other_wrong_one(
     # Sent as raw bytes: a server hands the application whatever arrived on the
     # wire, and nothing stops a client from putting non-ASCII in the header.
     response = await metrics_client.get(
-        "/metrics", headers={b"authorization": "Bearer пароль-не-той".encode()}
+        "/api/metrics", headers={b"authorization": "Bearer пароль-не-той".encode()}
     )
 
     assert response.status_code == 404
@@ -201,7 +203,7 @@ async def test_scrape_returns_the_prometheus_exposition_format(
     await metrics_client.get("/probe/items/1")
 
     response = await metrics_client.get(
-        "/metrics", headers={"authorization": f"Bearer {METRICS_TOKEN}"}
+        "/api/metrics", headers={"authorization": f"Bearer {METRICS_TOKEN}"}
     )
 
     assert response.status_code == 200
@@ -210,6 +212,16 @@ async def test_scrape_returns_the_prometheus_exposition_format(
     assert "http_requests_total" in response.text
     assert "http_request_duration_seconds_bucket" in response.text
     assert "process_uptime_seconds" in response.text
+
+
+async def test_the_scrape_is_served_only_under_the_api_prefix(
+    metrics_client: AsyncClient,
+) -> None:
+    response = await metrics_client.get(
+        "/metrics", headers={"authorization": f"Bearer {METRICS_TOKEN}"}
+    )
+
+    assert response.status_code == 404
 
 
 def test_short_tokens_are_refused(registry: CollectorRegistry) -> None:

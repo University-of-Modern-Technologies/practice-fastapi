@@ -29,8 +29,8 @@ PORTAINER_PASSWORD_FILE = REPO_ROOT / ".portainer-password"
 STORAGE_SERVICES = ["postgres", "redis", "mongo"]
 PORTS = [
     ("HTTP_PORT", 8080, "application (nginx)"),
-    ("API_PORT", 3000, "API"),
-    ("WEB_PORT", 3100, "web client"),
+    ("API_PORT", 8000, "API"),
+    ("WEB_PORT", 3000, "web client"),
     ("POSTGRES_PORT", 5432, "PostgreSQL"),
     ("REDIS_PORT", 6379, "Redis"),
     ("MONGO_PORT", 27017, "MongoDB"),
@@ -58,12 +58,13 @@ def read_env(path: Path = REPO_ROOT / ".env") -> dict[str, str]:
     return values
 
 
-def run(args: list[str], cwd: Path = REPO_ROOT) -> None:
+def run(args: list[str], cwd: Path = REPO_ROOT, extra_env: dict[str, str] | None = None) -> None:
     executable = shutil.which(args[0])
     if executable is None:
         fail(f"{args[0]} is not installed or not in PATH", 2)
     # A nested `uv run` must pick the backend's own environment, not this one.
     env = {key: value for key, value in os.environ.items() if key != "VIRTUAL_ENV"}
+    env.update(extra_env or {})
     result = subprocess.run([str(executable), *args[1:]], cwd=cwd, env=env, check=False)
     if result.returncode != 0:
         sys.exit(result.returncode)
@@ -87,8 +88,14 @@ def require_docker() -> None:
 
 
 def require_env() -> None:
-    if not (REPO_ROOT / ".env").exists():
-        fail(".env is missing. Run `uv run poe setup` first.")
+    for _, target in ENV_FILES:
+        if not target.exists():
+            name = target.relative_to(REPO_ROOT).as_posix()
+            fail(f"{name} is missing. Run `uv run poe setup` first.")
+
+
+def api_port() -> int:
+    return int(read_env().get("API_PORT") or 8000)
 
 
 def port_is_free(port: int) -> bool:
@@ -121,19 +128,21 @@ def portainer_password() -> str:
 
 
 def print_addresses() -> None:
-    env = read_env()
-    http = env.get("HTTP_PORT", "8080")
+    http = read_env().get("HTTP_PORT", "8080")
+    password = read_env(BACKEND_ROOT / ".env").get(
+        "SEED_USER_PASSWORD", "the SEED_USER_PASSWORD value from backend/.env"
+    )
     print()
     print(paint("32", f"Ready: http://localhost:{http}"))
-    print(f"  API docs:  http://localhost:{http}/docs")
-    print(f"  Health:    http://localhost:{http}/health/ready")
+    print(f"  API docs:  http://localhost:{http}/api/docs")
+    print(f"  Health:    http://localhost:{http}/api/health/ready")
     print()
     print("  Sign in as admin@crm-training.example")
-    print(f"  Password:  {env.get('SEED_USER_PASSWORD', 'the SEED_USER_PASSWORD value from .env')}")
+    print(f"  Password:  {password}")
 
 
 def setup() -> None:
-    existing = read_env()
+    existing = read_env(BACKEND_ROOT / ".env")
     generated = {key: existing.get(key) or secrets.token_urlsafe(32) for key in GENERATED_SECRETS}
     for source, target in ENV_FILES:
         name = target.relative_to(REPO_ROOT).as_posix()
@@ -142,8 +151,6 @@ def setup() -> None:
             continue
         write_env_file(source, target, generated)
         print(paint("32", f"Created {name}"))
-    if not (FRONTEND_ROOT / ".env.local").exists():
-        shutil.copyfile(FRONTEND_ROOT / ".env.example", FRONTEND_ROOT / ".env.local")
     portainer_password()
 
     env = read_env()
@@ -194,18 +201,32 @@ def test() -> None:
 
 
 def dev() -> None:
+    # One API port for every way of running it, so the web client always finds it.
+    # Two processes on one port do not fail on Windows, they split the traffic.
+    require_env()
+    port = api_port()
+    if not port_is_free(port):
+        fail(
+            f"port {port} is already taken, most likely by the api container of this stack.\n"
+            "Stop the stack (uv run poe stop) and start the storage only (uv run poe start:infra)."
+        )
     run(["uv", "run", "python", "-m", "app.main"], cwd=BACKEND_ROOT)
 
 
 def dev_web() -> None:
-    run(["npm", "run", "dev"], cwd=FRONTEND_ROOT)
+    web_port = read_env().get("WEB_PORT") or "3000"
+    run(
+        ["npx", "next", "dev", "--port", web_port],
+        cwd=FRONTEND_ROOT,
+        extra_env={"API_ORIGIN": f"http://127.0.0.1:{api_port()}"},
+    )
 
 
 def start_api() -> None:
     require_env()
     require_docker()
     compose("dev", ["up", "-d", "--build", "--wait", "api"])
-    print(paint("32", f"\nAPI: http://localhost:{read_env().get('API_PORT', '3000')}/docs"))
+    print(paint("32", f"\nAPI: http://localhost:{api_port()}/api/docs"))
 
 
 def start_infra() -> None:
