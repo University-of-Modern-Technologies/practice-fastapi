@@ -57,7 +57,7 @@ export interface RealtimeDomainEvent {
 }
 
 export type RealtimeStatus =
-  /** `NEXT_PUBLIC_WS_URL` is empty — the channel is off by configuration. */
+  /** `NEXT_PUBLIC_WS_URL` is set empty — the channel is off by configuration. */
   | 'disabled'
   /** Created but not started, or stopped after a sign-out. */
   | 'idle'

@@ -4,7 +4,7 @@ import { defineConfig, devices } from '@playwright/test';
  * The address the browser opens. Defaults to the port the `web` service of the
  * compose stack publishes, so a locally running stack needs no configuration.
  */
-const baseURL = process.env.PLAYWRIGHT_BASE_URL ?? 'http://localhost:3100';
+const baseURL = process.env.PLAYWRIGHT_BASE_URL ?? 'http://localhost:3000';
 
 /**
  * Written once by the setup project and reused by every test. The access token
