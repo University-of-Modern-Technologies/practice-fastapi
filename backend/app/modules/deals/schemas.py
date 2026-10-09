@@ -24,6 +24,7 @@ from app.core.serializers import Money, UtcDate, UtcDatetime
 from app.db.enums import DealStage
 from app.modules.deals.transition import MAX_PROBABILITY, MIN_PROBABILITY
 from app.modules.deals.types import (
+    MAX_DEAL_PAGE,
     MAX_SEARCH_LENGTH,
     MAX_TITLE_LENGTH,
     DealSortField,
@@ -61,6 +62,37 @@ def _parse_currency(value: object) -> object:
     return code.upper()
 
 
+def _require_json_number(value: object) -> object:
+    """Refuses a number that arrived as text or as a boolean.
+
+    A request body is JSON, which has a number type of its own; ``"3"`` or
+    ``true`` where a count belongs is a malformed request, not a value to
+    convert. ``None`` is left to the field's own optionality.
+    """
+    if isinstance(value, bool | str):
+        message = "Input should be a valid integer"
+        raise ValueError(message)
+    return value
+
+
+def _trim(value: object) -> object:
+    """Strips surrounding whitespace, leaving anything that is not text alone."""
+    return value.strip() if isinstance(value, str) else value
+
+
+def _reject_null(value: object) -> object:
+    """Refuses an explicitly sent ``null``.
+
+    A default is never passed through a validator, so this only ever sees a
+    value the client wrote down: a field may be omitted freely, while ``null``
+    stays an error on the fields whose column cannot hold one.
+    """
+    if value is None:
+        message = "Value may not be null"
+        raise ValueError(message)
+    return value
+
+
 #: Published as what the validator accepts, a decimal string; the schema the
 #: framework derives for a ``Decimal`` would also offer a JSON number.
 AmountIn = Annotated[
@@ -70,9 +102,12 @@ AmountIn = Annotated[
 ]
 CurrencyIn = Annotated[str, BeforeValidator(_parse_currency)]
 Probability = Annotated[int, Field(ge=MIN_PROBABILITY, le=MAX_PROBABILITY)]
+#: The same bound as it arrives in a request body, where it must be a number.
+BodyProbability = Annotated[Probability, BeforeValidator(_require_json_number)]
 #: Optimistic locking counter as the client echoes it back.
-Version = Annotated[int, Field(ge=1)]
-Title = Annotated[str, Field(min_length=1, max_length=MAX_TITLE_LENGTH)]
+Version = Annotated[int, Field(ge=1), BeforeValidator(_require_json_number)]
+#: Trimmed before it is measured, so a title of spaces is an empty title.
+Title = Annotated[str, Field(min_length=1, max_length=MAX_TITLE_LENGTH), BeforeValidator(_trim)]
 
 
 class DealOut(CamelModel):
@@ -107,8 +142,23 @@ class CreateDealRequest(CamelModel):
     stage: Literal[DealStage.LEAD] | None = None
     amount: AmountIn
     currency: CurrencyIn | None = None
-    probability: Probability | None = None
+    probability: BodyProbability | None = None
     expected_close_date: date | None = None
+
+    # Every optional field here may be left out, but none may be sent as null:
+    # a new deal has nothing to clear.
+    @field_validator(
+        "owner_id",
+        "contact_id",
+        "stage",
+        "currency",
+        "probability",
+        "expected_close_date",
+        mode="before",
+    )
+    @classmethod
+    def _require_value(cls, value: object) -> object:
+        return _reject_null(value)
 
 
 class UpdateDealRequest(CamelModel):
@@ -126,8 +176,15 @@ class UpdateDealRequest(CamelModel):
     title: Title | None = None
     amount: AmountIn | None = None
     currency: CurrencyIn | None = None
-    probability: Probability | None = None
+    probability: BodyProbability | None = None
     expected_close_date: date | None = None
+
+    # These back non-nullable columns, so an explicit null is a bad request
+    # rather than a silent no-op that still moves the version on.
+    @field_validator("owner_id", "title", "amount", "currency", "probability", mode="before")
+    @classmethod
+    def _require_value(cls, value: object) -> object:
+        return _reject_null(value)
 
     @model_validator(mode="after")
     def _require_one_field(self) -> Self:
@@ -142,7 +199,12 @@ class TransitionDealRequest(CamelModel):
 
     version: Version
     stage: DealStage
-    probability: Probability | None = None
+    probability: BodyProbability | None = None
+
+    @field_validator("probability", mode="before")
+    @classmethod
+    def _require_value(cls, value: object) -> object:
+        return _reject_null(value)
 
 
 class DealListParams(CamelModel):
@@ -157,7 +219,7 @@ class DealListParams(CamelModel):
     through a browser, and none of them are the client asking for anything.
     """
 
-    page: int = Field(default=1, ge=1)
+    page: int = Field(default=1, ge=1, le=MAX_DEAL_PAGE)
     page_size: int = Field(default=DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE)
     search: str | None = Field(default=None, min_length=1, max_length=MAX_SEARCH_LENGTH)
     owner_id: uuid.UUID | None = None
@@ -172,10 +234,12 @@ class DealListParams(CamelModel):
     sort_by: DealSortField = "createdAt"
     sort_order: SortOrder = "desc"
 
-    @field_validator("search")
+    # Trimmed before the length is checked, so a search of spaces is refused
+    # as empty rather than turned into "no filter".
+    @field_validator("search", mode="before")
     @classmethod
-    def _trim_search(cls, value: str | None) -> str | None:
-        return value.strip() if value is not None else None
+    def _trim_search(cls, value: object) -> object:
+        return _trim(value)
 
     @model_validator(mode="after")
     def _require_ordered_ranges(self) -> Self:

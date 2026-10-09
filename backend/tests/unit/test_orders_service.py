@@ -8,10 +8,19 @@ from decimal import Decimal
 from typing import Any, cast
 
 import pytest
+from pydantic import ValidationError
 from sqlalchemy import Update
+from sqlalchemy.dialects import postgresql
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.errors import ConflictError, ForbiddenError, NotFoundError, VersionConflictError
+from app.core.errors import (
+    AppError,
+    ConflictError,
+    ForbiddenError,
+    NotFoundError,
+    VersionConflictError,
+)
 from app.core.serializers import format_scaled_money
 from app.db.enums import OrderStatus, PermissionScope
 from app.db.models.order import Order, OrderItem
@@ -27,7 +36,7 @@ from app.modules.orders.schemas import (
     UpdateOrderItemRequest,
     UpdateOrderRequest,
 )
-from app.modules.orders.service import OrdersService, generate_order_number
+from app.modules.orders.service import OrdersService, _OrderListPage, generate_order_number
 from app.modules.orders.types import OrderAccess
 
 NOW = datetime(2026, 1, 1, tzinfo=UTC)
@@ -140,6 +149,8 @@ class FakeSession:
 
     def __init__(self, selects: list[list[Any]] | None = None) -> None:
         self.selects = selects or []
+        #: Raised by the next flush, once, to stand in for a database refusal.
+        self.flush_error: Exception | None = None
         self.scalars_queue: list[Any] = []
         self.updates: list[Update] = []
         self.update_rowcount = 1
@@ -164,6 +175,9 @@ class FakeSession:
 
     async def flush(self) -> None:
         self.flushes += 1
+        if self.flush_error is not None:
+            error, self.flush_error = self.flush_error, None
+            raise error
 
     def begin_nested(self) -> FakeNested:
         return FakeNested()
@@ -303,6 +317,8 @@ class TestCreate:
 
     async def test_a_wide_grant_may_place_an_order_on_behalf_of_another_owner(self) -> None:
         session = FakeSession([[_order()]])
+        # The active-account lookup for the named owner finds them.
+        session.scalars_queue = [OTHER_ID]
         service = _service(session)
 
         await service.create(ALL, CreateOrderRequest(owner_id=OTHER_ID))
@@ -335,7 +351,8 @@ class TestDuplicate:
         source = _order(owner_id=OTHER_ID)
         source.contact_id = uuid.uuid4()
         session = FakeSession([[source], [_product()], [_order()]])
-        session.scalars_queue = [source.contact_id]
+        # The owner is looked up first (active), then the contact.
+        session.scalars_queue = [OTHER_ID, source.contact_id]
         service = _service(session)
 
         await service.duplicate(ALL, ORDER_ID)
@@ -599,3 +616,243 @@ class TestReads:
         order = await service.get_by_id(OWN, ORDER_ID)
 
         assert [item.id for item in order.items] == [first.id, second.id]
+
+
+def _integrity_error(message: str) -> IntegrityError:
+    return IntegrityError("INSERT ...", {}, Exception(message))
+
+
+class TestOwnerAssignment:
+    async def test_refuses_an_owner_who_is_unknown_or_deactivated(self) -> None:
+        session = FakeSession()
+        service = _service(session)
+
+        with pytest.raises(NotFoundError) as error:
+            await service.create(ALL, CreateOrderRequest(owner_id=OTHER_ID))
+
+        assert error.value.status_code == 404
+        assert error.value.code == "ORDER_OWNER_NOT_FOUND"
+        assert session.added == []
+
+    async def test_does_not_look_the_caller_up_when_the_caller_is_the_owner(self) -> None:
+        session = FakeSession([[_order()]])
+        service = _service(session)
+
+        await service.create(ALL, CreateOrderRequest(owner_id=ACTOR_ID))
+
+        assert cast(Order, session.added[0]).owner_id == ACTOR_ID
+
+    async def test_refuses_to_hand_an_existing_order_to_an_unknown_owner(self) -> None:
+        session = FakeSession([[_order()]])
+        service = _service(session)
+
+        with pytest.raises(NotFoundError) as error:
+            await service.update(ALL, ORDER_ID, UpdateOrderRequest(version=1, owner_id=OTHER_ID))
+
+        assert error.value.code == "ORDER_OWNER_NOT_FOUND"
+        assert session.updates == []
+
+    async def test_an_owner_removed_before_the_write_is_not_reported_as_a_duplicate(self) -> None:
+        session = FakeSession()
+        session.flush_error = _integrity_error(
+            'insert or update on table "orders" violates foreign key constraint '
+            '"fk_orders_owner_id_users"'
+        )
+        service = _service(session)
+
+        with pytest.raises(NotFoundError) as error:
+            await service.create(ALL, CreateOrderRequest())
+
+        assert error.value.code == "ORDER_OWNER_NOT_FOUND"
+
+    async def test_an_unrelated_integrity_failure_is_not_called_a_duplicate_line(self) -> None:
+        session = FakeSession()
+        session.flush_error = _integrity_error(
+            'new row for relation "orders" violates check constraint "ck_orders_version_positive"'
+        )
+        service = _service(session)
+
+        with pytest.raises(IntegrityError):
+            await service.create(ALL, CreateOrderRequest())
+
+    async def test_a_line_added_concurrently_is_still_a_duplicate(self) -> None:
+        other = uuid.UUID("77777777-7777-7777-7777-777777777777")
+        product = _product()
+        product.id = other
+        session = FakeSession([[_order()], [product]])
+        session.flush_error = _integrity_error(
+            'duplicate key value violates unique constraint "uq_order_items_order_id_product_id"'
+        )
+        service = _service(session)
+
+        with pytest.raises(ConflictError) as error:
+            await service.add_item(
+                OWN, ORDER_ID, AddOrderItemRequest(version=1, product_id=other, quantity=1)
+            )
+
+        assert error.value.code == "ORDER_ITEM_DUPLICATE"
+
+
+class TestEmptyDraft:
+    async def test_an_empty_draft_can_be_cancelled(self) -> None:
+        session = FakeSession(
+            [[_order(items=[])], [_order(OrderStatus.CANCELLED, version=2, items=[])]]
+        )
+        service = _service(session)
+
+        await service.transition(
+            OWN, ORDER_ID, TransitionOrderRequest(version=1, status=OrderStatus.CANCELLED)
+        )
+
+        assert session.updates[0].compile().params["status"] == OrderStatus.CANCELLED
+
+
+def _discounted(items: list[OrderItem] | None = None) -> Order:
+    order = _order(items=items)
+    order.discount_total = Decimal("30.00")
+    order.total = order.subtotal - order.discount_total
+    return order
+
+
+class TestDiscountBounds:
+    async def test_refuses_a_discount_larger_than_the_subtotal_even_under_a_tax(self) -> None:
+        session = FakeSession([[_order()]])
+        service = _service(session)
+
+        with pytest.raises(AppError) as error:
+            await service.update(
+                OWN,
+                ORDER_ID,
+                UpdateOrderRequest(version=1, discount_total="70.00", tax_total="20.00"),
+            )
+
+        assert error.value.status_code == 400
+        assert error.value.code == "ORDER_TOTALS_INVALID"
+        assert session.updates == []
+
+    async def test_removing_a_line_lowers_the_discount_to_the_new_subtotal(self) -> None:
+        order = _discounted()
+        session = FakeSession([[order], [_order(version=2, items=[])]])
+        service = _service(session)
+
+        await service.remove_item(OWN, ORDER_ID, ITEM_ID, 1)
+
+        params = session.updates[0].compile().params
+        assert format_scaled_money(params["subtotal"]) == "0.00"
+        assert format_scaled_money(params["discount_total"]) == "0.00"
+        assert format_scaled_money(params["total"]) == "0.00"
+
+    async def test_reducing_a_quantity_lowers_the_discount_below_it(self) -> None:
+        order = _discounted()
+        session = FakeSession([[order], [_order(version=2)]])
+        service = _service(session)
+
+        await service.update_item(
+            OWN, ORDER_ID, ITEM_ID, UpdateOrderItemRequest(version=1, quantity=1)
+        )
+
+        params = session.updates[0].compile().params
+        assert format_scaled_money(params["subtotal"]) == "19.99"
+        assert format_scaled_money(params["discount_total"]) == "19.99"
+        assert format_scaled_money(params["total"]) == "0.00"
+
+
+class TestAmountRange:
+    async def test_refuses_a_line_the_money_column_cannot_hold_before_writing(self) -> None:
+        session = FakeSession([[_product(unit_price="999999999999.99")]])
+        service = _service(session)
+
+        with pytest.raises(AppError) as error:
+            await service.create(
+                OWN,
+                CreateOrderRequest(items=[OrderItemRequest(product_id=PRODUCT_ID, quantity=2)]),
+            )
+
+        assert error.value.status_code == 400
+        assert error.value.code == "ORDER_AMOUNT_OUT_OF_RANGE"
+        assert error.value.details == {"field": "lineTotal", "max": "999999999999.99"}
+        assert session.added == []
+
+
+class TestAddItemCheckOrder:
+    async def test_a_product_already_on_the_order_is_a_duplicate_before_the_catalogue(
+        self,
+    ) -> None:
+        # Only the order is scripted: reaching the catalogue would pop nothing
+        # and report the product as missing instead.
+        session = FakeSession([[_order()]])
+        service = _service(session)
+
+        with pytest.raises(ConflictError) as error:
+            await service.add_item(
+                OWN, ORDER_ID, AddOrderItemRequest(version=1, product_id=PRODUCT_ID, quantity=1)
+            )
+
+        assert error.value.code == "ORDER_ITEM_DUPLICATE"
+        assert session.added == []
+
+
+class TestLineOrder:
+    async def test_lines_written_together_are_ordered_by_id(self) -> None:
+        first = _item()
+        first.id = uuid.UUID("00000000-0000-0000-0000-000000000001")
+        second = _item()
+        second.id = uuid.UUID("ffffffff-0000-0000-0000-000000000001")
+        session = FakeSession([[_order(items=[second, first])]])
+        service = _service(session)
+
+        order = await service.get_by_id(OWN, ORDER_ID)
+
+        assert [item.id for item in order.items] == [first.id, second.id]
+
+
+class TestSearch:
+    def test_the_search_term_is_matched_literally(self) -> None:
+        page = _OrderListPage(cast(AsyncSession, FakeSession()), ALL)
+        criteria = page._build_filters(OrderListParams(search="10%_off"))
+
+        dialect: Any = postgresql.dialect()  # type: ignore[no-untyped-call]
+        compiled = [c.compile(dialect=dialect) for c in criteria]
+        searches = [c for c in compiled if "ILIKE" in str(c)]
+        assert len(searches) == 1
+        assert "ESCAPE" in str(searches[0])
+        assert list(searches[0].params.values()) == [r"%10\%\_off%"]
+
+    def test_a_search_term_is_trimmed_and_a_blank_one_refused(self) -> None:
+        assert OrderListParams(search="  ORD-1  ").search == "ORD-1"
+        with pytest.raises(ValidationError):
+            OrderListParams(search="   ")
+
+
+class TestNullFields:
+    @pytest.mark.parametrize(
+        "field",
+        [
+            "ownerId",
+            "contactId",
+            "dealId",
+            "currency",
+            "discountTotal",
+            "taxTotal",
+            "notes",
+            "items",
+        ],
+    )
+    def test_a_create_request_refuses_an_explicit_null(self, field: str) -> None:
+        with pytest.raises(ValidationError):
+            CreateOrderRequest.model_validate({field: None})
+
+    @pytest.mark.parametrize("field", ["ownerId", "currency", "discountTotal", "taxTotal"])
+    def test_an_update_refuses_null_on_a_field_that_cannot_be_cleared(self, field: str) -> None:
+        with pytest.raises(ValidationError):
+            UpdateOrderRequest.model_validate({"version": 1, field: None})
+
+    @pytest.mark.parametrize("field", ["contactId", "dealId", "notes"])
+    def test_an_update_may_still_clear_a_nullable_field(self, field: str) -> None:
+        request = UpdateOrderRequest.model_validate({"version": 1, field: None})
+
+        assert request.model_fields_set == {"version", _snake(field)}
+
+
+def _snake(name: str) -> str:
+    return "".join(f"_{c.lower()}" if c.isupper() else c for c in name)

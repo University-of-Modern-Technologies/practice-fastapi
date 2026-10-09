@@ -172,7 +172,10 @@ class AiService:
         )
         summary = answer.strip()
 
-        await self._cache.set(key, summary, self._cache_ttl_seconds)
+        # An empty answer is a failed answer: caching it would serve the failure
+        # to every later caller for the whole lifetime of the entry.
+        if summary:
+            await self._cache.set(key, summary, self._cache_ttl_seconds)
         return DealSummaryOut(
             deal_id=request.id,
             summary=summary,
@@ -214,12 +217,14 @@ class AiService:
         else:
             category = resolve_category(parsed.category)
             confidence = float(parsed.confidence)
-
-        await self._cache.set(
-            key,
-            {"category": category.value, "confidence": confidence},
-            self._cache_ttl_seconds,
-        )
+            # Only a verdict the model actually gave is remembered. The fallback
+            # above stands for "no usable answer this time", and caching it
+            # would turn one bad response into the answer for every caller.
+            await self._cache.set(
+                key,
+                {"category": category.value, "confidence": confidence},
+                self._cache_ttl_seconds,
+            )
         return InquiryClassificationOut(
             category=category,
             confidence=confidence,

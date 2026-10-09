@@ -30,7 +30,10 @@ from app.modules.integrations.delivery.transport import (
     DeliveryTransportResponse,
     TransportTimeoutError,
 )
-from app.modules.integrations.delivery.with_circuit_breaker import CircuitOpenError
+from app.modules.integrations.delivery.with_circuit_breaker import (
+    CircuitOpenError,
+    is_credential_refusal,
+)
 from app.modules.integrations.types import TransportKind
 
 __all__ = [
@@ -192,6 +195,17 @@ class RetryingTransport:
                     raise last_failure
                 await self._wait_before(attempt, response)
                 continue
+
+            # Our credentials were refused: the integration is misconfigured,
+            # which the caller experiences as the service being unavailable.
+            # Repeating the request with the same key would be refused again.
+            if is_credential_refusal(response.status):
+                logger.error(
+                    "Delivery service refused our credentials",
+                    path=request.path,
+                    status=response.status,
+                )
+                raise delivery_unavailable_error()
 
             # 4xx: the service is alive and is refusing *this* request.
             # Retrying would only repeat the mistake.

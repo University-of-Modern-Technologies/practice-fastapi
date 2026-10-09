@@ -15,7 +15,7 @@ from app.core.pagination import DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, SortOrder
 from app.core.responses import CamelModel
 from app.core.serializers import UtcDatetime
 from app.core.validation import EmailAddress
-from app.modules.contacts.types import ContactSortField
+from app.modules.contacts.types import MAX_CONTACT_PAGE, ContactSortField
 
 MAX_NAME_LENGTH = 80
 MAX_EMAIL_LENGTH = 320
@@ -76,7 +76,7 @@ class ContactListParams(CamelModel):
     would make the two backends answer the same request differently.
     """
 
-    page: int = Field(default=1, ge=1)
+    page: int = Field(default=1, ge=1, le=MAX_CONTACT_PAGE)
     page_size: int = Field(default=DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE)
     search: str | None = Field(default=None, min_length=1, max_length=MAX_SEARCH_LENGTH)
     owner_id: uuid.UUID | None = None

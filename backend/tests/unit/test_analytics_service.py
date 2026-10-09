@@ -495,3 +495,68 @@ class TestStockHealth:
 
         assert session.calls == 2
         assert len(cache.store) == 2
+
+
+class TestWave8Regressions:
+    async def test_cuts_the_sales_buckets_on_the_utc_calendar(self) -> None:
+        """Truncation names its zone instead of using the session's."""
+        session = FakeSession([])
+
+        await build(session).sales_summary(SalesSummaryQuery(FROM, TO, AnalyticsPeriod.DAY))
+
+        sql = session.sql(0)
+        assert "timezone(%(timezone_1)s, date_trunc(" in sql
+        assert "timezone(%(timezone_2)s, coalesce(orders.placed_at, orders.created_at))" in sql
+        assert set(session.params(0).values()) >= {"UTC", "day"}
+
+    async def test_breaks_a_revenue_tie_in_the_top_products_by_the_product_id(self) -> None:
+        """The cut to ``limit`` happens in the query, so the tie-break does too."""
+        session = FakeSession([])
+
+        await build(session).top_products(TopProductsQuery(FROM, TO, 3))
+
+        ordering = session.sql(0).split("ORDER BY")[1]
+        assert "revenue DESC, order_items.product_id ASC" in ordering
+
+    async def test_breaks_a_revenue_tie_between_owners_by_the_owner_id(self) -> None:
+        """Equal revenue is ranked by id, not by the order rows came back in."""
+        owner_three = uuid.UUID("10000000-0000-4000-8000-000000000003")
+        session = FakeSession(
+            [],
+            [],
+            [
+                row(owner_id=owner_three, row_count=1, amount=Decimal("100")),
+                row(owner_id=OWNER_ONE, row_count=1, amount=Decimal("100")),
+                row(owner_id=OWNER_TWO, row_count=1, amount=Decimal("250")),
+            ],
+            [],
+        )
+
+        report = await build(session).owner_performance(OwnerPerformanceQuery(FROM, TO, 2))
+
+        assert [item.owner_id for item in report.items] == [OWNER_TWO, OWNER_ONE]
+
+    async def test_reports_stock_only_in_active_warehouses(self) -> None:
+        """A closed warehouse is not a shortage anybody can act on."""
+        session = FakeSession([])
+
+        await build(session).stock_health(StockHealthQuery(threshold=5, limit=20))
+
+        assert "warehouses.is_active IS true" in session.sql(0)
+
+    async def test_renders_a_whole_rate_without_a_fraction(self) -> None:
+        """``1`` as the sibling backend writes it, never ``1.0``."""
+        session = FakeSession(
+            [
+                row(stage=DealStage.LEAD, row_count=2, amount=Decimal("10")),
+                row(stage=DealStage.QUALIFIED, row_count=2, amount=Decimal("10")),
+                row(stage=DealStage.PROPOSAL, row_count=1, amount=Decimal("10")),
+            ]
+        )
+
+        report = await build(session).deal_funnel(DealFunnelQuery(FROM, TO))
+
+        rendered = report.model_dump_json(by_alias=True)
+        assert '"to":"QUALIFIED","rate":1}' in rendered
+        assert '"to":"PROPOSAL","rate":0.5}' in rendered
+        assert '"to":"WON","rate":0}' in rendered

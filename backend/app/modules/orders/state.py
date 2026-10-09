@@ -25,7 +25,7 @@ class OrderState(ABC):
     allowed_transitions: tuple[OrderStatus, ...]
     #: Lines and monetary fields may only be reshaped in this state.
     is_editable: bool = False
-    #: Leaving this state requires at least one line.
+    #: Moving forward out of this state requires at least one line; cancelling does not.
     requires_items: bool = False
 
     @abstractmethod
@@ -34,7 +34,9 @@ class OrderState(ABC):
 
 
 class _Draft(OrderState):
-    """Still being assembled: freely reshaped, but never left empty-handed.
+    """Still being assembled: freely reshaped, but never confirmed empty-handed.
+
+    Cancelling an empty draft is allowed: it promises nothing and moves no stock.
 
     Confirming it is the moment the goods are promised to the buyer, so that
     is the one move out of here that reserves stock.

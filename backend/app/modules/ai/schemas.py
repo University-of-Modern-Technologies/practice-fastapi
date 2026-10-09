@@ -14,7 +14,7 @@ from __future__ import annotations
 import uuid
 from typing import Annotated
 
-from pydantic import Field, StringConstraints
+from pydantic import Field, StringConstraints, field_validator
 
 from app.core.responses import CamelModel
 from app.modules.ai.types import DEFAULT_AI_MAX_INPUT_CHARS, ResolvedInquiryCategory
@@ -68,6 +68,27 @@ class SummariseDealRequest(CamelModel):
     probability: int | None = Field(default=None, ge=MIN_PROBABILITY, le=MAX_PROBABILITY)
     expected_close_date: CalendarDate | None = None
     notes: FreeText | None = None
+
+    # The optional facts may be left out, but not sent as null, and a number has
+    # to arrive as a JSON number: text or a boolean in its place is a malformed
+    # request rather than a value to convert.
+    @field_validator(
+        "amount", "currency", "probability", "expected_close_date", "notes", mode="before"
+    )
+    @classmethod
+    def _require_a_value(cls, value: object) -> object:
+        if value is None:
+            message = "Value may not be null"
+            raise ValueError(message)
+        return value
+
+    @field_validator("probability", mode="before")
+    @classmethod
+    def _require_json_number(cls, value: object) -> object:
+        if isinstance(value, bool | str):
+            message = "Input should be a valid integer"
+            raise ValueError(message)
+        return value
 
 
 class ClassifyInquiryRequest(CamelModel):

@@ -23,6 +23,7 @@ cent.
 
 from __future__ import annotations
 
+import re
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -62,6 +63,15 @@ MATCHABLE_ORDER_STATUSES: tuple[OrderStatus, ...] = (OrderStatus.CONFIRMED, Orde
 
 #: The window, as the interval the arithmetic actually uses.
 MATCH_WINDOW = timedelta(days=MATCH_WINDOW_DAYS)
+
+
+#: The whitespace folded away before comparing, listed character by character
+#: rather than left to a shorthand class: ``\s`` and ``str.split`` each mean
+#: something slightly different in every language, and the sibling backend
+#: folds by this very list.
+_FOLDED_WHITESPACE = re.compile(
+    r"[\t\n\v\f\r \u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]+"
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -107,8 +117,15 @@ def collapse(value: str) -> str:
     a number off an invoice will space it however their keyboard felt at the
     time. Hyphens are *not* removed — they are part of the number itself, and
     dropping them would make ``ORD-2026-0001`` match ``ORD20260001999``.
+
+    The fold is the sibling backend's, character for character: plain
+    lower-casing rather than ``casefold`` (which also turns ``ß`` into ``ss``),
+    applied first, and then exactly the whitespace in ``_FOLDED_WHITESPACE``
+    rather than whatever ``str.split`` considers a separator. Otherwise the
+    same statement would reconcile differently depending on which backend ran
+    the rule.
     """
-    return "".join(value.split()).casefold()
+    return _FOLDED_WHITESPACE.sub("", value.lower())
 
 
 def amounts_match(amount: Decimal, total: Decimal) -> bool:

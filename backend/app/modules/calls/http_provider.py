@@ -12,11 +12,13 @@ is a successful one that fills the call log with numbers no schema ever checked.
 
 from __future__ import annotations
 
+import asyncio
+import re
 from dataclasses import dataclass
 from typing import Annotated, Any, Protocol
 
 import httpx
-from pydantic import AwareDatetime, Field, TypeAdapter, ValidationError
+from pydantic import AwareDatetime, Field, TypeAdapter, ValidationError, field_validator
 
 from app.core.logging import get_logger
 from app.core.responses import CamelModel
@@ -60,6 +62,11 @@ _HTTP_TOO_MANY_REQUESTS = 429
 _HTTP_SERVER_ERROR = 500
 
 _MILLISECONDS_PER_SECOND = 1000
+
+#: A recording is something a browser is about to open, so only a web address
+#: is accepted from the provider: any other scheme (``javascript:``, ``file:``,
+#: ``data:``) in that field is a contract violation, not a link to hand out.
+_RECORDING_URL_PATTERN = re.compile(r"^https?://[^\s/?#]+\S*$", re.IGNORECASE)
 
 
 @dataclass(frozen=True, slots=True)
@@ -107,6 +114,24 @@ class CallPayload(CamelModel):
     started_at: AwareDatetime
     duration_seconds: int = Field(ge=0)
     recording_url: str | None = Field(default=None, max_length=MAX_RECORDING_URL_LENGTH)
+
+    @field_validator("recording_url", mode="before")
+    @classmethod
+    def _read_recording_url(cls, value: object) -> object:
+        """Trims the link, and reads an empty one as "no recording".
+
+        An empty string is the provider saying there is nothing to play in its
+        own words; anything else has to be a web address.
+        """
+        if not isinstance(value, str):
+            return value
+        link = value.strip()
+        if not link:
+            return None
+        if not _RECORDING_URL_PATTERN.match(link):
+            message = "Expected an http(s) URL"
+            raise ValueError(message)
+        return link
 
 
 #: The endpoint answers with a bare array of records, under the wire names the
@@ -182,18 +207,21 @@ class HttpCallProvider:
 
     async def _send(self, request: CallProviderFetchRequest) -> CallTransportResponse:
         try:
-            return await self._transport.send(
-                CallTransportRequest(
-                    path=CALLS_BATCH_PATH, limit=request.limit, timeout_ms=self._timeout_ms
+            # One deadline for the whole round trip, as the HTTP client's own
+            # timeout applies per phase and a slow trickle could outlast it.
+            async with asyncio.timeout(self._timeout_ms / _MILLISECONDS_PER_SECOND):
+                return await self._transport.send(
+                    CallTransportRequest(
+                        path=CALLS_BATCH_PATH, limit=request.limit, timeout_ms=self._timeout_ms
+                    )
                 )
-            )
         except Exception as error:
             # A timeout or a socket error says nothing about our request and
             # everything about the dependency, so it is worth repeating.
             logger.warning("Telephony request failed", err=repr(error))
             raise RetryableProviderError(call_provider_unavailable_error()) from error
 
-    def _read(self, response: CallTransportResponse) -> list[ProviderCall]:
+    def _read(self, response: CallTransportResponse, limit: int) -> list[ProviderCall]:
         if response.status == _HTTP_TOO_MANY_REQUESTS or response.status >= _HTTP_SERVER_ERROR:
             logger.warning("Telephony endpoint returned a transient error", status=response.status)
             raise RetryableProviderError(call_provider_unavailable_error())
@@ -211,6 +239,16 @@ class HttpCallProvider:
             logger.error("Telephony endpoint returned an invalid payload", issues=error.errors())
             raise call_provider_unavailable_error() from error
 
+        # The limit is part of what we asked for; a longer answer is the same
+        # contract violation as a malformed one, and is not imported in part.
+        if len(records) > limit:
+            logger.error(
+                "Telephony endpoint returned more records than requested",
+                limit=limit,
+                received=len(records),
+            )
+            raise call_provider_unavailable_error()
+
         return [
             ProviderCall(
                 external_id=item.external_id,
@@ -226,4 +264,4 @@ class HttpCallProvider:
         ]
 
     async def fetch_calls(self, request: CallProviderFetchRequest) -> list[ProviderCall]:
-        return self._read(await self._send(request))
+        return self._read(await self._send(request), request.limit)

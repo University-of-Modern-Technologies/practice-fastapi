@@ -106,13 +106,13 @@ def inquiry_classification_system_prompt() -> str:
 def deal_summary_prompt(deal: SummariseDealRequest) -> str:
     """Builds the deal prompt from an explicit field list.
 
-    Fields are labelled, and the free-text note — the only part a user controls —
-    is the only part that goes inside the untrusted block.
+    Every field a person typed — the title, the stage label and the note — goes
+    inside an untrusted block; outside stay only the values the schema already
+    pinned to a number, a currency code or a date, which cannot carry an
+    instruction.
     """
-    lines = [
-        f"Title: {sanitize_untrusted_text(deal.title)}",
-        f"Stage: {sanitize_untrusted_text(deal.stage)}",
-    ]
+    record = wrap_untrusted(f"Title: {deal.title}\nStage: {deal.stage}")
+    lines = [f"Deal record:\n{record}"]
     if deal.amount is not None:
         lines.append(f"Amount: {deal.amount} {deal.currency or ''}".strip())
     if deal.probability is not None:

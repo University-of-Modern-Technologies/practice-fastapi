@@ -7,7 +7,9 @@ from typing import Any
 
 import pytest
 
+from app.core.settings import Settings
 from app.modules.integrations.delivery.factory import create_configured_delivery_client
+from app.modules.integrations.router import get_integrations_service
 from app.modules.integrations.schemas import CreateShipmentRequest, QuoteRequest
 from app.modules.integrations.service import IntegrationsService, quote_cache_key
 from app.modules.integrations.types import CircuitState, ShipmentStatus, TransportKind
@@ -186,3 +188,31 @@ async def test_a_heavy_parcel_is_quoted_as_freight(service: IntegrationsService)
 
     assert quote.service == "freight"
     assert quote.estimated_days == 5
+
+
+async def test_the_quote_lifetime_comes_from_the_deployment_settings() -> None:
+    lifetimes: list[int] = []
+
+    class RecordingCache(MemoryCache):
+        async def remember[T](
+            self, key: str, ttl_seconds: int, loader: Callable[[], Awaitable[T]]
+        ) -> T:
+            lifetimes.append(ttl_seconds)
+            return await super().remember(key, ttl_seconds, loader)
+
+    settings = Settings(
+        _env_file=None,
+        database_url="postgresql://user:pass@localhost:5432/crm",
+        jwt_access_secret="a-secret-that-is-long-enough-here",
+        jwt_refresh_secret="another-secret-long-enough-here!",
+        redis_url="redis://localhost:6379",
+        mongodb_url="mongodb://localhost:27017/events",
+        delivery_quote_cache_ttl_seconds=7,
+    )
+    service = get_integrations_service(
+        create_configured_delivery_client(), RecordingCache(), settings
+    )
+
+    await service.request_quote(QUOTE_REQUEST)
+
+    assert lifetimes == [7]

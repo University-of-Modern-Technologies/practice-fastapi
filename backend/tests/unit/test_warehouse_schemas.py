@@ -13,9 +13,11 @@ from app.modules.warehouse.schemas import (
     CreateWarehouseRequest,
     IssueStockRequest,
     MovementListParams,
+    ReceiveStockRequest,
     ReserveStockRequest,
     StockLevelOut,
     UpdateWarehouseRequest,
+    WarehouseListParams,
 )
 
 NOW = datetime(2026, 8, 12, 15, 23, 45, 123_000, tzinfo=UTC)
@@ -136,3 +138,52 @@ def test_the_published_level_carries_the_derived_availability() -> None:
 
     assert payload["quantityAvailable"] == 6
     assert payload["quantityOnHand"] == 10
+
+
+def test_a_warehouse_create_refuses_a_null_flag() -> None:
+    with pytest.raises(ValidationError):
+        CreateWarehouseRequest.model_validate({"code": "MAIN", "name": "Main", "isActive": None})
+
+
+@pytest.mark.parametrize("field", ["code", "name", "isActive"])
+def test_a_warehouse_patch_refuses_null(field: str) -> None:
+    with pytest.raises(ValidationError):
+        UpdateWarehouseRequest.model_validate({field: None})
+
+
+@pytest.mark.parametrize("field", ["referenceType", "referenceId", "note"])
+def test_a_receipt_refuses_null_on_an_optional_field(field: str) -> None:
+    with pytest.raises(ValidationError):
+        ReceiveStockRequest.model_validate({**stock_target(), "quantity": 1, field: None})
+
+
+def test_an_issue_refuses_a_null_reservation_flag() -> None:
+    with pytest.raises(ValidationError):
+        IssueStockRequest.model_validate({**stock_target(), "quantity": 1, "fromReservation": None})
+
+
+def test_a_reservation_refuses_a_null_note() -> None:
+    with pytest.raises(ValidationError):
+        ReserveStockRequest.model_validate(
+            {
+                **stock_target(),
+                "quantity": 1,
+                "referenceType": "order",
+                "referenceId": str(ORDER_ID),
+                "note": None,
+            }
+        )
+
+
+@pytest.mark.parametrize("field", ["referenceType", "referenceId"])
+def test_an_adjustment_refuses_null_on_an_optional_field(field: str) -> None:
+    with pytest.raises(ValidationError):
+        AdjustStockRequest.model_validate(
+            {**stock_target(), "delta": 1, "note": "count", field: None}
+        )
+
+
+def test_a_warehouse_search_is_trimmed_and_a_blank_one_refused() -> None:
+    assert WarehouseListParams.model_validate({"search": " main "}).search == "main"
+    with pytest.raises(ValidationError):
+        WarehouseListParams.model_validate({"search": "   "})

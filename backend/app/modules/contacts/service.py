@@ -23,6 +23,7 @@ from app.core.errors import AppError, ConflictError, ForbiddenError, NotFoundErr
 from app.core.filters import FilterBuilder
 from app.core.paged_query import PagedQuery
 from app.db.models.contact import Contact
+from app.db.models.user import User
 from app.modules.audit import AuditEvent, AuditService
 from app.modules.contacts.schemas import (
     ContactListParams,
@@ -37,12 +38,22 @@ from app.modules.contacts.types import (
     CONTACT_DUPLICATE,
     CONTACT_ENTITY_TYPE,
     CONTACT_NOT_FOUND,
+    CONTACT_OWNER_NOT_FOUND,
     CONTACT_UPDATED,
     ContactAccess,
     ContactSortField,
 )
 
 _DUPLICATE_MESSAGE = "An active contact with this email or phone already exists"
+
+#: SQLSTATE of a unique violation. Only that failure means "duplicate"; any
+#: other integrity error is a fault of its own and is not dressed up as one.
+_UNIQUE_VIOLATION = "23505"
+
+
+def _is_unique_violation(error: IntegrityError) -> bool:
+    return getattr(error.orig, "sqlstate", None) == _UNIQUE_VIOLATION
+
 
 #: The wire spelling of ``sortBy`` resolved to a column. A lookup rather than
 #: ``getattr``: only what is in this table can ever reach an ``ORDER BY``.
@@ -156,6 +167,7 @@ class ContactsService:
     async def create(self, access: ContactAccess, data: CreateContactRequest) -> ContactOut:
         owner_id = data.owner_id if data.owner_id is not None else access.actor_id
         self._ensure_owner_allowed(access, owner_id)
+        await self._require_owner(data.owner_id)
         await self._require_no_duplicate(data.email, data.phone)
 
         contact = Contact(
@@ -190,12 +202,16 @@ class ContactsService:
     async def update(
         self, access: ContactAccess, contact_id: uuid.UUID, data: UpdateContactRequest
     ) -> ContactOut:
-        contact = await self._require_active(access, contact_id)
+        # Locked for the rest of the transaction: whether the record keeps a
+        # channel is decided from what it will look like after this patch, so a
+        # concurrent edit clearing the other channel must wait and then see it.
+        contact = await self._require_active(access, contact_id, lock=True)
         before = _snapshot(to_contact_out(contact))
         fields = data.model_fields_set
 
         owner_id = data.owner_id if data.owner_id is not None else contact.owner_id
         self._ensure_owner_allowed(access, owner_id)
+        await self._require_owner(data.owner_id)
 
         # Read through the patch: what the record will look like decides whether
         # it still has a channel, and whether that channel is already taken.
@@ -263,10 +279,15 @@ class ContactsService:
         if access.owned_only and owner_id != access.actor_id:
             raise ForbiddenError()
 
-    async def _require_active(self, access: ContactAccess, contact_id: uuid.UUID) -> Contact:
-        result = await self._session.execute(
-            select(Contact).where(Contact.id == contact_id, *_visible(access))
-        )
+    async def _require_active(
+        self, access: ContactAccess, contact_id: uuid.UUID, *, lock: bool = False
+    ) -> Contact:
+        statement = select(Contact).where(Contact.id == contact_id, *_visible(access))
+        if lock:
+            # The row as it stands once the lock is held, not as an earlier read
+            # in this session left it in the identity map.
+            statement = statement.with_for_update().execution_options(populate_existing=True)
+        result = await self._session.execute(statement)
         contact = result.scalars().one_or_none()
         if contact is None:
             # Somebody else's record is reported as missing rather than as
@@ -274,6 +295,18 @@ class ContactsService:
             # endpoint into an enumeration oracle.
             raise NotFoundError("Contact not found", CONTACT_NOT_FOUND)
         return contact
+
+    async def _require_owner(self, owner_id: uuid.UUID | None) -> None:
+        """Refuses an owner who is unknown or can no longer sign in.
+
+        Naming such a person is the caller's mistake about a colleague, and is
+        reported as that rather than as a foreign key failing further down.
+        """
+        if owner_id is None:
+            return
+        statement = select(User.id).where(User.id == owner_id, User.is_active.is_(True))
+        if await self._session.scalar(statement) is None:
+            raise NotFoundError("Owner not found", CONTACT_OWNER_NOT_FOUND)
 
     async def _require_no_duplicate(
         self, email: str | None, phone: str | None, exclude_id: uuid.UUID | None = None
@@ -308,4 +341,6 @@ class ContactsService:
         try:
             await self._session.flush()
         except IntegrityError as error:
+            if not _is_unique_violation(error):
+                raise
             raise ConflictError(_DUPLICATE_MESSAGE, CONTACT_DUPLICATE) from error

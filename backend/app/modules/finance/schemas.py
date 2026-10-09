@@ -23,17 +23,22 @@ book that has since changed.
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Annotated, Self
 
-from pydantic import AwareDatetime, Field, StringConstraints, model_validator
+from pydantic import Field, PrivateAttr, StringConstraints, model_validator
 
 from app.core.pagination import DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, SortOrder
-from app.core.reporting import MAX_REPORT_WINDOW_DAYS
+from app.core.reporting import (
+    DEFAULT_REPORT_WINDOW_FROM,
+    MAX_REPORT_WINDOW_DAYS,
+    default_report_window_to,
+)
 from app.core.responses import CamelModel
 from app.core.serializers import Money, UtcDate, UtcDatetime
 from app.db.enums import OrderStatus, PaymentMatchStatus, TransactionDirection
+from app.modules.analytics.schemas import Rate, ReportInstant
 from app.modules.finance.types import (
     MAX_SEARCH_LENGTH,
     MONEY_STRING_PATTERN,
@@ -180,7 +185,7 @@ class MatchStatusShare(CamelModel):
     amount: SummaryMoney
     #: Share of the window's transactions, between zero and one, to four
     #: decimals. A rate rather than money, so a plain number is the right shape.
-    share: float
+    share: Rate
 
 
 class FinanceSummaryOut(CamelModel):
@@ -237,11 +242,17 @@ class TransactionListParams(CamelModel):
     statement_id: uuid.UUID | None = None
     match_status: PaymentMatchStatus | None = None
     direction: TransactionDirection | None = None
-    # A zone is required rather than assumed: "2026-01-05T00:00:00" means a
-    # different instant in every office that sends it, and reading it as UTC
-    # would answer a question the caller did not ask.
-    booked_from: AwareDatetime | None = None
-    booked_to: AwareDatetime | None = None
+    # Read by the same rule as every report bound in this API: ISO 8601, and a
+    # missing zone means UTC. Two rules for the same kind of value — refuse
+    # here, assume UTC on the summary next door — would make one date valid
+    # on one screen and an error on the other.
+    booked_from: ReportInstant | None = None
+    #: Exclusive, as the end of every window in this API is: two adjacent
+    #: periods must not both claim the line booked on their shared boundary.
+    booked_to: ReportInstant | None = Field(
+        default=None,
+        description="Виключна межа: до вибірки потрапляють транзакції, проведені раніше за неї.",
+    )
     min_amount: MoneyString | None = None
     max_amount: MoneyString | None = None
     sort_by: TransactionSortField = "bookedAt"
@@ -266,55 +277,50 @@ class TransactionListParams(CamelModel):
         return self
 
 
-def _as_utc(value: datetime) -> datetime:
-    """Reads a bound as UTC.
-
-    A client may send ``2026-01-01``, which parses without a zone. Treating
-    that as local time would move the window by the offset of whichever
-    machine this process happens to run on.
-    """
-    return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
-
-
 class FinanceSummaryParams(CamelModel):
     """Query string of ``GET /finance/summary``.
 
-    Both bounds stay optional, and neither is filled in here.
+    Both bounds stay optional on the wire, and each defaults on its own from
+    the shared reporting window — a fixed start and the end of today — rather
+    than from the clock.
 
-    They used to be resolved at validation time against the clock: ``to``
-    became "now" and ``from`` a month before it. That made the answer to a
-    question with no parameters depend on the day it was asked. The service
-    resolves omitted bounds from the shared fixed reporting window instead,
-    so every reporting module describes the same period.
-
-    The checks below therefore apply only to a window the caller actually
-    named. A caller who names one bound, or none, is making no claim to
-    contradict.
+    The defaults are applied *before* the two checks, exactly as the analytics
+    reports do it. Checking only a window the caller named in full let a
+    single bound through unexamined: ``from`` in 2031 with the default ``to``
+    of today is a window that runs backwards, and it used to be answered with
+    an empty report instead of being refused.
     """
 
-    from_: datetime | None = Field(default=None, alias="from")
-    to: datetime | None = None
+    from_: ReportInstant | None = Field(default=None, alias="from")
+    to: ReportInstant | None = None
+
+    #: The resolved window, held privately so the published query schema keeps
+    #: saying "optional" while the service reads a bound that is always there.
+    _range_from: datetime = PrivateAttr()
+    _range_to: datetime = PrivateAttr()
 
     @model_validator(mode="after")
-    def _check_named_range(self) -> Self:
-        if self.from_ is None or self.to is None:
-            return self
+    def _resolve_range(self) -> Self:
+        from_ = self.from_ if self.from_ is not None else DEFAULT_REPORT_WINDOW_FROM
+        to = self.to if self.to is not None else default_report_window_to()
 
-        from_, to = _as_utc(self.from_), _as_utc(self.to)
         if from_ >= to:
             message = "from must be earlier than to"
             raise ValueError(message)
         if to - from_ > timedelta(days=MAX_SUMMARY_DAYS):
             message = f"The date range must not exceed {MAX_SUMMARY_DAYS} days"
             raise ValueError(message)
+
+        self._range_from = from_
+        self._range_to = to
         return self
 
     @property
-    def range_from(self) -> datetime | None:
-        """Lower bound as the caller gave it, normalised to UTC."""
-        return None if self.from_ is None else _as_utc(self.from_)
+    def range_from(self) -> datetime:
+        """Resolved lower bound of the half-open window, in UTC."""
+        return self._range_from
 
     @property
-    def range_to(self) -> datetime | None:
-        """Upper bound as the caller gave it, normalised to UTC."""
-        return None if self.to is None else _as_utc(self.to)
+    def range_to(self) -> datetime:
+        """Resolved upper bound of the half-open window, in UTC."""
+        return self._range_to

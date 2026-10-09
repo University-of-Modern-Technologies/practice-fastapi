@@ -10,6 +10,7 @@ from app.db.enums import PermissionScope
 
 __all__ = [
     "MAX_BODY_LENGTH",
+    "MAX_HELPDESK_PAGE",
     "MAX_NOTE_LENGTH",
     "MAX_SEARCH_LENGTH",
     "MAX_SUBJECT_LENGTH",
@@ -21,6 +22,7 @@ __all__ = [
     "TICKET_DUPLICATE_NUMBER",
     "TICKET_ENTITY_TYPE",
     "TICKET_NOT_FOUND",
+    "TICKET_OWNER_NOT_FOUND",
     "TICKET_STATUS_TRANSITIONED",
     "TICKET_TRANSITION_NOT_ALLOWED",
     "TICKET_UPDATED",
@@ -40,6 +42,7 @@ TICKET_TRANSITION_NOT_ALLOWED = "TICKET_TRANSITION_NOT_ALLOWED"
 TICKET_CONCURRENT_MODIFICATION = "TICKET_CONCURRENT_MODIFICATION"
 TICKET_CONTACT_NOT_FOUND = "TICKET_CONTACT_NOT_FOUND"
 TICKET_ASSIGNEE_NOT_FOUND = "TICKET_ASSIGNEE_NOT_FOUND"
+TICKET_OWNER_NOT_FOUND = "TICKET_OWNER_NOT_FOUND"
 
 #: Audit actions and domain event types — deliberately the same strings, so one
 #: change is described by one name wherever it is read back.
@@ -55,6 +58,10 @@ MAX_SUBJECT_LENGTH = 200
 MAX_BODY_LENGTH = 5000
 MAX_NOTE_LENGTH = 500
 MAX_SEARCH_LENGTH = 160
+#: Highest page a list request may ask for: far beyond any real queue, and low
+#: enough that the row offset it implies stays a small integer for the database
+#: instead of making the query itself fail.
+MAX_HELPDESK_PAGE = 1_000_000
 
 #: Sortable columns, named as the client spells them.
 TicketSortField = Literal[

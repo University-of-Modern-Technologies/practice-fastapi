@@ -15,7 +15,7 @@ from __future__ import annotations
 import uuid
 from typing import Annotated, Self
 
-from pydantic import AwareDatetime, Field, field_validator, model_validator
+from pydantic import AwareDatetime, BeforeValidator, Field, field_validator, model_validator
 
 from app.core.pagination import DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, SortOrder
 from app.core.responses import CamelModel
@@ -23,14 +23,29 @@ from app.core.serializers import UtcDatetime
 from app.db.enums import TicketChannel, TicketPriority, TicketStatus
 from app.modules.helpdesk.types import (
     MAX_BODY_LENGTH,
+    MAX_HELPDESK_PAGE,
     MAX_NOTE_LENGTH,
     MAX_SEARCH_LENGTH,
     MAX_SUBJECT_LENGTH,
     TicketSortField,
 )
 
+
+def _require_json_number(value: object) -> object:
+    """Refuses a number that arrived as text or as a boolean.
+
+    A request body is JSON, which has a number type of its own; ``"3"`` or
+    ``true`` where a count belongs is a malformed request, not a value to
+    convert.
+    """
+    if isinstance(value, bool | str):
+        message = "Input should be a valid integer"
+        raise ValueError(message)
+    return value
+
+
 #: Optimistic locking counter as the client echoes it back.
-Version = Annotated[int, Field(ge=1)]
+Version = Annotated[int, Field(ge=1), BeforeValidator(_require_json_number)]
 Subject = Annotated[str, Field(min_length=1, max_length=MAX_SUBJECT_LENGTH)]
 Body = Annotated[str, Field(min_length=1, max_length=MAX_BODY_LENGTH)]
 Note = Annotated[str, Field(min_length=1, max_length=MAX_NOTE_LENGTH)]
@@ -173,7 +188,7 @@ class TicketListParams(CamelModel):
     through a browser, and none of them are the client asking for anything.
     """
 
-    page: int = Field(default=1, ge=1)
+    page: int = Field(default=1, ge=1, le=MAX_HELPDESK_PAGE)
     page_size: int = Field(default=DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE)
     search: str | None = Field(default=None, min_length=1, max_length=MAX_SEARCH_LENGTH)
     status: TicketStatus | None = None
@@ -190,10 +205,12 @@ class TicketListParams(CamelModel):
     sort_by: TicketSortField = "createdAt"
     sort_order: SortOrder = "desc"
 
-    @field_validator("search")
+    # Trimmed before the length is checked, so a search of spaces is refused
+    # as empty rather than turned into "no filter".
+    @field_validator("search", mode="before")
     @classmethod
-    def _trim_search(cls, value: str | None) -> str | None:
-        return value.strip() if value is not None else None
+    def _trim_search(cls, value: object) -> object:
+        return _trim(value)
 
     @model_validator(mode="after")
     def _require_ordered_window(self) -> Self:

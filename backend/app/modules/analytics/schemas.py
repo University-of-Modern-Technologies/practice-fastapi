@@ -15,11 +15,20 @@ ceiling still holds and one request can never table-scan years of history.
 
 from __future__ import annotations
 
+import re
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Annotated
 
-from pydantic import AfterValidator, Field, PrivateAttr, model_validator
+from pydantic import (
+    AfterValidator,
+    BeforeValidator,
+    Field,
+    PlainSerializer,
+    PrivateAttr,
+    WithJsonSchema,
+    model_validator,
+)
 
 from app.core.reporting import (
     DEFAULT_REPORT_WINDOW_FROM,
@@ -54,6 +63,8 @@ __all__ = [
     "OwnerPerformanceParams",
     "OwnerPerformanceReport",
     "OwnerPerformanceRow",
+    "Rate",
+    "ReportInstant",
     "SalesSummaryBucket",
     "SalesSummaryParams",
     "SalesSummaryReport",
@@ -107,11 +118,62 @@ BoundedLimit = Annotated[int, Field(ge=1), AfterValidator(_clamp_limit)]
 BoundedThreshold = Annotated[int, Field(ge=0), AfterValidator(_clamp_threshold)]
 
 
+def _render_rate(value: float) -> int | float:
+    """A whole rate as an integer, so ``1`` leaves as ``1`` rather than ``1.0``.
+
+    The sibling backend has one number type and prints a whole value without a
+    fraction; a JSON body or a CSV cell that said ``1.0`` here and ``1`` there
+    would be the same rate spelled two ways, which is exactly the difference a
+    byte-for-byte comparison of the two backends exists to catch.
+    """
+    return int(value) if value.is_integer() else value
+
+
+#: A ratio in ``[0, 1]``, rounded to four decimals, rendered the way the other
+#: backend renders a number. Still published as ``number``: the serialiser
+#: changes the spelling of a whole value, never its type, and the schema is
+#: pinned so the ``int | float`` it returns is not published as two types.
+Rate = Annotated[
+    float,
+    PlainSerializer(_render_rate),
+    WithJsonSchema({"type": "number"}, mode="serialization"),
+]
+
+
 #: The reports are stored with millisecond precision, so anything finer in a
 #: bound cannot change which rows match — but it *can* change the answer while
 #: leaving the cache key identical, which would let one key hold two different
 #: result sets. Bounds are therefore truncated to the stored resolution.
 _MICROSECONDS_PER_MILLISECOND = 1_000
+
+#: The one spelling of an instant both backends accept: a calendar date, then
+#: optionally a time, then optionally ``Z`` or a ``±HH:MM`` offset. Narrower
+#: than what the parser underneath would take on its own — it also reads
+#: ``"1"`` as a Unix timestamp, a space in place of ``T`` and an offset without
+#: its colon — because every looser reading is one the sibling backend would
+#: have to reproduce, and does not. ASCII digits only, spelled out: ``\d`` in
+#: Python also matches the digits of every other script.
+_ISO_INSTANT = re.compile(
+    r"[1-9][0-9]{3}-[0-9]{2}-[0-9]{2}"
+    r"(?:T(?:[01][0-9]|2[0-3]):[0-5][0-9](?::[0-5][0-9](?:\.[0-9]{1,9})?)?"
+    r"(?:Z|[+-](?:[01][0-9]|2[0-3]):[0-5][0-9])?)?"
+)
+
+#: The years an instant may land in once it is read as UTC: four digits, the
+#: range both backends can render.
+_EARLIEST_YEAR = 1000
+_LATEST_YEAR = 9999
+
+_NOT_AN_INSTANT = "Expected an ISO 8601 date or timestamp"
+
+
+def _require_iso_instant(value: object) -> object:
+    """Lets through only the spelling of an instant the contract names."""
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, str) and _ISO_INSTANT.fullmatch(value) is not None:
+        return value
+    raise ValueError(_NOT_AN_INSTANT)
 
 
 def _as_utc(value: datetime) -> datetime:
@@ -121,11 +183,23 @@ def _as_utc(value: datetime) -> datetime:
     as local time would move the window by the server's offset, so a missing
     zone is read as UTC rather than as "wherever this process happens to run".
     """
-    resolved = value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+    aware = value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+    try:
+        resolved = aware.astimezone(UTC)
+    except OverflowError as error:
+        raise ValueError(_NOT_AN_INSTANT) from error
+    if not _EARLIEST_YEAR <= resolved.year <= _LATEST_YEAR:
+        raise ValueError(_NOT_AN_INSTANT)
     microsecond = (
         resolved.microsecond // _MICROSECONDS_PER_MILLISECOND
     ) * _MICROSECONDS_PER_MILLISECOND
     return resolved.replace(microsecond=microsecond)
+
+
+#: A date bound as every report — and the finance module — reads it: ISO 8601
+#: by the grammar above, a missing zone meaning UTC, normalised to UTC at
+#: millisecond resolution.
+ReportInstant = Annotated[datetime, BeforeValidator(_require_iso_instant), AfterValidator(_as_utc)]
 
 
 class DateRangeParams(CamelModel):
@@ -135,8 +209,8 @@ class DateRangeParams(CamelModel):
     a handler is never handed a half-specified window.
     """
 
-    from_: datetime | None = Field(default=None, alias="from")
-    to: datetime | None = None
+    from_: ReportInstant | None = Field(default=None, alias="from")
+    to: ReportInstant | None = None
 
     #: The resolved window. Held privately rather than written back over the
     #: optional fields, so the published query schema keeps saying "optional"
@@ -149,8 +223,8 @@ class DateRangeParams(CamelModel):
         # Each bound defaults on its own, so a caller may send neither, either,
         # or both. The start is fixed and the end is the close of today, so a
         # report asked for without a window includes what was entered today.
-        to = _as_utc(self.to) if self.to is not None else default_report_window_to()
-        from_ = _as_utc(self.from_) if self.from_ is not None else DEFAULT_RANGE_FROM
+        to = self.to if self.to is not None else default_report_window_to()
+        from_ = self.from_ if self.from_ is not None else DEFAULT_RANGE_FROM
 
         if from_ >= to:
             message = "from must be earlier than to"
@@ -273,7 +347,7 @@ class DealFunnelConversion(CamelModel):
     from_: DealStage = Field(alias="from")
     to: DealStage
     #: Ratio in ``[0, 1]``, rounded to four decimals; 0 when the source is empty.
-    rate: float
+    rate: Rate
 
 
 class DealFunnelReport(CamelModel):
@@ -314,7 +388,7 @@ class OwnerPerformanceRow(CamelModel):
     deal_amount: ReportMoney
     won_deal_count: int
     won_deal_amount: ReportMoney
-    win_rate: float
+    win_rate: Rate
     order_count: int
     order_revenue: ReportMoney
 

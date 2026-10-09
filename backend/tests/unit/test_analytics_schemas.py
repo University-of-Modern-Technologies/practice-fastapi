@@ -155,3 +155,38 @@ class TestReportParameters:
 
         assert params.range_to.microsecond % 1_000 == 0
         assert params.range_from.microsecond % 1_000 == 0
+
+
+class TestDateBoundGrammar:
+    def test_reads_a_date_time_without_a_zone_as_utc(self) -> None:
+        """A missing zone is UTC, as in the sibling backend."""
+        params = SalesSummaryParams.model_validate(
+            {"from": "2026-01-01T10:30", "to": "2026-01-02T00:00:00.5"}
+        )
+
+        assert format_datetime(params.range_from) == "2026-01-01T10:30:00.000Z"
+        assert format_datetime(params.range_to) == "2026-01-02T00:00:00.500Z"
+
+    def test_honours_an_offset_and_truncates_below_the_millisecond(self) -> None:
+        params = SalesSummaryParams.model_validate(
+            {"from": "2026-01-01T02:00:00.123987+02:00", "to": "2026-01-02T00:00:00Z"}
+        )
+
+        assert format_datetime(params.range_from) == "2026-01-01T00:00:00.123Z"
+
+    @pytest.mark.parametrize(
+        "junk",
+        [
+            "1",
+            "2026",
+            "2026-02-31",
+            "2026-01-01 10:00",
+            "2026-01-01T10:00:00+0200",
+            "2026-01-01T24:00",
+            " 2026-01-01",
+            "Jan 1 2026",
+        ],
+    )
+    def test_refuses_anything_that_is_not_an_iso_8601_date_or_timestamp(self, junk: str) -> None:
+        """The parser underneath would read "1" as a Unix timestamp."""
+        assert not parses(SalesSummaryParams, {"from": junk})

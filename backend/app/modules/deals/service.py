@@ -29,6 +29,7 @@ from app.core.serializers import quantize_money
 from app.db.enums import DealStage
 from app.db.models.contact import Contact
 from app.db.models.deal import Deal
+from app.db.models.user import User
 from app.events.dispatch import announcer, publish_after_commit
 from app.events.types import DomainEvent, DomainEventPublisher, NoopPublisher
 from app.modules.audit import AuditEvent, AuditService
@@ -53,6 +54,7 @@ from app.modules.deals.types import (
     DEAL_DELETED,
     DEAL_ENTITY_TYPE,
     DEAL_NOT_FOUND,
+    DEAL_OWNER_NOT_FOUND,
     DEAL_STAGE_TRANSITIONED,
     DEAL_UPDATED,
     DEFAULT_CURRENCY,
@@ -132,7 +134,7 @@ class _DealPage(PagedQuery[Deal, DealListParams, DealOut]):
             .equals(Deal.owner_id, owner_id)
             .equals(Deal.contact_id, params.contact_id)
             .equals(Deal.stage, params.stage)
-            .search(params.search, [Deal.title])
+            .search(params.search, [Deal.title], escape=True)
             .range(Deal.amount, params.min_amount, params.max_amount)
             .range(Deal.probability, params.min_probability, params.max_probability)
             .range(Deal.expected_close_date, params.expected_close_from, params.expected_close_to)
@@ -186,6 +188,7 @@ class DealsService:
             data.probability if data.probability is not None else DEFAULT_DEAL_PROBABILITY[stage]
         )
         assert_deal_probability(stage, probability)
+        await self._require_owner(data.owner_id)
         await self._require_contact(access, data.contact_id)
 
         deal = Deal(
@@ -226,6 +229,7 @@ class DealsService:
         fields = data.model_fields_set
         owner_id = data.owner_id if data.owner_id is not None else existing.owner_id
         self._ensure_may_assign(access, owner_id)
+        await self._require_owner(data.owner_id)
         if "contact_id" in fields:
             await self._require_contact(access, data.contact_id)
 
@@ -398,6 +402,18 @@ class DealsService:
             # narrower scope must not become a way to probe for ids.
             raise NotFoundError("Deal not found", DEAL_NOT_FOUND)
         return deal
+
+    async def _require_owner(self, owner_id: uuid.UUID | None) -> None:
+        """Refuses an owner who is unknown or can no longer sign in.
+
+        Naming such a person is the caller's mistake about a colleague, and is
+        reported as that rather than as a foreign key failing further down.
+        """
+        if owner_id is None:
+            return
+        statement = select(User.id).where(User.id == owner_id, User.is_active.is_(True))
+        if await self._session.scalar(statement) is None:
+            raise NotFoundError("Owner not found", DEAL_OWNER_NOT_FOUND)
 
     async def _require_contact(self, access: DealAccess, contact_id: uuid.UUID | None) -> None:
         """Refuses to attach a contact the caller cannot see."""

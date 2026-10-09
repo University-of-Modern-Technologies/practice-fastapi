@@ -11,7 +11,13 @@ import pytest
 
 from app.core.errors import AppError
 from app.modules.ai.provider import AiCompletionRequest, AiTimeoutError, AiUnavailableError
-from app.modules.ai.retry_provider import RetryableAiError, RetryingAiProvider, RetryOptions
+from app.modules.ai.retry_provider import (
+    MAX_RETRY_BACKOFF_MS,
+    MAX_RETRY_TOTAL_MS,
+    RetryableAiError,
+    RetryingAiProvider,
+    RetryOptions,
+)
 
 REQUEST = AiCompletionRequest(system="sys", prompt="p", max_tokens=16)
 
@@ -68,3 +74,39 @@ async def test_raises_the_last_transient_failure_once_attempts_are_exhausted() -
 def test_preserves_the_wrapped_providers_name() -> None:
     inner = ScriptedProvider(["x"])
     assert RetryingAiProvider(inner).name == "inner"
+
+
+async def test_a_single_pause_is_capped() -> None:
+    waited: list[int] = []
+
+    async def record(milliseconds: int) -> None:
+        waited.append(milliseconds)
+
+    inner = ScriptedProvider([RetryableAiError(AiUnavailableError())])
+    provider = RetryingAiProvider(
+        inner, RetryOptions(max_attempts=4, backoff_ms=4_000, delay=record, now_ms=lambda: 0.0)
+    )
+
+    with pytest.raises(AppError):
+        await provider.complete(REQUEST)
+
+    assert waited == [4_000, MAX_RETRY_BACKOFF_MS, MAX_RETRY_BACKOFF_MS]
+
+
+async def test_retrying_stops_once_the_total_budget_is_spent() -> None:
+    clock = [0.0]
+
+    async def advance(milliseconds: int) -> None:
+        clock[0] += milliseconds
+
+    inner = ScriptedProvider([RetryableAiError(AiUnavailableError())])
+    provider = RetryingAiProvider(
+        inner,
+        RetryOptions(max_attempts=10, backoff_ms=5_000, delay=advance, now_ms=lambda: clock[0]),
+    )
+
+    with pytest.raises(AppError):
+        await provider.complete(REQUEST)
+
+    assert clock[0] <= MAX_RETRY_TOTAL_MS
+    assert inner.calls < 10

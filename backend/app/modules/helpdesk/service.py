@@ -54,6 +54,7 @@ from app.modules.helpdesk.types import (
     TICKET_DUPLICATE_NUMBER,
     TICKET_ENTITY_TYPE,
     TICKET_NOT_FOUND,
+    TICKET_OWNER_NOT_FOUND,
     TICKET_STATUS_TRANSITIONED,
     TICKET_UPDATED,
     TicketAccess,
@@ -208,6 +209,7 @@ class HelpdeskService:
     async def create(self, access: TicketAccess, data: CreateTicketRequest) -> TicketOut:
         owner_id = data.owner_id if data.owner_id is not None else access.actor_id
         self._ensure_may_assign(access, owner_id)
+        await self._require_active_user(data.owner_id, "Owner not found", TICKET_OWNER_NOT_FOUND)
         await self._require_contact(access, data.contact_id)
         await self._require_assignee(data.assignee_id)
 
@@ -240,6 +242,7 @@ class HelpdeskService:
         fields = data.model_fields_set
         owner_id = data.owner_id if data.owner_id is not None else existing.owner_id
         self._ensure_may_assign(access, owner_id)
+        await self._require_active_user(data.owner_id, "Owner not found", TICKET_OWNER_NOT_FOUND)
         if "contact_id" in fields:
             await self._require_contact(access, data.contact_id)
         if "assignee_id" in fields:
@@ -446,12 +449,25 @@ class HelpdeskService:
         a manager is a colleague, not a record the caller owns, so the only
         question here is whether the account exists and is still active.
         """
-        if assignee_id is None:
+        await self._require_active_user(
+            assignee_id, "Assignee not found", TICKET_ASSIGNEE_NOT_FOUND
+        )
+
+    async def _require_active_user(
+        self, user_id: uuid.UUID | None, message: str, code: str
+    ) -> None:
+        """Refuses a colleague who is unknown or can no longer sign in.
+
+        The same question for the owner and the assignee: naming such a person
+        is the caller's mistake, reported as that rather than as a foreign key
+        failing further down.
+        """
+        if user_id is None:
             return
 
-        statement = select(User.id).where(User.id == assignee_id, User.is_active.is_(True))
+        statement = select(User.id).where(User.id == user_id, User.is_active.is_(True))
         if await self._session.scalar(statement) is None:
-            raise NotFoundError("Assignee not found", TICKET_ASSIGNEE_NOT_FOUND)
+            raise NotFoundError(message, code)
 
     async def _insert_ticket(self, data: CreateTicketRequest, owner_id: uuid.UUID) -> Ticket:
         """Inserts the ticket, redrawing its number if that number was taken.

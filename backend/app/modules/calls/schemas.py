@@ -20,13 +20,21 @@ from __future__ import annotations
 import uuid
 from typing import Annotated, Self
 
-from pydantic import AwareDatetime, Field, StringConstraints, field_validator, model_validator
+from pydantic import (
+    AwareDatetime,
+    BeforeValidator,
+    Field,
+    StringConstraints,
+    field_validator,
+    model_validator,
+)
 
 from app.core.pagination import DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, SortOrder
 from app.core.responses import CamelModel
 from app.core.serializers import UtcDatetime
 from app.db.enums import CallDirection, CallDisposition
 from app.modules.calls.types import (
+    MAX_CALL_PAGE,
     MAX_NOTES_LENGTH,
     MAX_NUMBER_LENGTH,
     MAX_SEARCH_LENGTH,
@@ -59,8 +67,22 @@ PhoneNumber = Annotated[
     ),
 ]
 
+
+def _require_json_number(value: object) -> object:
+    """Refuses a number that arrived as text or as a boolean.
+
+    A request body is JSON, which has a number type of its own; ``"3"`` or
+    ``true`` where a count belongs is a malformed request, not a value to
+    convert.
+    """
+    if isinstance(value, bool | str):
+        message = "Input should be a valid integer"
+        raise ValueError(message)
+    return value
+
+
 #: Optimistic locking counter as the client echoes it back.
-Version = Annotated[int, Field(ge=1)]
+Version = Annotated[int, Field(ge=1), BeforeValidator(_require_json_number)]
 
 Notes = Annotated[
     str,
@@ -193,7 +215,7 @@ class CallListParams(CamelModel):
     through a browser, and none of them are the client asking for anything.
     """
 
-    page: int = Field(default=1, ge=1)
+    page: int = Field(default=1, ge=1, le=MAX_CALL_PAGE)
     page_size: int = Field(default=DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE)
     search: str | None = Field(default=None, min_length=1, max_length=MAX_SEARCH_LENGTH)
     direction: CallDirection | None = None
@@ -213,10 +235,12 @@ class CallListParams(CamelModel):
     sort_by: CallSortField = "startedAt"
     sort_order: SortOrder = "desc"
 
-    @field_validator("search")
+    # Trimmed before the length is checked, so a search of spaces is refused
+    # as empty rather than turned into "no filter".
+    @field_validator("search", mode="before")
     @classmethod
-    def _trim_search(cls, value: str | None) -> str | None:
-        return value.strip() if value is not None else None
+    def _trim_search(cls, value: object) -> object:
+        return value.strip() if isinstance(value, str) else value
 
     @model_validator(mode="after")
     def _require_ordered_window(self) -> Self:

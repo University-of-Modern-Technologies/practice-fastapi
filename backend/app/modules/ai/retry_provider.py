@@ -8,6 +8,7 @@ first attempt, unretried.
 from __future__ import annotations
 
 import asyncio
+import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
@@ -19,9 +20,20 @@ __all__ = ["RetryableAiError", "RetryingAiProvider", "with_retry"]
 
 _MILLISECONDS_PER_SECOND = 1000
 
+#: Longest single pause between two attempts, however large the base.
+MAX_RETRY_BACKOFF_MS = 5_000
+#: Longest a completion may keep retrying, counted from its first attempt. The
+#: caller is waiting on an HTTP request, and an answer of "unavailable" given
+#: promptly serves them better than one given minutes later.
+MAX_RETRY_TOTAL_MS = 30_000
+
 
 async def _default_delay(milliseconds: int) -> None:
     await asyncio.sleep(milliseconds / _MILLISECONDS_PER_SECOND)
+
+
+def _monotonic_ms() -> float:
+    return time.monotonic() * _MILLISECONDS_PER_SECOND
 
 
 class RetryableAiError(Exception):
@@ -39,6 +51,8 @@ class RetryOptions:
     logger: LoggerPort | None = None
     #: Injectable sleep, so a test does not have to wait out a real backoff.
     delay: Callable[[int], Awaitable[None]] | None = None
+    #: Injectable clock for the total retry budget.
+    now_ms: Callable[[], float] | None = None
 
 
 class RetryingAiProvider:
@@ -49,6 +63,7 @@ class RetryingAiProvider:
         self._options = options or RetryOptions()
         self._attempts = max(1, self._options.max_attempts)
         self._delay = self._options.delay or _default_delay
+        self._now_ms = self._options.now_ms or _monotonic_ms
 
     @property
     def name(self) -> str:
@@ -56,6 +71,7 @@ class RetryingAiProvider:
 
     async def complete(self, request: AiCompletionRequest) -> str:
         last_failure: AppError = AiUnavailableError()
+        started_at = self._now_ms()
 
         for attempt in range(1, self._attempts + 1):
             try:
@@ -68,7 +84,11 @@ class RetryingAiProvider:
                     )
                 if attempt == self._attempts:
                     raise last_failure from transient
-                await self._delay(self._options.backoff_ms * 2 ** (attempt - 1))
+                wait = min(MAX_RETRY_BACKOFF_MS, self._options.backoff_ms * 2 ** (attempt - 1))
+                # Another attempt that could only start past the budget is not made.
+                if self._now_ms() - started_at + wait > MAX_RETRY_TOTAL_MS:
+                    raise last_failure from transient
+                await self._delay(wait)
 
         raise last_failure
 

@@ -17,9 +17,11 @@ __all__ = [
     "CALL_ENTITY_TYPE",
     "CALL_LINKED",
     "CALL_NOT_FOUND",
+    "CALL_OWNER_NOT_FOUND",
     "CALL_PROVIDER_UNAVAILABLE",
     "CALL_RECORDING_UNAVAILABLE",
     "CALL_UPDATED",
+    "MAX_CALL_PAGE",
     "MAX_EXTERNAL_ID_LENGTH",
     "MAX_NOTES_LENGTH",
     "MAX_NUMBER_LENGTH",
@@ -39,6 +41,7 @@ CALL_NOT_FOUND = "CALL_NOT_FOUND"
 CALL_CONCURRENT_MODIFICATION = "CALL_CONCURRENT_MODIFICATION"
 CALL_CONTACT_NOT_FOUND = "CALL_CONTACT_NOT_FOUND"
 CALL_DEAL_NOT_FOUND = "CALL_DEAL_NOT_FOUND"
+CALL_OWNER_NOT_FOUND = "CALL_OWNER_NOT_FOUND"
 CALL_RECORDING_UNAVAILABLE = "CALL_RECORDING_UNAVAILABLE"
 CALL_PROVIDER_UNAVAILABLE = "CALL_PROVIDER_UNAVAILABLE"
 
@@ -57,6 +60,10 @@ MAX_NUMBER_LENGTH = 32
 MAX_RECORDING_URL_LENGTH = 512
 MAX_NOTES_LENGTH = 2000
 MAX_SEARCH_LENGTH = 160
+#: Highest page a list request may ask for: far beyond any real call log, and
+#: low enough that the row offset it implies stays a small integer for the
+#: database instead of making the query itself fail.
+MAX_CALL_PAGE = 1_000_000
 
 #: Sortable columns, named as the client spells them. The default is
 #: ``startedAt`` rather than ``createdAt``: a call log is read as a timeline of

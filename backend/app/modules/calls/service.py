@@ -38,10 +38,12 @@ from app.core.paged_query import PagedQuery
 from app.db.models.call import Call
 from app.db.models.contact import Contact
 from app.db.models.deal import Deal
+from app.db.models.user import User
 from app.events.dispatch import announcer, publish_after_commit
 from app.events.types import DomainEvent, DomainEventPublisher, NoopPublisher
 from app.modules.audit import AuditEvent, AuditService
 from app.modules.calls.provider import (
+    MAX_PROVIDER_BATCH_SIZE,
     CallProvider,
     CallProviderFetchRequest,
     ProviderCall,
@@ -64,6 +66,7 @@ from app.modules.calls.types import (
     CALL_ENTITY_TYPE,
     CALL_LINKED,
     CALL_NOT_FOUND,
+    CALL_OWNER_NOT_FOUND,
     CALL_RECORDING_UNAVAILABLE,
     CALL_UPDATED,
     CallAccess,
@@ -190,7 +193,9 @@ class CallsService:
     ) -> None:
         self._session = session
         self._provider = provider
-        self._sync_batch_size = sync_batch_size
+        # Never above what a provider may answer with in one batch: a larger
+        # request could only be met by a batch the provider layer refuses.
+        self._sync_batch_size = min(sync_batch_size, MAX_PROVIDER_BATCH_SIZE)
         self._events: DomainEventPublisher = events if events is not None else NoopPublisher()
         # The trail is written on the very session the change is written on, so
         # a rolled back import cannot leave entries claiming it happened.
@@ -274,6 +279,7 @@ class CallsService:
         values: dict[str, Any] = {}
         if "owner_id" in fields:
             self._ensure_may_assign(access, data.owner_id)
+            await self._require_owner(data.owner_id)
             values["owner_id"] = data.owner_id
         if "contact_id" in fields:
             await self._require_contact(access, data.contact_id)
@@ -528,6 +534,19 @@ class CallsService:
             # narrower scope must not become a way to probe for ids.
             raise NotFoundError("Call not found", CALL_NOT_FOUND)
         return call
+
+    async def _require_owner(self, owner_id: uuid.UUID | None) -> None:
+        """Refuses an owner who is unknown or can no longer sign in.
+
+        Naming such a person is the caller's mistake about a colleague, and is
+        reported as that rather than as a foreign key failing further down.
+        ``None`` hands the call back to nobody and needs no lookup.
+        """
+        if owner_id is None:
+            return
+        statement = select(User.id).where(User.id == owner_id, User.is_active.is_(True))
+        if await self._session.scalar(statement) is None:
+            raise NotFoundError("Owner not found", CALL_OWNER_NOT_FOUND)
 
     async def _require_contact(self, access: CallAccess, contact_id: uuid.UUID | None) -> None:
         """Refuses to attach a contact the caller cannot see.

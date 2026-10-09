@@ -59,6 +59,7 @@ from app.modules.warehouse.types import (
     STOCK_ADJUSTMENT_NOTE_REQUIRED,
     STOCK_ENTITY_TYPE,
     STOCK_LEVEL_NOT_FOUND,
+    STOCK_QUANTITY_OUT_OF_RANGE,
     WAREHOUSE_CODE_IMMUTABLE,
     WAREHOUSE_CODE_TAKEN,
     WAREHOUSE_ENTITY_TYPE,
@@ -123,6 +124,13 @@ def to_movement_out(row: StockMovement) -> StockMovementOut:
     )
 
 
+#: The stock columns are 32-bit integers. A movement is bounded on its own, but
+#: a receipt on top of a full shelf can still add up past the column, which the
+#: database would reject as a numeric overflow. It is refused before the write
+#: instead, as a request the store cannot represent rather than a server fault.
+MAX_STOCK_QUANTITY = 2_147_483_647
+
+
 def next_quantities(on_hand: int, reserved: int, plan: MovementPlan) -> tuple[int, int]:
     """Rejects every impossible outcome before a single row is touched.
 
@@ -138,6 +146,15 @@ def next_quantities(on_hand: int, reserved: int, plan: MovementPlan) -> tuple[in
         raise InsufficientStockError()
     if next_reserved > next_on_hand:
         raise InsufficientStockError()
+    # Reserved units never exceed the units on hand, so bounding the shelf
+    # bounds both columns.
+    if next_on_hand > MAX_STOCK_QUANTITY:
+        raise AppError(
+            "The resulting stock level exceeds the largest quantity that can be stored",
+            400,
+            STOCK_QUANTITY_OUT_OF_RANGE,
+            {"field": "quantityOnHand", "max": MAX_STOCK_QUANTITY},
+        )
     return next_on_hand, next_reserved
 
 
@@ -466,7 +483,7 @@ class _WarehousePage(PagedQuery[Warehouse, WarehouseListParams, WarehouseOut]):
         return (
             FilterBuilder()
             .flag(Warehouse.is_active, params.is_active)
-            .search(params.search, [Warehouse.code, Warehouse.name])
+            .search(params.search, [Warehouse.code, Warehouse.name], escape=True)
             .build()
         )
 
@@ -680,6 +697,7 @@ class WarehouseService:
 
 
 __all__ = [
+    "MAX_STOCK_QUANTITY",
     "StockChange",
     "WarehouseService",
     "adjust_plan",

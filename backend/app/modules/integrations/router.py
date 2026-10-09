@@ -15,11 +15,9 @@ from fastapi import APIRouter, Depends, Path, Request, status
 from app.core.openapi import refusals
 from app.core.responses import Envelope
 from app.db.enums import PermissionScope
+from app.modules.auth.dependencies import SettingsDep as AppSettingsDep
 from app.modules.integrations.delivery.client import DeliveryClient
-from app.modules.integrations.delivery.factory import (
-    DEFAULT_QUOTE_CACHE_TTL_SECONDS,
-    create_configured_delivery_client,
-)
+from app.modules.integrations.delivery.factory import create_configured_delivery_client
 from app.modules.integrations.schemas import (
     CreateShipmentRequest,
     QuoteRequest,
@@ -68,9 +66,10 @@ QuoteCacheDep = Annotated[QuoteCachePort, Depends(get_quote_cache)]
 
 
 def get_integrations_service(
-    client: DeliveryClientDep, cache: QuoteCacheDep
+    client: DeliveryClientDep, cache: QuoteCacheDep, config: AppSettingsDep
 ) -> IntegrationsService:
-    return IntegrationsService(client, cache, DEFAULT_QUOTE_CACHE_TTL_SECONDS)
+    # How long a quote may be served from the cache is a deployment setting.
+    return IntegrationsService(client, cache, config.delivery_quote_cache_ttl_seconds)
 
 
 IntegrationsServiceDep = Annotated[IntegrationsService, Depends(get_integrations_service)]
