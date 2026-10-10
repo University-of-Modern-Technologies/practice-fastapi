@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from app.db.enums import PermissionScope
 
 __all__ = [
+    "CURRENCY_NOT_SUPPORTED",
     "INVALID_PRODUCT_PRICE",
     "PRODUCT_CREATED",
     "PRODUCT_DELETED",
@@ -33,6 +34,9 @@ PRODUCT_SKU_RETIRED = "PRODUCT_SKU_RETIRED"
 #: records in one workflow knows which one to re-read.
 PRODUCT_CONCURRENT_MODIFICATION = "PRODUCT_CONCURRENT_MODIFICATION"
 INVALID_PRODUCT_PRICE = "INVALID_PRODUCT_PRICE"
+
+#: The organisation keeps one currency; a product priced in another is refused.
+CURRENCY_NOT_SUPPORTED = "CURRENCY_NOT_SUPPORTED"
 
 #: One name for the catalogue in the audit trail and in the event log.
 PRODUCT_ENTITY_TYPE = "product"

@@ -12,7 +12,7 @@ from pydantic import ValidationError
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.errors import ConflictError, NotFoundError, VersionConflictError
+from app.core.errors import AppError, ConflictError, NotFoundError, VersionConflictError
 from app.db.enums import PermissionScope
 from app.db.models.audit import AuditLog
 from app.db.models.product import Product
@@ -406,3 +406,56 @@ def test_a_search_term_is_trimmed_and_a_blank_one_refused() -> None:
     assert ProductListParams.model_validate({"search": "  widget "}).search == "widget"
     with pytest.raises(ValidationError):
         ProductListParams.model_validate({"search": "   "})
+
+
+async def test_a_new_product_is_priced_in_the_organisation_currency_by_default() -> None:
+    session = FakeSession()
+
+    async def euro(_session: AsyncSession) -> str:
+        return "EUR"
+
+    service = ProductsService(cast("AsyncSession", session), None, euro)
+
+    created = await service.create(ACCESS, create_request())
+
+    assert created.currency == "EUR"
+
+
+async def test_a_product_in_another_currency_is_refused() -> None:
+    session = FakeSession()
+
+    async def euro(_session: AsyncSession) -> str:
+        return "EUR"
+
+    service = ProductsService(cast("AsyncSession", session), None, euro)
+
+    with pytest.raises(AppError) as error:
+        await service.create(ACCESS, create_request(currency="USD"))
+
+    assert (error.value.status_code, error.value.code) == (422, "CURRENCY_NOT_SUPPORTED")
+    assert error.value.details == {"currency": "USD", "expected": "EUR"}
+    assert session.products == []
+
+
+async def test_a_product_cannot_be_moved_to_another_currency() -> None:
+    product = make_product()
+    session = FakeSession()
+    session.execute_queue = [[product]]
+    service = make_service(session)
+
+    with pytest.raises(AppError) as error:
+        await service.update(ACCESS, product.id, UpdateProductRequest(version=1, currency="EUR"))
+
+    assert (error.value.status_code, error.value.code) == (422, "CURRENCY_NOT_SUPPORTED")
+    assert error.value.details == {"currency": "EUR", "expected": "USD"}
+    assert product.currency == "USD"
+    assert product.version == 1
+
+
+async def test_the_catalogue_stays_in_usd_without_a_currency_setting() -> None:
+    session = FakeSession()
+    service = make_service(session)
+
+    created = await service.create(ACCESS, create_request())
+
+    assert created.currency == "USD"

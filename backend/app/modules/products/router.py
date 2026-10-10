@@ -24,15 +24,33 @@ from app.modules.products.schemas import (
     ProductOut,
     UpdateProductRequest,
 )
-from app.modules.products.service import ProductsService
+from app.modules.products.service import OrganizationCurrencyResolver, ProductsService
 from app.modules.products.types import ProductAccess
 from app.modules.rbac.dependencies import require_permission
 
 RESOURCE = "products"
 
 
-def get_products_service(session: SessionDep, publisher: PublisherDep) -> ProductsService:
-    return ProductsService(session, publisher)
+def get_organization_currency_resolver(request: Request) -> OrganizationCurrencyResolver | None:
+    """The organisation-currency reader, if this deployment wired one in.
+
+    Read from the application state, as the orders module reads its stock port:
+    the composition root supplies it, and a process assembled without it keeps
+    the catalogue in USD.
+    """
+    resolver = getattr(request.app.state, "resolve_organization_currency", None)
+    return resolver if callable(resolver) else None
+
+
+CurrencyResolverDep = Annotated[
+    OrganizationCurrencyResolver | None, Depends(get_organization_currency_resolver)
+]
+
+
+def get_products_service(
+    session: SessionDep, publisher: PublisherDep, resolve_currency: CurrencyResolverDep
+) -> ProductsService:
+    return ProductsService(session, publisher, resolve_currency)
 
 
 ProductsServiceDep = Annotated[ProductsService, Depends(get_products_service)]
@@ -93,7 +111,7 @@ def create_products_router() -> APIRouter:
         "",
         status_code=status.HTTP_201_CREATED,
         summary="Створити товар",
-        responses=refusals(401, 403, 409),
+        responses=refusals(401, 403, 409, 422),
     )
     async def create_product(
         payload: CreateProductRequest,
@@ -110,7 +128,7 @@ def create_products_router() -> APIRouter:
     ) -> Envelope[ProductOut]:
         return Envelope(data=await service.get_by_id(product_id))
 
-    @router.patch("/{id}", summary="Оновити товар", responses=refusals(401, 403, 404, 409))
+    @router.patch("/{id}", summary="Оновити товар", responses=refusals(401, 403, 404, 409, 422))
     async def update_product(
         product_id: ProductId,
         payload: UpdateProductRequest,

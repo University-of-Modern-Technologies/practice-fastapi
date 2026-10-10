@@ -23,6 +23,7 @@ from app.modules.auth.dependencies import get_auth, get_auth_service
 from app.modules.auth.types import AuthContext
 from app.modules.integrations.delivery.factory import create_configured_delivery_client
 from app.modules.integrations.router import create_integrations_router
+from app.modules.integrations.types import ShipmentOrder
 from app.modules.rbac.dependencies import get_rbac_service
 
 USER_ID = uuid.UUID("10000000-0000-4000-8000-000000000002")
@@ -31,8 +32,9 @@ PREFIX = "/api/v1/integrations"
 
 ADDRESS = {"country": "PL", "city": "Warsaw", "postalCode": "00-001", "line1": "Street 1"}
 PARCEL = {"weightGrams": 1_000, "lengthCm": 10, "widthCm": 10, "heightCm": 10}
+ORDER_ID = "7f1d2c3b-4a59-4e6f-8a7b-1c2d3e4f5a6b"
 QUOTE_BODY: dict[str, Any] = {
-    "orderId": "ord_1",
+    "orderId": ORDER_ID,
     "origin": ADDRESS,
     "destination": {**ADDRESS, "country": "DE", "city": "Berlin", "postalCode": "10115"},
     "parcel": PARCEL,
@@ -51,12 +53,37 @@ class FakeRbacService:
     ) -> PermissionScope | None:
         del user_id
         self.asked.append((resource, action))
+        if resource == "orders":
+            return self._granted.get("orders")
         return self._granted.get(action)
 
 
 @pytest.fixture
 def granted() -> dict[str, PermissionScope]:
-    return {"read": PermissionScope.ALL, "write": PermissionScope.ALL}
+    return {
+        "read": PermissionScope.ALL,
+        "write": PermissionScope.ALL,
+        "orders": PermissionScope.ALL,
+    }
+
+
+class OrderBook:
+    """The order lookup the composition root would publish, holding one order."""
+
+    def __init__(self) -> None:
+        self.status = "CONFIRMED"
+        self.lookups: list[tuple[uuid.UUID, uuid.UUID, PermissionScope]] = []
+
+    async def __call__(
+        self, order_id: uuid.UUID, actor_id: uuid.UUID, scope: PermissionScope
+    ) -> ShipmentOrder | None:
+        self.lookups.append((order_id, actor_id, scope))
+        return ShipmentOrder(status=self.status) if str(order_id) == ORDER_ID else None
+
+
+@pytest.fixture
+def order_book() -> OrderBook:
+    return OrderBook()
 
 
 @pytest.fixture
@@ -65,7 +92,7 @@ def rbac(granted: dict[str, PermissionScope]) -> FakeRbacService:
 
 
 @pytest.fixture
-def integrations_app(settings: Settings, rbac: FakeRbacService) -> FastAPI:
+def integrations_app(settings: Settings, rbac: FakeRbacService, order_book: OrderBook) -> FastAPI:
     service_lifecycle.reset()
     service_lifecycle.mark_started()
     app = create_app(settings, routers=[(PREFIX, create_integrations_router())])
@@ -73,6 +100,7 @@ def integrations_app(settings: Settings, rbac: FakeRbacService) -> FastAPI:
     # The client is normally published by the composition root; a stub-backed
     # one keeps the breaker state stable across the requests of one test.
     app.state.delivery_client = create_configured_delivery_client()
+    app.state.find_order_for_shipment = order_book
     app.dependency_overrides[get_auth] = lambda: AuthContext(user_id=USER_ID, session_id=SESSION_ID)
     app.dependency_overrides[get_rbac_service] = lambda: rbac
     return app
@@ -133,7 +161,7 @@ async def test_a_shipment_is_created_with_201_and_can_then_be_tracked(
     assert created.status_code == 201
     shipment = created.json()["data"]
     assert shipment["status"] == "CREATED"
-    assert shipment["orderId"] == "ord_1"
+    assert shipment["orderId"] == ORDER_ID
 
     tracked = await integrations_client.get(f"{PREFIX}/delivery/shipments/{shipment['shipmentId']}")
     assert tracked.status_code == 200
@@ -189,7 +217,7 @@ async def test_creating_a_shipment_needs_the_write_permission(
         f"{PREFIX}/delivery/shipments",
         json={
             "quoteId": "qte_1",
-            "orderId": "ord_1",
+            "orderId": ORDER_ID,
             "destination": QUOTE_BODY["destination"],
             "parcel": PARCEL,
         },
@@ -250,3 +278,53 @@ async def test_the_openapi_schema_advertises_the_four_documented_paths(
                 assert refusal["content"]["application/json"]["schema"] == {
                     "$ref": "#/components/schemas/ErrorResponse"
                 }
+
+
+async def test_a_delivery_for_an_order_not_ready_to_leave_is_a_conflict(
+    integrations_client: AsyncClient, order_book: OrderBook
+) -> None:
+    order_book.status = "CANCELLED"
+
+    response = await integrations_client.post(f"{PREFIX}/delivery/quotes", json=QUOTE_BODY)
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "ORDER_NOT_SHIPPABLE"
+
+
+async def test_a_delivery_for_an_unknown_order_is_not_found(
+    integrations_client: AsyncClient,
+) -> None:
+    response = await integrations_client.post(
+        f"{PREFIX}/delivery/quotes", json={**QUOTE_BODY, "orderId": str(uuid.uuid4())}
+    )
+
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "ORDER_NOT_FOUND"
+
+
+async def test_the_order_is_looked_up_at_the_breadth_of_the_order_grant(
+    integrations_client: AsyncClient,
+    granted: dict[str, PermissionScope],
+    rbac: FakeRbacService,
+    order_book: OrderBook,
+) -> None:
+    granted["orders"] = PermissionScope.OWN
+
+    await integrations_client.post(f"{PREFIX}/delivery/quotes", json=QUOTE_BODY)
+
+    assert ("orders", "read") in rbac.asked
+    assert order_book.lookups == [(uuid.UUID(ORDER_ID), USER_ID, PermissionScope.OWN)]
+
+
+async def test_a_caller_who_sees_no_orders_ships_none(
+    integrations_client: AsyncClient,
+    granted: dict[str, PermissionScope],
+    order_book: OrderBook,
+) -> None:
+    del granted["orders"]
+
+    response = await integrations_client.post(f"{PREFIX}/delivery/quotes", json=QUOTE_BODY)
+
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "ORDER_NOT_FOUND"
+    assert order_book.lookups == []

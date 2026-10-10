@@ -37,6 +37,7 @@ from app.modules.orders.schemas import (
     UpdateOrderRequest,
 )
 from app.modules.orders.service import OrdersService, _OrderListPage, generate_order_number
+from app.modules.orders.stock import NoopStockOperations, OrderDefaults, OrdersStockPort
 from app.modules.orders.types import OrderAccess
 
 NOW = datetime(2026, 1, 1, tzinfo=UTC)
@@ -133,6 +134,9 @@ class FakeResult:
     def scalars(self) -> FakeScalars:
         return FakeScalars(self._values)
 
+    def all(self) -> list[Any]:
+        return list(self._values)
+
 
 class FakeNested:
     """Stands in for the savepoint the insert runs inside."""
@@ -209,12 +213,28 @@ def _service(
     session: FakeSession,
     audit: RecordingAudit | None = None,
     publisher: Any = None,
+    *,
+    defaults: OrderDefaults | None = None,
 ) -> OrdersService:
+    """Left without ``defaults`` the service falls back to USD and ``ORD``."""
+    stock = None
+    if defaults is not None:
+
+        async def resolve_defaults(_session: AsyncSession) -> OrderDefaults:
+            return defaults
+
+        stock = OrdersStockPort(
+            operations=NoopStockOperations(), resolve_order_defaults=resolve_defaults
+        )
     return OrdersService(
         cast(AsyncSession, session),
         cast(AuditService, audit or RecordingAudit()),
         publisher or RecordingPublisher(),
+        stock,
     )
+
+
+EURO = OrderDefaults(currency="EUR", number_prefix="SO")
 
 
 class TestOrderNumber:
@@ -347,7 +367,7 @@ class TestDuplicate:
         assert format_scaled_money(line.unit_price) == "25.00"
         assert format_scaled_money(line.line_total) == "50.00"
 
-    async def test_copies_contact_owner_and_currency_but_starts_a_fresh_draft(self) -> None:
+    async def test_copies_contact_and_owner_but_starts_a_fresh_draft(self) -> None:
         source = _order(owner_id=OTHER_ID)
         source.contact_id = uuid.uuid4()
         session = FakeSession([[source], [_product()], [_order()]])
@@ -455,8 +475,10 @@ class TestUpdate:
         assert session.updates[0].compile().params["notes"] == "called client"
 
     async def test_refuses_to_repricce_an_order_by_changing_its_currency(self) -> None:
+        # An order kept from before the organisation settled on EUR still has
+        # USD lines.
         session = FakeSession([[_order()]])
-        service = _service(session)
+        service = _service(session, defaults=EURO)
 
         with pytest.raises(ConflictError) as error:
             await service.update(OWN, ORDER_ID, UpdateOrderRequest(version=1, currency="eur"))
@@ -584,6 +606,118 @@ class TestLifecycleAndRemoval:
         assert session.updates[0].compile().params["deleted_at"] is not None
         assert [event.action for event in audit.events] == ["order.deleted"]
         assert [event.event_type for event in publisher.events] == ["order.deleted"]
+
+
+class TestDeletion:
+    @pytest.mark.parametrize(
+        "status", [OrderStatus.CONFIRMED, OrderStatus.PAID, OrderStatus.FULFILLED]
+    )
+    async def test_refuses_an_order_that_holds_or_used_a_reservation(
+        self, status: OrderStatus
+    ) -> None:
+        session = FakeSession([[_order(status)]])
+        audit = RecordingAudit()
+        publisher = RecordingPublisher()
+        service = _service(session, audit, publisher)
+
+        with pytest.raises(ConflictError) as error:
+            await service.delete(OWN, ORDER_ID, 1)
+
+        assert error.value.code == "ORDER_NOT_DELETABLE"
+        assert error.value.details == {"status": status.value}
+        assert session.updates == []
+        assert audit.events == []
+        assert publisher.events == []
+
+    async def test_deletes_a_cancelled_order(self) -> None:
+        session = FakeSession([[_order(OrderStatus.CANCELLED)]])
+        service = _service(session)
+
+        await service.delete(OWN, ORDER_ID, 1)
+
+        assert len(session.updates) == 1
+
+    async def test_reports_a_stale_version_before_the_status(self) -> None:
+        session = FakeSession([[_order(OrderStatus.CONFIRMED)]])
+        service = _service(session)
+
+        with pytest.raises(VersionConflictError) as error:
+            await service.delete(OWN, ORDER_ID, 2)
+
+        assert error.value.code == "ORDER_CONCURRENT_MODIFICATION"
+
+
+class TestOrganisationSettings:
+    async def test_numbers_a_new_order_with_the_organisation_prefix(self) -> None:
+        session = FakeSession([[_order()]])
+        service = _service(session, defaults=EURO)
+
+        await service.create(OWN, CreateOrderRequest())
+
+        order = cast(Order, session.added[0])
+        assert order.order_number.startswith("SO-")
+        assert order.currency == "EUR"
+
+    async def test_refuses_to_create_an_order_in_another_currency(self) -> None:
+        session = FakeSession()
+        service = _service(session, defaults=EURO)
+
+        with pytest.raises(AppError) as error:
+            await service.create(OWN, CreateOrderRequest(currency="USD"))
+
+        assert (error.value.status_code, error.value.code) == (422, "CURRENCY_NOT_SUPPORTED")
+        assert error.value.details == {"currency": "USD", "expected": "EUR"}
+        assert session.added == []
+
+    async def test_refuses_to_move_an_order_to_another_currency(self) -> None:
+        session = FakeSession([[_order(items=[])]])
+        service = _service(session)
+
+        with pytest.raises(AppError) as error:
+            await service.update(OWN, ORDER_ID, UpdateOrderRequest(version=1, currency="EUR"))
+
+        assert (error.value.status_code, error.value.code) == (422, "CURRENCY_NOT_SUPPORTED")
+        assert error.value.details == {"currency": "EUR", "expected": "USD"}
+        assert session.updates == []
+
+    async def test_accepts_the_organisation_currency_on_update(self) -> None:
+        session = FakeSession([[_order(items=[])], [_order(items=[], version=2)]])
+        service = _service(session)
+
+        await service.update(OWN, ORDER_ID, UpdateOrderRequest(version=1, currency="USD"))
+
+        assert len(session.updates) == 1
+
+    async def test_duplicates_an_order_into_the_organisation_currency(self) -> None:
+        session = FakeSession([[_order()], [_product(currency="EUR")], [_order()]])
+        service = _service(session, defaults=EURO)
+
+        await service.duplicate(OWN, ORDER_ID)
+
+        assert cast(Order, session.added[0]).currency == "EUR"
+
+    async def test_falls_back_to_usd_and_the_ord_prefix_without_settings(self) -> None:
+        session = FakeSession([[_order()]])
+        service = _service(session)
+
+        await service.create(OWN, CreateOrderRequest())
+
+        order = cast(Order, session.added[0])
+        assert order.currency == "USD"
+        assert order.order_number.startswith("ORD-")
+
+
+class TestWarehouseField:
+    async def test_returns_the_warehouse_the_order_reserved_in(self) -> None:
+        warehouse_id = uuid.UUID("33333333-3333-3333-3333-333333333333")
+        order = _order(OrderStatus.CONFIRMED)
+        order.warehouse_id = warehouse_id
+        service = _service(FakeSession([[order]]))
+
+        result = await service.get_by_id(OWN, ORDER_ID)
+
+        assert result.warehouse_id == warehouse_id
+        assert result.model_dump(mode="json", by_alias=True)["warehouseId"] == str(warehouse_id)
 
 
 class TestReads:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import Callable
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any, cast
@@ -16,6 +17,7 @@ from app.db.enums import OrderStatus, PermissionScope
 from app.db.models.order import Order, OrderItem
 from app.events.types import DomainEvent
 from app.modules.audit import AuditEvent, AuditService
+from app.modules.orders import service as orders_service_module
 from app.modules.orders.schemas import TransitionOrderRequest
 from app.modules.orders.service import OrdersService
 from app.modules.orders.stock import (
@@ -55,13 +57,22 @@ def _line(item_id: uuid.UUID, product_id: uuid.UUID, quantity: int) -> OrderItem
     )
 
 
-def _order(status: OrderStatus, version: int = 1) -> Order:
+def _order(
+    status: OrderStatus,
+    version: int = 1,
+    *,
+    reverse_lines: bool = False,
+    warehouse_id: uuid.UUID | None = None,
+) -> Order:
+    # Fresh lines for every order: a line belongs to one order at a time.
+    lines = [_line(ITEM_ONE, PRODUCT_ONE, 3), _line(ITEM_TWO, PRODUCT_TWO, 2)]
     return Order(
         id=ORDER_ID,
         order_number="ORD-20260101-ABC123",
         owner_id=ACTOR_ID,
         contact_id=None,
         deal_id=None,
+        warehouse_id=warehouse_id,
         status=status,
         currency="USD",
         subtotal=Decimal("50.00"),
@@ -73,7 +84,7 @@ def _order(status: OrderStatus, version: int = 1) -> Order:
         placed_at=None,
         created_at=NOW,
         updated_at=NOW,
-        items=[_line(ITEM_ONE, PRODUCT_ONE, 3), _line(ITEM_TWO, PRODUCT_TWO, 2)],
+        items=lines[::-1] if reverse_lines else lines,
     )
 
 
@@ -195,18 +206,30 @@ class RecordingOperations:
 class Harness:
     """Everything one transition needs, wired to a scripted session."""
 
-    def __init__(
+    def __init__(  # noqa: PLR0913
         self,
         status: OrderStatus = OrderStatus.DRAFT,
         *,
         warehouse_id: uuid.UUID | None = WAREHOUSE_ID,
         reserve_error: AppError | None = None,
         with_stock: bool = True,
+        reverse_lines: bool = False,
+        recorded_warehouse_id: uuid.UUID | None = None,
     ) -> None:
         self.timeline: list[str] = []
         self.warehouse_id = warehouse_id
         self.resolved = 0
-        self.session = FakeSession([_order(status), _order(status, version=2)])
+        self.session = FakeSession(
+            [
+                _order(status, reverse_lines=reverse_lines, warehouse_id=recorded_warehouse_id),
+                _order(
+                    status,
+                    version=2,
+                    reverse_lines=reverse_lines,
+                    warehouse_id=recorded_warehouse_id,
+                ),
+            ]
+        )
         self.audit = RecordingAudit(self.timeline)
         self.publisher = RecordingPublisher(self.timeline)
         self.operations = RecordingOperations(self.timeline, reserve_error)
@@ -372,6 +395,93 @@ class TestTransitionsThatCannotMoveStock:
         assert error.value.code == "WAREHOUSE_NOT_CONFIGURED"
         assert harness.operations.reserved == []
         assert harness.publisher.events == []
+
+
+class TestTheWarehouseAnOrderReservesIn:
+    async def test_records_the_warehouse_on_the_order_when_it_is_confirmed(self) -> None:
+        harness = Harness()
+
+        await harness.transition(OrderStatus.CONFIRMED)
+
+        values = harness.session.updates[0].compile().params
+        assert values["warehouse_id"] == WAREHOUSE_ID
+        assert values["status"] == OrderStatus.CONFIRMED
+
+    async def test_releases_where_the_order_reserved_whatever_the_setting_says(self) -> None:
+        recorded = uuid.UUID("88888888-8888-8888-8888-888888888888")
+        harness = Harness(OrderStatus.CONFIRMED, recorded_warehouse_id=recorded)
+
+        await harness.transition(OrderStatus.CANCELLED)
+
+        assert harness.resolved == 0
+        assert {data.warehouse_id for data in harness.operations.released} == {recorded}
+
+    async def test_fulfils_from_the_warehouse_the_order_reserved_in(self) -> None:
+        recorded = uuid.UUID("88888888-8888-8888-8888-888888888888")
+        harness = Harness(OrderStatus.PAID, recorded_warehouse_id=recorded)
+
+        await harness.transition(OrderStatus.FULFILLED)
+
+        assert harness.resolved == 0
+        assert {data.warehouse_id for data in harness.operations.issued} == {recorded}
+
+    async def test_falls_back_to_the_configured_warehouse_for_an_order_that_recorded_none(
+        self,
+    ) -> None:
+        harness = Harness(OrderStatus.CONFIRMED)
+
+        await harness.transition(OrderStatus.CANCELLED)
+
+        assert harness.resolved == 1
+        assert {data.warehouse_id for data in harness.operations.released} == {WAREHOUSE_ID}
+
+
+class TestTheOrderStockLocksAreTakenIn:
+    async def test_reserves_the_lines_in_product_order(self) -> None:
+        harness = Harness(reverse_lines=True)
+
+        await harness.transition(OrderStatus.CONFIRMED)
+
+        assert [data.product_id for data in harness.operations.reserved] == [
+            PRODUCT_ONE,
+            PRODUCT_TWO,
+        ]
+
+    async def test_releases_the_lines_in_the_same_product_order(self) -> None:
+        harness = Harness(OrderStatus.CONFIRMED, reverse_lines=True)
+
+        await harness.transition(OrderStatus.CANCELLED)
+
+        assert [data.product_id for data in harness.operations.released] == [
+            PRODUCT_ONE,
+            PRODUCT_TWO,
+        ]
+
+
+class TestStockEventsWaitForTheCommit:
+    async def test_hands_the_stock_events_to_the_session_commit(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        deferred: list[Callable[[], None]] = []
+
+        def defer(_session: AsyncSession, publish: Callable[[], None]) -> None:
+            deferred.append(publish)
+
+        monkeypatch.setattr(orders_service_module, "publish_after_commit", defer)
+        harness = Harness()
+
+        await harness.transition(OrderStatus.CONFIRMED)
+
+        # Nothing has been announced while the transaction is still open.
+        assert harness.timeline == ["audit:order.status_transitioned"]
+        for publish in deferred:
+            publish()
+        assert harness.timeline == [
+            "audit:order.status_transitioned",
+            "stock-event:reserved",
+            "stock-event:reserved",
+            "order-event",
+        ]
 
 
 class TestServiceWithoutAStockPort:

@@ -77,6 +77,11 @@ class OrderOut(CamelModel):
     owner_id: uuid.UUID
     contact_id: uuid.UUID | None
     deal_id: uuid.UUID | None
+    #: The warehouse the order holds its reservation in; set on confirmation.
+    warehouse_id: uuid.UUID | None = Field(
+        description="Склад, у якому замовлення тримає резерв; "  # noqa: RUF001
+        "записується при підтвердженні, до того null."
+    )
     status: OrderStatus
     currency: str
     subtotal: Money
