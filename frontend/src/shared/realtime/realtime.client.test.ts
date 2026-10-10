@@ -13,7 +13,7 @@ class FakeSocket implements RealtimeSocketLike {
   readyState = 0;
   onopen: (() => void) | null = null;
   onmessage: ((event: { readonly data: unknown }) => void) | null = null;
-  onclose: ((event: { readonly code: number }) => void) | null = null;
+  onclose: ((event: { readonly code: number; readonly reason?: string }) => void) | null = null;
   onerror: (() => void) | null = null;
 
   readonly sent: string[] = [];
@@ -44,9 +44,9 @@ class FakeSocket implements RealtimeSocketLike {
     this.onmessage?.({ data: JSON.stringify(frame) });
   }
 
-  fireClose(code: number): void {
+  fireClose(code: number, reason = ''): void {
     this.readyState = 3;
-    this.onclose?.({ code });
+    this.onclose?.({ code, reason });
   }
 
   frames(): unknown[] {
@@ -426,6 +426,76 @@ describe('createRealtimeClient — refused handshake', () => {
     vi.advanceTimersByTime(1_000);
 
     expect(harness.renewals).toBe(0);
+    expect(harness.sockets).toHaveLength(2);
+  });
+});
+
+describe('createRealtimeClient — the server ends a live session', () => {
+  // The token ran out on an open connection. The session is still valid, so
+  // the socket is back as soon as a fresh token is — no backoff pause.
+  it('renews at once and reconnects without waiting when the token expired', async () => {
+    const harness = createHarness({ renewedToken: 'token-2' });
+    harness.client.start();
+    harness.last().open();
+
+    harness.last().fireClose(4001, 'Access token expired');
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(harness.renewals).toBe(1);
+    expect(harness.sockets).toHaveLength(2);
+    expect(harness.last().protocols).toEqual(['bearer', 'token-2']);
+  });
+
+  it('stops when the renewal after an expired token finds no session', async () => {
+    const harness = createHarness({ renewedToken: null });
+    harness.client.start();
+    harness.last().open();
+
+    harness.last().fireClose(4001, 'Access token expired');
+    await vi.runAllTimersAsync();
+
+    expect(harness.client.getStatus()).toBe('unauthorized');
+    expect(harness.sockets).toHaveLength(1);
+  });
+
+  it('keeps backing off when the renewal cannot reach the API', async () => {
+    const harness = createHarness({ renewalFails: true });
+    harness.client.start();
+    harness.last().open();
+
+    harness.last().fireClose(4001, 'Access token expired');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(harness.client.getStatus()).toBe('reconnecting');
+    expect(harness.sockets).toHaveLength(1);
+
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(harness.sockets).toHaveLength(2);
+  });
+
+  // Sign-out, a blocked account, a revoked session: a fresh token would be
+  // refused as well, so the client neither renews nor retries.
+  it('goes to unauthorized and stays there when the session ended', async () => {
+    const harness = createHarness({ renewedToken: 'token-2' });
+    harness.client.start();
+    harness.last().open();
+
+    harness.last().fireClose(4001, 'Session ended');
+    await vi.advanceTimersByTimeAsync(120_000);
+
+    expect(harness.client.getStatus()).toBe('unauthorized');
+    expect(harness.renewals).toBe(0);
+    expect(harness.sockets).toHaveLength(1);
+  });
+
+  it('lets the renewal decide when the close carries an unknown reason', async () => {
+    const harness = createHarness({ renewedToken: 'token-2' });
+    harness.client.start();
+    harness.last().open();
+
+    harness.last().fireClose(4001, '');
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(harness.renewals).toBe(1);
     expect(harness.sockets).toHaveLength(2);
   });
 });

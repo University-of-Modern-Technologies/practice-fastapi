@@ -93,6 +93,14 @@ describe('useListParams', () => {
     expect(params()).toMatchObject({ pageSize: 100 });
   });
 
+  // The page number has the same ceiling: past the hundredth page the API
+  // answers 400, so a link that points further opens at the last one it serves.
+  it('не просить номер сторінки, далі за який API не гортає', () => {
+    renderList('page=250');
+
+    expect(params()).toMatchObject({ page: 100 });
+  });
+
   it('ігнорує напрям сортування, якого не існує', () => {
     renderList('sortOrder=вниз');
 

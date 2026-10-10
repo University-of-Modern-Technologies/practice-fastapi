@@ -30,6 +30,7 @@ import {
 } from '../orders.queries';
 import {
   ORDER_ERROR_MESSAGES,
+  isOrderDeletable,
   isOrderVersionConflict,
   type Order,
   type OrderItemView,
@@ -146,7 +147,9 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
     </PermissionGate>
   );
 
-  const deleteAction = (
+  // Only a draft or a cancelled order may be deleted; for the rest the button
+  // is not offered, and its 409 stays a safety net for a status that moved.
+  const deleteAction = isOrderDeletable(order.status) ? (
     <PermissionGate resource="orders" action="delete" ownerId={order.ownerId} fallback={null}>
       <DeleteConfirm
         onConfirm={onDelete}
@@ -159,7 +162,7 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
         </Button>
       </DeleteConfirm>
     </PermissionGate>
-  );
+  ) : null;
 
   const addButton = (
     <Button icon={<Plus size={16} />} onClick={() => setIsAdding(true)}>

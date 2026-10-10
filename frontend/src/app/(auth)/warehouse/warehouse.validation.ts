@@ -28,6 +28,20 @@ const referenceTypeField = z
 
 const noteField = z.string().trim().min(1, 'Вкажіть коментар').max(255, 'Не більше 255 символів');
 
+/**
+ * The reference type an order's own stock movements carry. A reservation held
+ * for an order belongs to the order: its transitions reserve, release and issue
+ * it, and the stock API refuses a manual reserve, release or issue under this
+ * type with `STOCK_ORDER_REFERENCE_FORBIDDEN`. Matched exactly, as the API does.
+ */
+export const ORDER_REFERENCE_TYPE = 'order';
+
+export const ORDER_REFERENCE_MESSAGE =
+  'Резервом замовлення керує саме замовлення — вкажіть інший тип підстави';
+
+const isNotOrderReference = (value: { readonly referenceType?: string | undefined }): boolean =>
+  value.referenceType !== ORDER_REFERENCE_TYPE;
+
 export const warehouseCodeSchema = z
   .string()
   .trim()
@@ -74,15 +88,18 @@ const issueSchema = z
       value.fromReservation !== true ||
       (value.referenceType !== undefined && value.referenceId !== undefined),
     { message: 'Списання з резерву має посилатися на резерв', path: ['referenceId'] },
-  );
+  )
+  .refine(isNotOrderReference, { message: ORDER_REFERENCE_MESSAGE, path: ['referenceType'] });
 
-const reservationSchema = z.object({
-  ...targetShape,
-  quantity: quantityField,
-  referenceType: referenceTypeField,
-  referenceId: uuidField,
-  note: noteField.optional(),
-});
+const reservationSchema = z
+  .object({
+    ...targetShape,
+    quantity: quantityField,
+    referenceType: referenceTypeField,
+    referenceId: uuidField,
+    note: noteField.optional(),
+  })
+  .refine(isNotOrderReference, { message: ORDER_REFERENCE_MESSAGE, path: ['referenceType'] });
 
 const adjustSchema = z.object({
   ...targetShape,

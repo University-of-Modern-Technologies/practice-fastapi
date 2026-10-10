@@ -14,6 +14,8 @@ import { useResolvedUser, useUserOptions, userLabel } from '../../users/users.qu
 import { useCreateTicket, useUpdateTicket } from '../helpdesk.queries';
 import {
   TICKET_ERROR,
+  TICKET_ERROR_MESSAGES,
+  isTicketClosed,
   type CreateTicketInput,
   type Ticket,
   type UpdateTicketInput,
@@ -58,6 +60,7 @@ interface UseTicketFormResult {
     readonly initialValues: Partial<TicketFormValues>;
     readonly layout: 'vertical';
     readonly requiredMark: boolean;
+    readonly disabled: boolean;
     readonly onValuesChange: () => void;
     readonly onFinish: () => void;
   };
@@ -65,6 +68,8 @@ interface UseTicketFormResult {
   readonly conflictAlert: ReactNode;
   readonly submit: () => void;
   readonly isSaving: boolean;
+  /** A closed ticket: the form only shows it, and offers no save. */
+  readonly isReadOnly: boolean;
   /** Routes a failed write to the field it belongs to; also used by the delete action. */
   readonly handleError: (error: unknown) => void;
 }
@@ -96,7 +101,7 @@ export const useTicketForm = ({
   isReloading = false,
 }: UseTicketFormOptions): UseTicketFormResult => {
   const [form] = Form.useForm<TicketFormValues>();
-  const { reportSuccess, reportFailure } = useMutationFeedback();
+  const { reportSuccess, reportFailureWith } = useMutationFeedback();
   // `base` is the copy on screen: its values are in the fields and its version
   // is the one a save sends, even after a fresher copy reached the cache.
   const { base, markDirty, adopt, hasConflict, handleConflict, reload } = useRecordForm({
@@ -115,6 +120,15 @@ export const useTicketForm = ({
   const canReadContacts = useHasPermission('contacts', 'read');
   const canReadUsers = useHasPermission('users', 'read');
 
+  /**
+   * A closed ticket is final and the API refuses to edit it. A resolved one is
+   * not — it can be reopened — so it keeps its form. Both copies count: the one
+   * on screen and the one the cache holds after a transition on this page.
+   */
+  const isReadOnly =
+    (base !== undefined && isTicketClosed(base.status)) ||
+    (ticket !== undefined && isTicketClosed(ticket.status));
+
   // Read once, at mount; every later copy reaches the fields through the hook.
   const initialValues = useMemo<Partial<TicketFormValues>>(
     () => (base ? toTicketValues(base) : { channel: 'EMAIL', priority: 'NORMAL' }),
@@ -123,6 +137,15 @@ export const useTicketForm = ({
 
   const handleError = useCallback(
     (error: unknown) => {
+      // Somebody closed the ticket while this form was open. It is a 409, but
+      // saving again cannot help: the page says why and shows the ticket as it
+      // now stands.
+      if (error instanceof ApiError && error.code === TICKET_ERROR.closed) {
+        reportFailureWith(TICKET_ERROR_MESSAGES)(error);
+        reload();
+        return;
+      }
+
       if (handleConflict(error)) return;
 
       if (error instanceof ApiError) {
@@ -147,9 +170,9 @@ export const useTicketForm = ({
       }
 
       if (applyServerErrors(form, error)) return;
-      reportFailure(error);
+      reportFailureWith(TICKET_ERROR_MESSAGES)(error);
     },
-    [base, form, handleConflict, reportFailure],
+    [base, form, handleConflict, reload, reportFailureWith],
   );
 
   const handleSaved = useCallback(
@@ -162,6 +185,7 @@ export const useTicketForm = ({
   );
 
   const submit = useCallback(() => {
+    if (isReadOnly) return;
     void form
       .validateFields()
       .then((values) => {
@@ -204,7 +228,7 @@ export const useTicketForm = ({
       // A form that failed its own rules has already marked the offending
       // fields; there is nothing further to report.
       .catch(() => undefined);
-  }, [base, create, form, handleError, handleSaved, update]);
+  }, [base, create, form, handleError, handleSaved, isReadOnly, update]);
 
   const userPicker = (placeholder: string): ReactNode =>
     canReadUsers ? (
@@ -302,6 +326,7 @@ export const useTicketForm = ({
       initialValues,
       layout: 'vertical',
       requiredMark: false,
+      disabled: isReadOnly,
       onValuesChange: markDirty,
       onFinish: submit,
     },
@@ -309,6 +334,7 @@ export const useTicketForm = ({
     conflictAlert: <ConflictAlert open={hasConflict} onReload={reload} isReloading={isReloading} />,
     submit,
     isSaving: create.isPending || update.isPending,
+    isReadOnly,
     handleError,
   };
 };

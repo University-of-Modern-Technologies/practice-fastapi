@@ -73,4 +73,14 @@ export const PRODUCT_ERROR = {
   conflict: 'PRODUCT_CONCURRENT_MODIFICATION',
   skuTaken: 'PRODUCT_SKU_TAKEN',
   skuImmutable: 'PRODUCT_SKU_IMMUTABLE',
+  currencyNotSupported: 'CURRENCY_NOT_SUPPORTED',
 } as const;
+
+/**
+ * A refused write names a condition the operator can act on, so each code gets
+ * its own sentence instead of a generic «перевірте дані».
+ */
+export const PRODUCT_ERROR_MESSAGES: Readonly<Record<string, string>> = {
+  [PRODUCT_ERROR.currencyNotSupported]:
+    'Ціни в каталозі ведуться лише у валюті організації — іншу валюту не прийнято',
+};

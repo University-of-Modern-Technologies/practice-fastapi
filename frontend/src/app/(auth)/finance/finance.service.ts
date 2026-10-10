@@ -5,6 +5,7 @@ import type { Id } from '@/types/domain';
 import { readAmountFilter } from './finance.validation';
 import {
   FINANCE_ERROR,
+  FINANCE_REFUSALS,
   PAYMENT_MATCH_STATUSES,
   TRANSACTION_DIRECTIONS,
   isTransactionSortField,
@@ -96,15 +97,13 @@ export const isProviderUnavailable = (error: unknown): boolean =>
 /**
  * A 409 carries two different answers here, exactly as it does in `orders`.
  * `TRANSACTION_CONCURRENT_MODIFICATION` means somebody saved first and a
- * re-read fixes it; `TRANSACTION_ALREADY_MATCHED` means the domain refused the
- * request itself, and offering a re-read would send the operator to do
- * something that cannot help.
+ * re-read fixes it; `TRANSACTION_ALREADY_MATCHED`, `ORDER_ALREADY_MATCHED` and
+ * the rest of `FINANCE_REFUSALS` mean the domain refused the request itself,
+ * and offering a re-read would send the operator to do something that cannot
+ * help. An unfamiliar code keeps the re-read, the likelier of the two.
  */
 export const isVersionConflict = (error: unknown): boolean =>
-  error instanceof ApiError &&
-  error.isConflict &&
-  error.code !== FINANCE_ERROR.alreadyMatched &&
-  error.code !== FINANCE_ERROR.notMatched;
+  error instanceof ApiError && error.isConflict && !FINANCE_REFUSALS.has(error.code);
 
 /**
  * The only place that knows the shape of the finance endpoints. It holds no

@@ -1,16 +1,19 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ApiError } from '@/shared/api';
+import type { Order } from '@/app/(auth)/orders/orders.types';
 import {
   IntegrationsService,
+  describeShipmentOrderError,
   isModuleUnavailable,
   isShipmentMissing,
+  mergeShippableOrders,
   toAddress,
   toParcel,
   toQuoteRequest,
   toShipmentInput,
 } from './integrations.service';
 import { DELIVERY_ERROR, type DeliveryQuote } from './integrations.types';
-import { isQuoteExpired, normalizeCountry } from './integrations.validation';
+import { isQuoteExpired, normalizeCountry, orderIdSchema } from './integrations.validation';
 
 const get = vi.fn();
 const post = vi.fn();
@@ -163,6 +166,14 @@ describe('isModuleUnavailable', () => {
     expect(isShipmentMissing(error)).toBe(true);
   });
 
+  // The delivery checks the order before the carrier. Its 404 is about the
+  // order the operator picked, not about the section being absent.
+  it('does not mistake an unknown order for a missing section', () => {
+    expect(
+      isModuleUnavailable(new ApiError({ status: 404, code: 'ORDER_NOT_FOUND', message: '' })),
+    ).toBe(false);
+  });
+
   it('leaves a genuine failure to the error handler', () => {
     expect(
       isModuleUnavailable(
@@ -222,5 +233,79 @@ describe('IntegrationsService', () => {
     await IntegrationsService.getShipment(' shp-1 ');
 
     expect(get).toHaveBeenCalledWith('/integrations/delivery/shipments/shp-1', {});
+  });
+});
+
+describe('describeShipmentOrderError', () => {
+  it('says the order is unknown without telling it apart from one out of reach', () => {
+    expect(
+      describeShipmentOrderError(
+        new ApiError({ status: 404, code: 'ORDER_NOT_FOUND', message: '' }),
+      ),
+    ).toBe('Замовлення не знайдено або воно вам недоступне');
+  });
+
+  it('names the status the order is in and the ones it would have to be in', () => {
+    const error = new ApiError({
+      status: 409,
+      code: 'ORDER_NOT_SHIPPABLE',
+      message: '',
+      details: { status: 'DRAFT', allowed: ['CONFIRMED', 'PAID'] },
+    });
+
+    expect(describeShipmentOrderError(error)).toBe(
+      'Замовлення у статусі «Чернетка» не можна відправити — лише «Підтверджено» або «Оплачено»',
+    );
+  });
+
+  it('still says something when the refusal came without details', () => {
+    expect(
+      describeShipmentOrderError(
+        new ApiError({ status: 409, code: 'ORDER_NOT_SHIPPABLE', message: '' }),
+      ),
+    ).toBe('Це замовлення зараз не можна відправити');
+  });
+
+  it('leaves every other failure to the general handler', () => {
+    expect(
+      describeShipmentOrderError(
+        new ApiError({ status: 503, code: DELIVERY_ERROR.unavailable, message: '' }),
+      ),
+    ).toBeNull();
+    expect(describeShipmentOrderError(new Error('boom'))).toBeNull();
+  });
+});
+
+describe('orderIdSchema', () => {
+  // The API ships only an order it can find by its identifier: a number typed
+  // by hand never leaves the browser.
+  it('accepts only the identifier of a picked order', () => {
+    expect(orderIdSchema.safeParse('22222222-2222-4222-8222-222222222222').success).toBe(true);
+    expect(orderIdSchema.safeParse('ORD-1042').success).toBe(false);
+    expect(orderIdSchema.safeParse('').success).toBe(false);
+  });
+});
+
+describe('mergeShippableOrders', () => {
+  const order = (id: string, createdAt: string): Order => ({ id, createdAt }) as unknown as Order;
+
+  it('puts the confirmed and the paid orders back into one list, newest first', () => {
+    const merged = mergeShippableOrders(
+      [
+        [order('c-old', '2026-08-01T10:00:00.000Z'), order('c-new', '2026-08-05T10:00:00.000Z')],
+        [order('p-mid', '2026-08-03T10:00:00.000Z')],
+      ],
+      20,
+    );
+
+    expect(merged.map(({ id }) => id)).toEqual(['c-new', 'p-mid', 'c-old']);
+  });
+
+  it('keeps one picker page, not two', () => {
+    const many = Array.from({ length: 15 }, (_, index) =>
+      order(`o-${index}`, `2026-08-${String(index + 1).padStart(2, '0')}T10:00:00.000Z`),
+    );
+
+    expect(mergeShippableOrders([many, many], 20)).toHaveLength(20);
   });
 });

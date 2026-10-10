@@ -42,6 +42,21 @@ describe('DateTime', () => {
     expect(DateTime.toWireDateTime(undefined)).toBeUndefined();
   });
 
+  it('tells a bare calendar date from an instant', () => {
+    expect(DateTime.isCalendarDate('2026-09-01')).toBe(true);
+    expect(DateTime.isCalendarDate('2026-09-01T00:00:00.000Z')).toBe(false);
+    expect(DateTime.isCalendarDate(null)).toBe(false);
+    expect(DateTime.isCalendarDate('')).toBe(false);
+  });
+
+  // The picker shows the stored day and sends the same day back, so an
+  // untouched field never moves by one across the zone boundary.
+  it('keeps the first and the last day of a month through the picker', () => {
+    for (const day of ['2026-09-01', '2026-03-31', '2026-10-25']) {
+      expect(DateTime.toWireDate(DateTime.toPicker(day))).toBe(day);
+    }
+  });
+
   it('turns a wire value back into a picker value and back again', () => {
     const picker = DateTime.toPicker('2026-08-12');
     expect(picker).not.toBeNull();

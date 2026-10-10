@@ -91,3 +91,37 @@ describe('Інтеграції — деградація без модуля', ()
     expect(await screen.findByText(MISSING_SECTION)).toBeInTheDocument();
   });
 });
+
+describe('Інтеграції — замовлення для доставки', () => {
+  const showWith = (permissions: readonly string[]): void => {
+    vi.mocked(http.get).mockResolvedValue(HEALTH);
+    renderWithProviders(<IntegrationsPage />, { permissions });
+  };
+
+  it('пояснює, чому доставку не оформити без доступу до замовлень, і не пропонує розрахунок', async () => {
+    showWith(['integrations:read', 'integrations:write']);
+
+    await screen.findByText('Розрахунок доставки');
+
+    expect(
+      screen.getAllByText('Ваша роль не дає доступу до замовлень, тому доставку оформити не можна')
+        .length,
+    ).toBeGreaterThan(0);
+    expect(screen.queryByRole('button', { name: 'Розрахувати' })).not.toBeInTheDocument();
+    expect(screen.queryByPlaceholderText('Ідентифікатор замовлення')).not.toBeInTheDocument();
+  });
+
+  it('пропонує лише підтверджені та оплачені замовлення', async () => {
+    showWith(['integrations:read', 'integrations:write', 'orders:read']);
+
+    await screen.findByText('Розрахунок доставки');
+
+    const statuses = vi
+      .mocked(http.get)
+      .mock.calls.filter(([path]) => path === '/orders')
+      .map(([, options]) => (options as { params?: { status?: string } }).params?.status);
+
+    expect(new Set(statuses)).toEqual(new Set(['CONFIRMED', 'PAID']));
+    expect(screen.getAllByText('Лише підтверджені або оплачені замовлення').length).toBe(2);
+  });
+});

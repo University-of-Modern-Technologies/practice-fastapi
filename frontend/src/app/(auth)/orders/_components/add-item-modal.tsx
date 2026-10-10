@@ -24,7 +24,11 @@ interface ItemFormValues {
 interface AddItemModalProps {
   readonly open: boolean;
   readonly onClose: () => void;
-  readonly currency: CurrencyCode;
+  /**
+   * The currency a line has to be in. Absent on the create route until the
+   * first line is staged: the order's currency is then not known yet.
+   */
+  readonly currency?: CurrencyCode | undefined;
   /** Present once the order exists: the line is written through the API. */
   readonly order?: Order | undefined;
   /** Present on the create route: the line is staged until the order exists. */
@@ -100,7 +104,8 @@ export function AddItemModal({
       .catch(() => undefined);
   };
 
-  const mismatched = selected !== undefined && selected.currency !== currency;
+  const mismatched =
+    selected !== undefined && currency !== undefined && selected.currency !== currency;
 
   return (
     <FormModal

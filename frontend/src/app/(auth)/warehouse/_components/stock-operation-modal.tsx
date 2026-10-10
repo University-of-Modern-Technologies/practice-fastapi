@@ -17,7 +17,12 @@ import {
   type StockOperation,
   type StockOperationRequest,
 } from '../warehouse.types';
-import { blankToUndefined, showsField, stockOperationSchema } from '../warehouse.validation';
+import {
+  ORDER_REFERENCE_TYPE,
+  blankToUndefined,
+  showsField,
+  stockOperationSchema,
+} from '../warehouse.validation';
 
 interface OperationFormValues {
   operation: StockOperation;
@@ -91,6 +96,11 @@ export function StockOperationModal({
     operation === 'reserve' ||
     operation === 'release' ||
     (operation === 'issue' && fromReservation);
+
+  // The order's own reservations move with the order; the API refuses these
+  // three under the order's reference type, so the field says so up front.
+  const orderReferenceForbidden =
+    operation === 'reserve' || operation === 'release' || operation === 'issue';
 
   const handleFailure = (error: unknown): void => {
     const known = describeStockError(error);
@@ -272,8 +282,13 @@ export function StockOperationModal({
           name="referenceType"
           label="Тип підстави"
           rules={referenceRequired ? [{ required: true, message: 'Вкажіть тип підстави' }] : []}
+          extra={
+            orderReferenceForbidden
+              ? `Резерви замовлень веде саме замовлення: тип «${ORDER_REFERENCE_TYPE}» тут не приймається`
+              : undefined
+          }
         >
-          <Input placeholder="order" />
+          <Input placeholder="manual" />
         </Form.Item>
 
         <Form.Item

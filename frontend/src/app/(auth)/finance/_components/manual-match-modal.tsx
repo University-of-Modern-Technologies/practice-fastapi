@@ -85,10 +85,32 @@ export function ManualMatchModal({
                   onCancel();
                   return;
                 }
+                // Outgoing money is never tied to an order. The card should not
+                // have offered this, so it is stale: nothing to pick here.
+                if (error.code === FINANCE_ERROR.notIncoming) {
+                  reportFailure(error);
+                  onCancel();
+                  return;
+                }
                 // A refusal about the order belongs on the field that names it:
                 // the operator has one picker to change.
                 if (error.code === FINANCE_ERROR.orderNotFound) {
                   form.setFields([{ name: 'orderId', errors: ['Такого замовлення вже немає'] }]);
+                  return;
+                }
+                if (error.code === FINANCE_ERROR.orderAlreadyMatched) {
+                  form.setFields([
+                    { name: 'orderId', errors: ['Це замовлення вже зведено з іншим платежем'] },
+                  ]);
+                  return;
+                }
+                if (error.code === FINANCE_ERROR.currencyMismatch) {
+                  form.setFields([
+                    {
+                      name: 'orderId',
+                      errors: ['Валюта платежу не збігається з валютою цього замовлення'],
+                    },
+                  ]);
                   return;
                 }
                 if (error.code === FINANCE_ERROR.amountMismatch) {
@@ -143,7 +165,7 @@ export function ManualMatchModal({
               label="Замовлення"
               extra={
                 canReadOrders
-                  ? 'Сервер перевірить суму й відмовить, якщо вона не збігається.'
+                  ? 'Сервер перевірить валюту й суму та відмовить, якщо вони не збігаються.'
                   : 'Немає доступу до замовлень'
               }
             >

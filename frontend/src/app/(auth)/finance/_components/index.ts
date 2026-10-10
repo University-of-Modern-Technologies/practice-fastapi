@@ -1,3 +1,4 @@
+export { AutoMatchDisabledTag } from './auto-match-tag';
 export { FinanceSummaryCard } from './finance-summary-card';
 export { ImportStatementButton } from './import-statement-button';
 export { ManualMatchModal } from './manual-match-modal';

@@ -25,11 +25,6 @@ export const orderProductSchema = z
   .min(1, 'Оберіть товар')
   .regex(UUID_PATTERN, 'Вкажіть коректний ідентифікатор товару');
 
-export const orderCurrencySchema = z
-  .string()
-  .trim()
-  .regex(/^[A-Za-z]{3}$/, 'Код валюти — три літери, наприклад USD');
-
 /** Discount and tax are non-negative amounts; an empty field means zero. */
 export const orderAmountSchema = z
   .string()
@@ -62,7 +57,8 @@ export interface OrderFormValues {
   readonly ownerId?: string | undefined;
   readonly contactId?: string | undefined;
   readonly dealId?: string | undefined;
-  readonly currency: string;
+  /** Shown, never sent: the API fills in the organisation's currency on create. */
+  readonly currency?: string | undefined;
   readonly discountTotal?: string | undefined;
   readonly taxTotal?: string | undefined;
   readonly notes?: string | undefined;

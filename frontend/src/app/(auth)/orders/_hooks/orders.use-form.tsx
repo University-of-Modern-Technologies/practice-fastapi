@@ -10,7 +10,7 @@ import {
 } from '@/app/(auth)/contacts/contacts.queries';
 import { dealLabel, useDealOptions, useResolvedDeal } from '@/app/(auth)/deals/deals.queries';
 import { useResolvedUser, useUserOptions, userLabel } from '@/app/(auth)/users/users.queries';
-import { DEFAULT_CURRENCY, Money } from '@/lib/money';
+import { Money } from '@/lib/money';
 import { isOrderEditable } from '@/shared/constants';
 import { useHasPermission, useMutationFeedback, useRecordForm } from '@/shared/hooks';
 import { useCreateOrder, useUpdateOrder } from '../orders.queries';
@@ -24,7 +24,6 @@ import {
 } from '../orders.types';
 import {
   orderAmountSchema,
-  orderCurrencySchema,
   orderNotesSchema,
   orderReferenceSchema,
   type OrderFormValues,
@@ -64,9 +63,9 @@ interface UseOrderFormResult {
 const asText = (value: string | undefined): string => (value ?? '').trim();
 
 /** An empty amount means «unchanged zero», not a request to send an empty string. */
-const toAmount = (value: string | undefined, currency: string): string | undefined => {
+const toAmount = (value: string | undefined): string | undefined => {
   const trimmed = asText(value);
-  return trimmed === '' ? undefined : Money.fromInput(trimmed, currency).toWire();
+  return trimmed === '' ? undefined : Money.fromInput(trimmed).toWire();
 };
 
 /** Shown instead of a picker the caller's role is not allowed to fill. */
@@ -146,7 +145,7 @@ export const useOrderForm = ({
 
   // Read once, at mount; every later copy reaches the fields through the hook.
   const initialValues = useMemo<Partial<OrderFormValues>>(
-    () => (base ? toOrderValues(base) : { currency: DEFAULT_CURRENCY }),
+    () => (base ? toOrderValues(base) : {}),
     [base],
   );
 
@@ -174,7 +173,8 @@ export const useOrderForm = ({
     void form
       .validateFields()
       .then((values) => {
-        const currency = values.currency.trim().toUpperCase();
+        // No currency on either route: the organisation keeps its books in one,
+        // and the API fills it in on create. It is shown, not edited.
         const notes = asText(values.notes);
 
         if (base) {
@@ -189,9 +189,8 @@ export const useOrderForm = ({
             // value is unchanged, so it is left out rather than echoed back.
             ...(canEditMoney
               ? {
-                  currency,
-                  discountTotal: toAmount(values.discountTotal, currency) ?? '0.00',
-                  taxTotal: toAmount(values.taxTotal, currency) ?? '0.00',
+                  discountTotal: toAmount(values.discountTotal) ?? '0.00',
+                  taxTotal: toAmount(values.taxTotal) ?? '0.00',
                 }
               : {}),
           };
@@ -203,14 +202,13 @@ export const useOrderForm = ({
           return;
         }
 
-        const discountTotal = toAmount(values.discountTotal, currency);
-        const taxTotal = toAmount(values.taxTotal, currency);
+        const discountTotal = toAmount(values.discountTotal);
+        const taxTotal = toAmount(values.taxTotal);
         const ownerId = asText(values.ownerId);
         const contactId = asText(values.contactId);
         const dealId = asText(values.dealId);
 
         const input: CreateOrderInput = {
-          currency,
           ...(ownerId === '' ? {} : { ownerId }),
           ...(contactId === '' ? {} : { contactId }),
           ...(dealId === '' ? {} : { dealId }),
@@ -302,10 +300,9 @@ export const useOrderForm = ({
           <Form.Item
             name="currency"
             label="Валюта"
-            rules={[zodRule(orderCurrencySchema)]}
-            extra={canEditMoney ? undefined : 'Змінюється лише у чернетці'}
+            extra={order ? undefined : 'Валюта організації, задається в налаштуваннях'}
           >
-            <Input maxLength={3} disabled={!canEditMoney} placeholder={DEFAULT_CURRENCY} />
+            <Input disabled placeholder="Валюта організації" />
           </Form.Item>
         </Col>
 

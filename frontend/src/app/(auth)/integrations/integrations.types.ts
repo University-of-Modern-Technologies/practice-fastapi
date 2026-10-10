@@ -1,4 +1,4 @@
-import type { CircuitState, ShipmentStatus } from '@/shared/constants';
+import type { CircuitState, OrderStatus, ShipmentStatus } from '@/shared/constants';
 import type { CurrencyCode, Id, IsoDateTime, MoneyWire } from '@/types/domain';
 
 /**
@@ -91,4 +91,43 @@ export const DELIVERY_ERROR_MESSAGES: Readonly<Record<string, string>> = {
   [DELIVERY_ERROR.unavailable]: 'Служба доставки тимчасово недоступна',
   [DELIVERY_ERROR.rejected]: 'Служба доставки відхилила запит — перевірте адресу й габарити',
   [DELIVERY_ERROR.invalidResponse]: 'Служба доставки повернула неочікувану відповідь',
+};
+
+/**
+ * The only order statuses a parcel is quoted or booked for. Before
+ * confirmation nothing is reserved to ship, and a fulfilled or cancelled order
+ * has nothing left to send.
+ */
+export const SHIPPABLE_ORDER_STATUSES = [
+  'CONFIRMED',
+  'PAID',
+] as const satisfies readonly OrderStatus[];
+
+/**
+ * The two refusals about the order rather than about the carrier. Both are
+ * checked before the carrier is asked anything, and both belong on the order
+ * field: the operator has one picker to change.
+ *
+ * `ORDER_NOT_FOUND` also covers an order outside the caller's scope — the API
+ * does not tell the two apart, so neither does the wording.
+ */
+export const SHIPMENT_ORDER_ERROR = {
+  notFound: 'ORDER_NOT_FOUND',
+  notShippable: 'ORDER_NOT_SHIPPABLE',
+} as const;
+
+/** `details` of `ORDER_NOT_SHIPPABLE`: where the order is, and where it would have to be. */
+export interface OrderNotShippableDetails {
+  readonly status: string;
+  readonly allowed: readonly string[];
+}
+
+export const asNotShippableDetails = (details: unknown): OrderNotShippableDetails | null => {
+  if (typeof details !== 'object' || details === null) return null;
+  const { status, allowed } = details as Partial<OrderNotShippableDetails>;
+  if (typeof status !== 'string' || !Array.isArray(allowed)) return null;
+  return {
+    status,
+    allowed: allowed.filter((value): value is string => typeof value === 'string'),
+  };
 };

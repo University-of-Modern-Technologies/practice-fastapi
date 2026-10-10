@@ -89,9 +89,9 @@ describe('applyServerErrors', () => {
     expect(applied).toHaveBeenCalledWith(true);
   });
 
-  // The Node base sends zod's `flattenError`: the message has a colon but no
-  // field path, and splitting it there would invent a field called "Too small".
-  it('не вигадує поле з повідомлення Node-бази, де шляху немає', () => {
+  // A message can have a colon and still name no field: splitting it there
+  // would invent a field called "Too small".
+  it('не вигадує поле з повідомлення, де шляху немає', () => {
     save(bodyErrors('Too small: expected string to have >=2 characters'));
 
     expect(applied).toHaveBeenCalledWith(false);

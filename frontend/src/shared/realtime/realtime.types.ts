@@ -23,6 +23,19 @@ export const CLOSE_CODE_ABNORMAL = 1006;
 /** Used by the client itself when it tears a socket down on purpose. */
 export const CLOSE_CODE_NORMAL = 1000;
 
+/**
+ * The server ends a live connection whose session can no longer vouch for it.
+ * The code is the application's own (4000–4999); the reason says which of two
+ * things happened, and the two call for opposite responses.
+ */
+export const CLOSE_CODE_SESSION_ENDED = 4001;
+
+/** The access token the socket was opened with has run out; the session itself is fine. */
+export const CLOSE_REASON_TOKEN_EXPIRED = 'Access token expired';
+
+/** Sign-out, a blocked account or a revoked session: renewing would not help. */
+export const CLOSE_REASON_SESSION_ENDED = 'Session ended';
+
 /** Hard cap the gateway puts on a single inbound frame. */
 export const MAX_INBOUND_FRAME_BYTES = 8 * 1024;
 
@@ -73,7 +86,10 @@ export type RealtimeStatus =
   | 'open'
   /** Waiting out the backoff before the next attempt. */
   | 'reconnecting'
-  /** The handshake was refused and renewing the session did not help. */
+  /**
+   * The handshake was refused and renewing the session did not help, or the
+   * server closed the socket because the session ended.
+   */
   | 'unauthorized';
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>

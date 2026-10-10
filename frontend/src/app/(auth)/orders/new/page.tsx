@@ -43,7 +43,11 @@ export default function NewOrderPage() {
   });
 
   const { form } = formProps;
-  const currency = (Form.useWatch('currency', form) ?? DEFAULT_CURRENCY).trim().toUpperCase();
+  // The order takes the organisation's currency, which the client does not
+  // read; the catalogue is kept in the same one, so the first staged product
+  // tells the preview what to print. A product in another currency is flagged
+  // in the dialog and refused by the API on create.
+  const currency = staged[0]?.product.currency ?? DEFAULT_CURRENCY;
   const discount = toMoney(Form.useWatch('discountTotal', form), currency);
   const tax = toMoney(Form.useWatch('taxTotal', form), currency);
 
@@ -111,22 +115,25 @@ export default function NewOrderPage() {
           emptyAction={addButton}
         />
 
-        <div className="mt-4">
-          <OrderTotals
-            isPreview
-            subtotal={subtotal.toWire()}
-            discountTotal={discount.toWire()}
-            taxTotal={tax.toWire()}
-            total={total.toWire()}
-            currency={currency}
-          />
-        </div>
+        {/* Totals of nothing would print a currency the order may not have. */}
+        {staged.length > 0 ? (
+          <div className="mt-4">
+            <OrderTotals
+              isPreview
+              subtotal={subtotal.toWire()}
+              discountTotal={discount.toWire()}
+              taxTotal={tax.toWire()}
+              total={total.toWire()}
+              currency={currency}
+            />
+          </div>
+        ) : null}
       </Card>
 
       <AddItemModal
         open={isAdding}
         onClose={() => setIsAdding(false)}
-        currency={currency}
+        {...(staged.length > 0 ? { currency } : {})}
         onStage={(item) =>
           setStaged((current) =>
             // The API refuses a product twice on one order, so the staged list

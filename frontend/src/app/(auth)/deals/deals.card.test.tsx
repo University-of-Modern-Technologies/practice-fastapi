@@ -176,3 +176,62 @@ describe('Картка угоди — збереження після переч
     });
   });
 });
+
+describe('Картка угоди — закрита угода', () => {
+  it('показує виграну угоду лише для перегляду, без кнопки збереження', async () => {
+    await openCard('WON');
+
+    expect(
+      screen.getByText('Угоду закрито — дані доступні лише для перегляду'),
+    ).toBeInTheDocument();
+    expect(screen.getByLabelText('Назва')).toBeDisabled();
+    expect(screen.queryByRole('button', { name: 'Зберегти' })).not.toBeInTheDocument();
+  });
+
+  it('так само показує втрачену угоду, але видалити її ще можна', async () => {
+    showCard('LOST', ['deals:read', 'deals:write', 'deals:delete']);
+    await screen.findByText('Постачання серверів');
+
+    expect(screen.getByLabelText('Назва')).toBeDisabled();
+    expect(screen.getByRole('button', { name: /Видалити/ })).toBeInTheDocument();
+  });
+
+  it('відкриту угоду дає правити, як і раніше', async () => {
+    await openCard('PROPOSAL');
+
+    expect(screen.getByLabelText('Назва')).not.toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Зберегти' })).toBeInTheDocument();
+  });
+
+  // Somebody closed the deal between the read and the save. Re-saving cannot
+  // help, so the page names the reason and re-reads instead of offering it.
+  it('на гонку з закриттям пояснює причину й перечитує угоду', async () => {
+    vi.mocked(http.patch).mockReset();
+    vi.mocked(http.patch).mockRejectedValueOnce(conflict('DEAL_CLOSED', { stage: 'WON' }));
+    await openCard('PROPOSAL');
+
+    fireEvent.change(screen.getByLabelText('Назва'), { target: { value: 'Нова назва' } });
+    vi.mocked(http.get).mockResolvedValue({ ...deal('WON'), probability: 100, version: 4 });
+    fireEvent.click(screen.getByRole('button', { name: 'Зберегти' }));
+
+    expect(
+      await screen.findByText('Угоду вже закрито — її дані більше не змінюються'),
+    ).toBeInTheDocument();
+    expect(screen.queryByText('Запис змінив інший користувач')).not.toBeInTheDocument();
+    expect(
+      await screen.findByText('Угоду закрито — дані доступні лише для перегляду'),
+    ).toBeInTheDocument();
+  });
+
+  it('не надсилає валюту: її визначає організація', async () => {
+    vi.mocked(http.patch).mockReset();
+    vi.mocked(http.patch).mockResolvedValueOnce({ ...deal('LEAD'), version: 4 });
+    await openCard('LEAD');
+
+    expect(screen.getByLabelText('Валюта')).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: 'Зберегти' }));
+
+    await waitFor(() => expect(http.patch).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(http.patch).mock.calls[0]?.[1]).not.toHaveProperty('currency');
+  });
+});

@@ -99,6 +99,12 @@ export interface BankTransaction extends Timestamps, Versioned {
   readonly matchedOrderId: Id | null;
   readonly matchedAt: IsoDateTime | null;
   readonly matchedById: Id | null;
+  /**
+   * True once a person took the payment out of a match: the batch
+   * reconciliation skips it from then on. Any match — by hand or by picking a
+   * candidate — sets it back to false.
+   */
+  readonly autoMatchDisabled: boolean;
 }
 
 /**
@@ -294,7 +300,22 @@ export const FINANCE_ERROR = {
   conflict: 'TRANSACTION_CONCURRENT_MODIFICATION',
   duplicateStatement: 'STATEMENT_DUPLICATE_EXTERNAL_ID',
   providerUnavailable: 'BANK_PROVIDER_UNAVAILABLE',
+  orderAlreadyMatched: 'ORDER_ALREADY_MATCHED',
+  currencyMismatch: 'CURRENCY_MISMATCH',
+  notIncoming: 'TRANSACTION_NOT_INCOMING',
 } as const;
+
+/**
+ * The refusals the domain makes about the request itself. They share the 409
+ * with a lost race, but the record on screen is current, so re-reading it
+ * cannot help — each gets its own sentence instead.
+ */
+export const FINANCE_REFUSALS: ReadonlySet<string> = new Set([
+  FINANCE_ERROR.alreadyMatched,
+  FINANCE_ERROR.notMatched,
+  FINANCE_ERROR.orderAlreadyMatched,
+  FINANCE_ERROR.notIncoming,
+]);
 
 /**
  * A refused write names a condition the operator can act on, so each code gets
@@ -312,6 +333,10 @@ export const FINANCE_ERROR_MESSAGES: Readonly<Record<string, string>> = {
   [FINANCE_ERROR.orderNotFound]: 'Такого замовлення вже немає',
   [FINANCE_ERROR.amountMismatch]:
     'Сума транзакції не збігається з підсумком замовлення — зведення відхилено',
+  [FINANCE_ERROR.orderAlreadyMatched]: 'Це замовлення вже зведено з іншим платежем',
+  [FINANCE_ERROR.currencyMismatch]:
+    'Валюта платежу не збігається з валютою замовлення — зведення відхилено',
+  [FINANCE_ERROR.notIncoming]: 'Списання не зводять із замовленням — лише надходження',
   [FINANCE_ERROR.duplicateStatement]: 'Таку виписку вже імпортовано',
   [FINANCE_ERROR.providerUnavailable]: 'Банк недоступний — показано те, що вже імпортовано раніше',
 };

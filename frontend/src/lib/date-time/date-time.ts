@@ -40,6 +40,14 @@ const parse = (value: string): Dayjs | null => {
 };
 
 export class DateTime {
+  /**
+   * Whether the value is a bare calendar date — `"2026-08-12"`, no time and no
+   * zone. Such a value names a day, not a moment, and has no clock time to show.
+   */
+  static isCalendarDate(value: string | null | undefined): boolean {
+    return typeof value === 'string' && WIRE_DATE_PATTERN.test(value);
+  }
+
   /** `"2026-08-12T15:23:45.123Z"` or `"2026-08-12"` → `"12.08.2026"`. */
   static toDate(value: string | null | undefined): string {
     if (!value) return EMPTY_VALUE;

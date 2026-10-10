@@ -4,7 +4,7 @@ import { Col, DatePicker, Form, Input, InputNumber, Row, Select, type FormInstan
 import { useCallback, useMemo, type ReactNode } from 'react';
 import { ConflictAlert, ReferenceSelect, applyServerErrors, zodRule } from '@/components';
 import { DateTime } from '@/lib/date-time';
-import { DEFAULT_CURRENCY, Money } from '@/lib/money';
+import { Money } from '@/lib/money';
 import { ApiError } from '@/shared/api';
 import { DEAL_STAGE_PROBABILITY } from '@/shared/constants';
 import { useHasPermission, useMutationFeedback, useRecordForm } from '@/shared/hooks';
@@ -14,11 +14,17 @@ import {
   useResolvedContact,
 } from '../../contacts/contacts.queries';
 import { useCreateDeal, useUpdateDeal } from '../deals.queries';
-import { DEAL_ERROR, type CreateDealInput, type Deal, type UpdateDealInput } from '../deals.types';
+import {
+  DEAL_ERROR,
+  DEAL_ERROR_MESSAGES,
+  isDealClosed,
+  type CreateDealInput,
+  type Deal,
+  type UpdateDealInput,
+} from '../deals.types';
 import {
   CERTAIN_PROBABILITY,
   dealAmountSchema,
-  dealCurrencySchema,
   dealProbabilitySchema,
   dealTitleSchema,
   type DealFormValues,
@@ -40,6 +46,7 @@ interface UseDealFormResult {
     readonly initialValues: Partial<DealFormValues>;
     readonly layout: 'vertical';
     readonly requiredMark: boolean;
+    readonly disabled: boolean;
     readonly onValuesChange: () => void;
     readonly onFinish: () => void;
   };
@@ -47,6 +54,8 @@ interface UseDealFormResult {
   readonly conflictAlert: ReactNode;
   readonly submit: () => void;
   readonly isSaving: boolean;
+  /** A won or lost deal: the form only shows it, and offers no save. */
+  readonly isReadOnly: boolean;
   /** Routes a failed write to the field it belongs to; also used by the delete action. */
   readonly handleError: (error: unknown) => void;
 }
@@ -78,7 +87,7 @@ export const useDealForm = ({
   isReloading = false,
 }: UseDealFormOptions): UseDealFormResult => {
   const [form] = Form.useForm<DealFormValues>();
-  const { reportSuccess, reportFailure } = useMutationFeedback();
+  const { reportSuccess, reportFailureWith } = useMutationFeedback();
   // `base` is the copy on screen: its values are in the fields and its version
   // is the one a save sends, even after a fresher copy reached the cache.
   const { base, markDirty, adopt, hasConflict, handleConflict, reload } = useRecordForm({
@@ -94,6 +103,15 @@ export const useDealForm = ({
   // Reading contacts is a separate permission: without it the picker is not
   // mounted at all, so the form never fires a request it may not make.
   const canReadContacts = useHasPermission('contacts', 'read');
+
+  /**
+   * A closed deal is a record of what happened: the API refuses to edit it, so
+   * the form does not pretend otherwise. Both copies count — the one on screen
+   * and the one the cache holds after a transition on this very page.
+   */
+  const isReadOnly =
+    (base !== undefined && isDealClosed(base.stage)) ||
+    (deal !== undefined && isDealClosed(deal.stage));
 
   /**
    * A terminal stage fixes the odds, and a PATCH is validated against the stage
@@ -114,12 +132,21 @@ export const useDealForm = ({
 
   // Read once, at mount; every later copy reaches the fields through the hook.
   const initialValues = useMemo<Partial<DealFormValues>>(
-    () => (base ? toDealValues(base) : { currency: DEFAULT_CURRENCY, probability: 10 }),
+    () => (base ? toDealValues(base) : { probability: 10 }),
     [base],
   );
 
   const handleError = useCallback(
     (error: unknown) => {
+      // Somebody closed the deal while this form was open. It is a 409, but not
+      // a lost race to be resolved by saving again: the edits cannot be kept,
+      // so the page says why and shows the closed deal as it now stands.
+      if (error instanceof ApiError && error.code === DEAL_ERROR.closed) {
+        reportFailureWith(DEAL_ERROR_MESSAGES)(error);
+        reload();
+        return;
+      }
+
       if (handleConflict(error)) return;
 
       // The refused odds belong on the field that caused them: the user has one
@@ -132,9 +159,9 @@ export const useDealForm = ({
       }
 
       if (applyServerErrors(form, error)) return;
-      reportFailure(error);
+      reportFailureWith(DEAL_ERROR_MESSAGES)(error);
     },
-    [form, handleConflict, reportFailure],
+    [form, handleConflict, reload, reportFailureWith],
   );
 
   const handleSaved = useCallback(
@@ -147,11 +174,14 @@ export const useDealForm = ({
   );
 
   const submit = useCallback(() => {
+    if (isReadOnly) return;
     void form
       .validateFields()
       .then((values) => {
-        const currency = values.currency.trim().toUpperCase();
-        const amount = Money.fromInput(values.amount, currency).toWire();
+        // No currency on either route: the organisation keeps its books in one,
+        // the API fills it in on create, and an update that echoed it back would
+        // be refused for an older deal kept in another.
+        const amount = Money.fromInput(values.amount).toWire();
         const expectedCloseDate = DateTime.toWireDate(values.expectedCloseDate);
 
         if (base) {
@@ -161,7 +191,6 @@ export const useDealForm = ({
             title: values.title.trim(),
             contactId: values.contactId ?? null,
             amount,
-            currency,
             // A locked field carries the value the stage already dictates,
             // so sending it back would only be noise.
             ...(fixedProbability === null ? { probability: values.probability } : {}),
@@ -178,7 +207,6 @@ export const useDealForm = ({
         const input: CreateDealInput = {
           title: values.title.trim(),
           amount,
-          currency,
           probability: values.probability,
           ...(values.contactId ? { contactId: values.contactId } : {}),
           ...(expectedCloseDate ? { expectedCloseDate } : {}),
@@ -192,7 +220,7 @@ export const useDealForm = ({
       // A form that failed its own rules has already marked the offending
       // fields; there is nothing further to report.
       .catch(() => undefined);
-  }, [base, create, fixedProbability, form, handleError, handleSaved, update]);
+  }, [base, create, fixedProbability, form, handleError, handleSaved, isReadOnly, update]);
 
   const fields = (
     <>
@@ -231,8 +259,12 @@ export const useDealForm = ({
         </Col>
 
         <Col xs={12} md={8}>
-          <Form.Item name="currency" label="Валюта" rules={[zodRule(dealCurrencySchema)]}>
-            <Input maxLength={3} placeholder={DEFAULT_CURRENCY} />
+          <Form.Item
+            name="currency"
+            label="Валюта"
+            extra={base ? undefined : 'Валюта організації, задається в налаштуваннях'}
+          >
+            <Input disabled placeholder="Валюта організації" />
           </Form.Item>
         </Col>
 
@@ -275,6 +307,7 @@ export const useDealForm = ({
       initialValues,
       layout: 'vertical',
       requiredMark: false,
+      disabled: isReadOnly,
       onValuesChange: markDirty,
       onFinish: submit,
     },
@@ -282,6 +315,7 @@ export const useDealForm = ({
     conflictAlert: <ConflictAlert open={hasConflict} onReload={reload} isReloading={isReloading} />,
     submit,
     isSaving: create.isPending || update.isPending,
+    isReadOnly,
     handleError,
   };
 };

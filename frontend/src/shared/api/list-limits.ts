@@ -9,6 +9,13 @@
 export const MAX_PAGE_SIZE = 100;
 
 /**
+ * Every paged endpoint: `page` is `1…100` as well. Deep paging is not how a
+ * list is read — past the hundredth page the way forward is a narrower filter,
+ * and the API refuses the request rather than scanning that far.
+ */
+export const MAX_PAGE = 100;
+
+/**
  * `search` on most lists is `1…160` characters. Two endpoints are narrower and
  * name their own bound: orders (64) and warehouses (120).
  */
@@ -39,13 +46,20 @@ export const clampPageSize = (value: number | undefined): number | undefined => 
   return Math.min(Math.max(Math.trunc(value), 1), MAX_PAGE_SIZE);
 };
 
+/** A page number inside `1…MAX_PAGE`; an absent one stays absent. */
+export const clampPage = (value: number | undefined): number | undefined => {
+  if (value === undefined || !Number.isFinite(value)) return undefined;
+  return Math.min(Math.max(Math.trunc(value), 1), MAX_PAGE);
+};
+
 interface LimitedQuery {
   readonly search?: string | undefined;
+  readonly page?: number | undefined;
   readonly pageSize?: number | undefined;
 }
 
 /**
- * Applies both bounds to a list query on its way out. Called in each service's
+ * Applies the bounds to a list query on its way out. Called in each service's
  * `list`, the one place every caller passes through — the page reading its
  * query string and the reference picker passing whatever was typed alike.
  */
@@ -54,10 +68,12 @@ export const withListLimits = <Q extends LimitedQuery>(
   searchMaxLength: number = SEARCH_MAX_LENGTH,
 ): Q => {
   const search = clampSearch(query.search, searchMaxLength);
+  const page = clampPage(query.page);
   const pageSize = clampPageSize(query.pageSize);
   return {
     ...query,
     ...(search === undefined ? {} : { search }),
+    ...(page === undefined ? {} : { page }),
     ...(pageSize === undefined ? {} : { pageSize }),
   };
 };

@@ -9,24 +9,26 @@ import {
   DetailsItem,
   FormCard,
   MoneyValue,
-  ReferenceSelect,
   applyServerErrors,
   zodRule,
 } from '@/components';
-import { orderLabel, useOrderOptions, useResolvedOrder } from '@/app/(auth)/orders/orders.queries';
 import { formatCount } from '@/lib/number';
 import { useHasPermission, useMutationFeedback } from '@/shared/hooks';
 import { useCreateQuote } from '../integrations.queries';
-import { isModuleUnavailable, toQuoteRequest } from '../integrations.service';
+import {
+  describeShipmentOrderError,
+  isModuleUnavailable,
+  toQuoteRequest,
+} from '../integrations.service';
 import { DELIVERY_ERROR_MESSAGES, type QuoteResult } from '../integrations.types';
 import {
   DEFAULT_PARCEL,
   declaredValueSchema,
   isQuoteExpired,
-  orderIdSchema,
   type QuoteFormValues,
 } from '../integrations.validation';
 import { AddressFields, ParcelFields } from './address-fields';
+import { ShippableOrderField } from './order-field';
 
 interface QuoteFormProps {
   /** Hands the fresh quote to the shipment form, which is created against it. */
@@ -47,8 +49,9 @@ export function QuoteForm({ onQuoted, onUnavailable }: QuoteFormProps) {
   const { reportSuccess, reportFailureWith } = useMutationFeedback();
   const createQuote = useCreateQuote();
 
-  // The picker reads the orders list, which is a permission of its own: without
-  // it the identifier is typed by hand rather than requested and refused.
+  // The picker reads the orders list, which is a permission of its own — and
+  // the API checks the order under the same permission, so without it there is
+  // nothing this form could quote.
   const canReadOrders = useHasPermission('orders', 'read');
 
   const reportFailure = reportFailureWith(DELIVERY_ERROR_MESSAGES);
@@ -62,6 +65,7 @@ export function QuoteForm({ onQuoted, onUnavailable }: QuoteFormProps) {
   }, [result]);
 
   const submit = useCallback(() => {
+    if (!canReadOrders) return;
     void form
       .validateFields()
       .then((values) => {
@@ -80,6 +84,11 @@ export function QuoteForm({ onQuoted, onUnavailable }: QuoteFormProps) {
               onUnavailable();
               return;
             }
+            const orderError = describeShipmentOrderError(error);
+            if (orderError !== null) {
+              form.setFields([{ name: 'orderId', errors: [orderError] }]);
+              return;
+            }
             if (applyServerErrors(form, error)) return;
             reportFailure(error);
           },
@@ -87,7 +96,7 @@ export function QuoteForm({ onQuoted, onUnavailable }: QuoteFormProps) {
       })
       // A form that failed its own rules has already marked the fields.
       .catch(() => undefined);
-  }, [createQuote, form, onQuoted, onUnavailable, reportFailure, reportSuccess]);
+  }, [canReadOrders, createQuote, form, onQuoted, onUnavailable, reportFailure, reportSuccess]);
 
   const expired = result !== null && isQuoteExpired(result.quote, now);
 
@@ -95,7 +104,7 @@ export function QuoteForm({ onQuoted, onUnavailable }: QuoteFormProps) {
     <FormCard
       title="Розрахунок доставки"
       isSaving={createQuote.isPending}
-      onSubmit={submit}
+      {...(canReadOrders ? { onSubmit: submit } : {})}
       submitLabel="Розрахувати"
     >
       <Form<QuoteFormValues>
@@ -105,25 +114,7 @@ export function QuoteForm({ onQuoted, onUnavailable }: QuoteFormProps) {
         initialValues={INITIAL_VALUES}
         onFinish={submit}
       >
-        <Form.Item
-          name="orderId"
-          label="Замовлення"
-          rules={[zodRule(orderIdSchema)]}
-          extra={canReadOrders ? undefined : 'Ваша роль не дає доступу до списку замовлень'}
-        >
-          {canReadOrders ? (
-            <ReferenceSelect
-              useOptions={useOrderOptions}
-              useResolved={useResolvedOrder}
-              getLabel={orderLabel}
-              placeholder="Почніть вводити номер замовлення"
-              notFoundText="Замовлень не знайдено"
-              allowClear={false}
-            />
-          ) : (
-            <Input placeholder="Ідентифікатор замовлення" maxLength={64} />
-          )}
-        </Form.Item>
+        <ShippableOrderField canReadOrders={canReadOrders} />
 
         <AddressFields name="origin" legend="Звідки" hint="Склад або точка відправлення" />
         <Divider />

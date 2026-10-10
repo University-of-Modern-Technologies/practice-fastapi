@@ -3,6 +3,8 @@ import {
   CLOSE_CODE_ABNORMAL,
   CLOSE_CODE_NORMAL,
   CLOSE_CODE_POLICY_VIOLATION,
+  CLOSE_CODE_SESSION_ENDED,
+  CLOSE_REASON_SESSION_ENDED,
   parseDomainEvent,
   parseOutboundFrame,
   REALTIME_ERROR_CODES,
@@ -39,7 +41,7 @@ export interface RealtimeSocketLike {
   close(code?: number, reason?: string): void;
   onopen: (() => void) | null;
   onmessage: ((event: { readonly data: unknown }) => void) | null;
-  onclose: ((event: { readonly code: number }) => void) | null;
+  onclose: ((event: { readonly code: number; readonly reason?: string }) => void) | null;
   onerror: (() => void) | null;
 }
 
@@ -262,7 +264,31 @@ export const createRealtimeClient = (options: RealtimeClientOptions): RealtimeCl
     }
   };
 
-  const handleClose = (code: number, wasOpened: boolean): void => {
+  /**
+   * Asks for a fresh token once and reconnects straight away with it. Null
+   * means the session is gone; a rejection means the API could not be reached,
+   * which says nothing about the session, so the client keeps backing off.
+   */
+  const renewAndReconnect = (): void => {
+    renewalTried = true;
+    setStatus('reconnecting');
+    options.renewSession().then(
+      (token) => {
+        if (!started) return;
+        if (!token) {
+          setStatus('unauthorized');
+          return;
+        }
+        attempt = 0;
+        connect();
+      },
+      () => {
+        if (started) scheduleReconnect();
+      },
+    );
+  };
+
+  const handleClose = (code: number, reason: string, wasOpened: boolean): void => {
     stopHeartbeat();
     socket = null;
     confirmed.clear();
@@ -270,6 +296,22 @@ export const createRealtimeClient = (options: RealtimeClientOptions): RealtimeCl
     refused.clear();
     if (!started) {
       setStatus('idle');
+      return;
+    }
+
+    // The server's own verdict on a live connection. A session that ended —
+    // sign-out, a blocked account, a revoked session — is final, and retrying
+    // would only be refused again. An expired token is the opposite: the
+    // session is fine and only the token has to be replaced, so the socket is
+    // reopened at once rather than after the usual pause. Any other reason
+    // under this code goes through the same renewal, which decides between
+    // the two by itself.
+    if (code === CLOSE_CODE_SESSION_ENDED) {
+      if (reason === CLOSE_REASON_SESSION_ENDED) {
+        setStatus('unauthorized');
+        return;
+      }
+      renewAndReconnect();
       return;
     }
 
@@ -290,24 +332,7 @@ export const createRealtimeClient = (options: RealtimeClientOptions): RealtimeCl
         else scheduleReconnect();
         return;
       }
-      renewalTried = true;
-      setStatus('reconnecting');
-      options.renewSession().then(
-        (token) => {
-          if (!started) return;
-          if (!token) {
-            setStatus('unauthorized');
-            return;
-          }
-          attempt = 0;
-          connect();
-        },
-        () => {
-          // The renewal could not reach the API either: an outage rather than
-          // a refusal, and the session itself is still there.
-          if (started) scheduleReconnect();
-        },
-      );
+      renewAndReconnect();
       return;
     }
 
@@ -346,7 +371,7 @@ export const createRealtimeClient = (options: RealtimeClientOptions): RealtimeCl
     opened.onclose = (event) => {
       if (socket !== opened) return;
       detach(opened);
-      handleClose(event.code, wasOpened);
+      handleClose(event.code, event.reason ?? '', wasOpened);
     };
     opened.onerror = () => {
       // `error` is always followed by `close`; the close handler owns recovery.

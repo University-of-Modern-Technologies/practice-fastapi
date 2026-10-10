@@ -40,10 +40,9 @@ const keyOf = (path: FieldPath): string => path.join('.');
  * request with a flat list of messages; showing them as one banner leaves the
  * user hunting for which of twelve inputs the server disliked.
  *
- * The two backends word that list differently (see `ValidationDetails`): one
- * writes the field path in front of each message, the other sends the bare
- * messages. Only the first kind can be placed; the second is left, untouched,
- * to the generic notification.
+ * Each message names its field path in front of it (see `ValidationDetails`);
+ * one that names none, or names a field the form does not have, is left,
+ * untouched, to the generic notification.
  *
  * Returns true when at least one message found a home — the caller then skips
  * the generic notification.

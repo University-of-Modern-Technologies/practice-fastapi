@@ -14,6 +14,7 @@ import {
   type BankTransactionDetail,
 } from '../finance.types';
 import { ManualMatchModal } from './manual-match-modal';
+import { AutoMatchDisabledTag } from './auto-match-tag';
 import { MatchCandidates } from './match-candidates';
 
 interface MatchPanelProps {
@@ -80,13 +81,17 @@ export function MatchPanel({ transaction, onConflict }: MatchPanelProps) {
     });
   };
 
-  const manualMatchAction = (
+  // Only incoming money is ever tied to an order; the API refuses the rest
+  // with `TRANSACTION_NOT_INCOMING`, so an outgoing payment is not offered it.
+  const isIncoming = transaction.direction === 'CREDIT';
+
+  const manualMatchAction = isIncoming ? (
     <PermissionGate resource="finance" action="write" fallback={null}>
       <Button icon={<Link2 size={16} />} onClick={() => setIsPickingOther(true)}>
         Звести вручну
       </Button>
     </PermissionGate>
-  );
+  ) : null;
 
   const modal = (
     <ManualMatchModal
@@ -200,6 +205,12 @@ export function MatchPanel({ transaction, onConflict }: MatchPanelProps) {
           Цей платіж не зведено із замовленням. Це робочий стан, а не помилка: виписка банку й книга
           замовлень — два незалежні записи, і збігаються вони не завжди.
         </Typography.Paragraph>
+        {transaction.autoMatchDisabled ? (
+          <Typography.Paragraph className="mb-2">
+            <AutoMatchDisabledTag /> Зведення зняла людина, тож автоматичне зведення цей платіж
+            більше не чіпає. Звести його можна лише вручну.
+          </Typography.Paragraph>
+        ) : null}
         <Typography.Text type="secondary">
           {canWrite
             ? 'Якщо ви знаєте, якого замовлення стосується платіж, зведіть його вручну.'
