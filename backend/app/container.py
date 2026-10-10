@@ -9,6 +9,7 @@ WebSocket gateway exists.
 from __future__ import annotations
 
 import uuid
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any, cast
 
@@ -25,6 +26,8 @@ from app.cache import (
 )
 from app.core.logging import get_logger
 from app.core.settings import Settings
+from app.db.enums import PermissionScope
+from app.db.models.order import Order
 from app.db.models.warehouse import Warehouse
 from app.db.session import Database
 from app.events import (
@@ -47,8 +50,9 @@ from app.modules.deals import create_deals_router
 from app.modules.finance import create_finance_router
 from app.modules.helpdesk import create_helpdesk_router
 from app.modules.integrations import DeliveryClient, create_integrations_router
+from app.modules.integrations.types import ShipmentOrder
 from app.modules.orders import create_orders_router
-from app.modules.orders.stock import OrdersStockPort
+from app.modules.orders.stock import OrderDefaults, OrdersStockPort
 from app.modules.products import create_products_router
 from app.modules.rbac.router import create_rbac_router
 from app.modules.rbac.service import RbacService
@@ -68,6 +72,10 @@ from app.realtime.topics import (
 from app.realtime.types import AuthContextLike
 
 logger = get_logger("container")
+
+#: Settings the order, deal and product services are created with.
+ORGANIZATION_CURRENCY_SETTING = "organization.defaultCurrency"
+ORDER_NUMBER_PREFIX_SETTING = "orders.numberPrefix"
 
 API_PREFIX = "/api/v1"
 
@@ -165,6 +173,10 @@ class Container:
     gateway: RealtimeGateway
     publisher: FanOutPublisher
     orders_stock: OrdersStockPort
+    resolve_organization_currency: Callable[..., Awaitable[str]]
+    find_order_for_shipment: Callable[
+        [uuid.UUID, uuid.UUID, PermissionScope], Awaitable[ShipmentOrder | None]
+    ]
     delivery_client: DeliveryClient
     ai_config: AiConfig
     ai_provider: AiProvider
@@ -239,6 +251,40 @@ def build_container(settings: Settings) -> Container:
         )
         return warehouse_id
 
+    async def read_setting(session: AsyncSession, key: str) -> str:
+        value = await SettingsService(session, cache, settings.cache_ttl_seconds).get(key)
+        return str(value)
+
+    async def resolve_organization_currency(session: AsyncSession | None = None) -> str:
+        """The organisation's single currency; orders, deals and products refuse any other.
+
+        Orders and products ask on their own session; deals ask without one.
+        """
+        if session is not None:
+            return await read_setting(session, ORGANIZATION_CURRENCY_SETTING)
+        async with database.session_factory() as own_session:
+            return await read_setting(own_session, ORGANIZATION_CURRENCY_SETTING)
+
+    async def resolve_order_defaults(session: AsyncSession) -> OrderDefaults:
+        return OrderDefaults(
+            currency=await read_setting(session, ORGANIZATION_CURRENCY_SETTING),
+            number_prefix=await read_setting(session, ORDER_NUMBER_PREFIX_SETTING),
+        )
+
+    async def find_order_for_shipment(
+        order_id: uuid.UUID, actor_id: uuid.UUID, scope: PermissionScope
+    ) -> ShipmentOrder | None:
+        """A shipment is booked only for an order the caller can see.
+
+        Which statuses can be shipped is the integration service's decision.
+        """
+        query = select(Order.status).where(Order.id == order_id, Order.deleted_at.is_(None))
+        if scope == PermissionScope.OWN:
+            query = query.where(Order.owner_id == actor_id)
+        async with database.session_factory() as session:
+            status = await session.scalar(query)
+        return None if status is None else ShipmentOrder(status=status.value)
+
     # Both adapters, and their configuration, come from the infra profile
     # decided above: the client is built once per process, not per request, so
     # the circuit breaker's failure count outlives the request that
@@ -260,7 +306,10 @@ def build_container(settings: Settings) -> Container:
         orders_stock=OrdersStockPort(
             operations=create_stock_operations(publisher),
             resolve_warehouse_id=resolve_warehouse_id,
+            resolve_order_defaults=resolve_order_defaults,
         ),
+        resolve_organization_currency=resolve_organization_currency,
+        find_order_for_shipment=find_order_for_shipment,
         delivery_client=delivery_client,
         ai_config=ai_config,
         ai_provider=ai_provider,

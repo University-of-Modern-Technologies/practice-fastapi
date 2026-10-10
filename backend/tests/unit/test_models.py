@@ -85,6 +85,7 @@ EXPECTED_COLUMNS = {
         "owner_id",
         "contact_id",
         "deal_id",
+        "warehouse_id",
         "status",
         "currency",
         "subtotal",
@@ -129,7 +130,6 @@ EXPECTED_INDEXES = {
     "bank_statements_period_start_period_end_idx",
     "bank_transactions_booked_at_idx",
     "bank_transactions_match_status_booked_at_idx",
-    "bank_transactions_matched_order_id_idx",
     "bank_transactions_statement_id_booked_at_idx",
     "calls_contact_id_idx",
     "calls_deal_id_idx",
@@ -151,6 +151,7 @@ EXPECTED_INDEXES = {
     "orders_deleted_at_idx",
     "orders_owner_id_status_deleted_at_idx",
     "orders_status_placed_at_idx",
+    "orders_warehouse_id_idx",
     "products_category_is_active_idx",
     "products_deleted_at_idx",
     "products_name_idx",
@@ -202,6 +203,30 @@ def _migration_calls(function: str) -> list[str]:
                 if arguments:
                     names.append(arguments[0])
     return names
+
+
+def _indexes_after_upgrade() -> set[str]:
+    """Indexes left once every ``upgrade`` has run in order: created minus dropped."""
+    indexes: set[str] = set()
+    for path in MIGRATION_PATHS:
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        upgrade = next(
+            node
+            for node in tree.body
+            if isinstance(node, ast.FunctionDef) and node.name == "upgrade"
+        )
+        for statement in upgrade.body:
+            call = statement.value if isinstance(statement, ast.Expr) else None
+            if not (isinstance(call, ast.Call) and isinstance(call.func, ast.Attribute)):
+                continue
+            arguments = _literal_arguments(call)
+            if not arguments:
+                continue
+            if call.func.attr == "create_index":
+                indexes.add(arguments[0])
+            elif call.func.attr == "drop_index":
+                indexes.discard(arguments[0])
+    return indexes
 
 
 def test_every_table_is_mapped() -> None:
@@ -298,7 +323,7 @@ def test_migration_creates_exactly_the_mapped_indexes() -> None:
         index.name for table in Base.metadata.tables.values() for index in table.indexes
     }
     assert metadata_indexes == EXPECTED_INDEXES
-    assert set(_migration_calls("create_index")) == EXPECTED_INDEXES
+    assert _indexes_after_upgrade() == EXPECTED_INDEXES
 
 
 def test_migration_drops_everything_it_created() -> None:

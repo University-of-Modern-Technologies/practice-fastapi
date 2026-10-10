@@ -18,7 +18,10 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from app.db.enums import PermissionScope, StockMovementType
 from app.db.models.warehouse import StockLevel, StockMovement
+from app.modules.warehouse.operations import create_stock_operations
 from app.modules.warehouse.schemas import (
+    AdjustStockRequest,
+    IssueStockRequest,
     ReceiveStockRequest,
     ReleaseStockRequest,
     ReserveStockRequest,
@@ -28,11 +31,14 @@ from app.modules.warehouse.types import (
     INSUFFICIENT_RESERVATION,
     INSUFFICIENT_STOCK,
     STOCK_CONCURRENT_MODIFICATION,
+    STOCK_ORDER_REFERENCE_FORBIDDEN,
     WarehouseAccess,
 )
 from tests.integration.conftest import create_product, create_user, create_warehouse
 
 ORDER_REFERENCE = "order"
+#: A reservation held for something other than an order, which the API may move.
+TRANSFER_REFERENCE = "transfer"
 
 #: Long enough for the second transaction to reach its blocking UPDATE.
 LOCK_WAIT_SECONDS = 0.5
@@ -57,7 +63,7 @@ async def test_a_reservation_holds_units_without_removing_them(
             warehouse_id=warehouse.id,
             product_id=product.id,
             quantity=4,
-            reference_type=ORDER_REFERENCE,
+            reference_type=TRANSFER_REFERENCE,
             reference_id=uuid.uuid4(),
         ),
     )
@@ -87,7 +93,7 @@ async def test_every_movement_is_written_to_the_ledger(db_session: AsyncSession)
             warehouse_id=warehouse.id,
             product_id=product.id,
             quantity=4,
-            reference_type=ORDER_REFERENCE,
+            reference_type=TRANSFER_REFERENCE,
             reference_id=reference_id,
         ),
     )
@@ -108,8 +114,8 @@ async def test_every_movement_is_written_to_the_ledger(db_session: AsyncSession)
         StockMovementType.RESERVATION,
     ]
     # The ledger names what the goods were moved for, so a stock row can always
-    # be read back to the order that caused it.
-    assert movements[1].reference_type == ORDER_REFERENCE
+    # be read back to whatever caused it.
+    assert movements[1].reference_type == TRANSFER_REFERENCE
     assert movements[1].reference_id == reference_id
     assert movements[1].actor_id == actor.id
 
@@ -132,7 +138,7 @@ async def test_reserving_more_than_is_available_is_refused(db_session: AsyncSess
                 warehouse_id=warehouse.id,
                 product_id=product.id,
                 quantity=6,
-                reference_type=ORDER_REFERENCE,
+                reference_type=TRANSFER_REFERENCE,
                 reference_id=uuid.uuid4(),
             ),
         )
@@ -162,7 +168,7 @@ async def test_releasing_gives_the_promise_back(db_session: AsyncSession) -> Non
             warehouse_id=warehouse.id,
             product_id=product.id,
             quantity=4,
-            reference_type=ORDER_REFERENCE,
+            reference_type=TRANSFER_REFERENCE,
             reference_id=reference_id,
         ),
     )
@@ -173,7 +179,7 @@ async def test_releasing_gives_the_promise_back(db_session: AsyncSession) -> Non
             warehouse_id=warehouse.id,
             product_id=product.id,
             quantity=4,
-            reference_type=ORDER_REFERENCE,
+            reference_type=TRANSFER_REFERENCE,
             reference_id=reference_id,
         ),
     )
@@ -188,11 +194,165 @@ async def test_releasing_gives_the_promise_back(db_session: AsyncSession) -> Non
                 warehouse_id=warehouse.id,
                 product_id=product.id,
                 quantity=1,
-                reference_type=ORDER_REFERENCE,
+                reference_type=TRANSFER_REFERENCE,
                 reference_id=reference_id,
             ),
         )
     assert getattr(failure.value, "code", None) == INSUFFICIENT_RESERVATION
+
+
+async def test_a_repeated_reservation_of_an_order_line_changes_nothing(
+    db_session: AsyncSession,
+) -> None:
+    actor = await create_user(db_session)
+    warehouse = await create_warehouse(db_session)
+    product = await create_product(db_session)
+    service = WarehouseService(db_session)
+    access = WarehouseAccess(actor_id=actor.id, scope=PermissionScope.ALL)
+    await service.receive(
+        access,
+        ReceiveStockRequest(warehouse_id=warehouse.id, product_id=product.id, quantity=10),
+    )
+    request = ReserveStockRequest(
+        warehouse_id=warehouse.id,
+        product_id=product.id,
+        quantity=4,
+        reference_type=ORDER_REFERENCE,
+        reference_id=uuid.uuid4(),
+    )
+    # The order's transitions reserve through the stock port, on their session.
+    operations = create_stock_operations()
+
+    first = await operations.reserve(db_session, access, request)
+    repeat = await operations.reserve(db_session, access, request)
+
+    assert repeat.movement is None
+    assert repeat.level == first.level
+    assert repeat.level.quantity_reserved == 4
+    reservations = (
+        (
+            await db_session.execute(
+                select(StockMovement).where(
+                    StockMovement.product_id == product.id,
+                    StockMovement.type == StockMovementType.RESERVATION,
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert len(reservations) == 1
+
+
+async def test_stock_an_order_holds_is_not_moved_by_hand(db_session: AsyncSession) -> None:
+    actor = await create_user(db_session)
+    warehouse = await create_warehouse(db_session)
+    product = await create_product(db_session)
+    service = WarehouseService(db_session)
+    access = WarehouseAccess(actor_id=actor.id, scope=PermissionScope.ALL)
+    reference_id = uuid.uuid4()
+    await service.receive(
+        access,
+        ReceiveStockRequest(warehouse_id=warehouse.id, product_id=product.id, quantity=10),
+    )
+    reservation = ReserveStockRequest(
+        warehouse_id=warehouse.id,
+        product_id=product.id,
+        quantity=4,
+        reference_type=ORDER_REFERENCE,
+        reference_id=reference_id,
+    )
+    await create_stock_operations().reserve(db_session, access, reservation)
+
+    with pytest.raises(Exception) as refused:  # noqa: PT011 — the code is the assertion
+        await service.reserve(access, reservation)
+    assert getattr(refused.value, "code", None) == STOCK_ORDER_REFERENCE_FORBIDDEN
+
+    with pytest.raises(Exception) as failure:  # noqa: PT011 — the code is the assertion
+        await service.release(
+            access,
+            ReleaseStockRequest(
+                warehouse_id=warehouse.id,
+                product_id=product.id,
+                quantity=4,
+                reference_type=ORDER_REFERENCE,
+                reference_id=reference_id,
+            ),
+        )
+    assert getattr(failure.value, "code", None) == STOCK_ORDER_REFERENCE_FORBIDDEN
+
+    level = await db_session.scalar(select(StockLevel).where(StockLevel.product_id == product.id))
+    assert level is not None
+    assert level.quantity_reserved == 4
+
+
+async def test_the_ledger_adds_up_to_the_level_after_an_issue_from_a_reservation(
+    db_session: AsyncSession,
+) -> None:
+    actor = await create_user(db_session)
+    warehouse = await create_warehouse(db_session)
+    product = await create_product(db_session)
+    service = WarehouseService(db_session)
+    access = WarehouseAccess(actor_id=actor.id, scope=PermissionScope.ALL)
+    reference_id = uuid.uuid4()
+    await service.receive(
+        access,
+        ReceiveStockRequest(warehouse_id=warehouse.id, product_id=product.id, quantity=10),
+    )
+    await service.reserve(
+        access,
+        ReserveStockRequest(
+            warehouse_id=warehouse.id,
+            product_id=product.id,
+            quantity=4,
+            reference_type=TRANSFER_REFERENCE,
+            reference_id=reference_id,
+        ),
+    )
+
+    level = await service.issue(
+        access,
+        IssueStockRequest(
+            warehouse_id=warehouse.id,
+            product_id=product.id,
+            quantity=4,
+            from_reservation=True,
+            reference_type=TRANSFER_REFERENCE,
+            reference_id=reference_id,
+        ),
+    )
+    # A downward correction is written with its sign.
+    level = await service.adjust(
+        access,
+        AdjustStockRequest(
+            warehouse_id=warehouse.id, product_id=product.id, delta=-2, note="breakage"
+        ),
+    )
+
+    movements = (
+        (
+            await db_session.execute(
+                select(StockMovement).where(StockMovement.product_id == product.id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    on_hand = sum(
+        {
+            StockMovementType.RECEIPT: 1,
+            StockMovementType.ISSUE: -1,
+            StockMovementType.ADJUSTMENT: 1,
+        }.get(row.type, 0)
+        * row.quantity
+        for row in movements
+    )
+    reserved = sum(
+        {StockMovementType.RESERVATION: 1, StockMovementType.RELEASE: -1}.get(row.type, 0)
+        * row.quantity
+        for row in movements
+    )
+    assert (on_hand, reserved) == (level.quantity_on_hand, level.quantity_reserved) == (4, 0)
 
 
 async def test_the_version_climbs_with_every_write(db_session: AsyncSession) -> None:
@@ -248,7 +408,7 @@ async def test_two_callers_racing_for_the_same_level_do_not_both_win(
         warehouse_id=warehouse_id,
         product_id=product_id,
         quantity=3,
-        reference_type=ORDER_REFERENCE,
+        reference_type=TRANSFER_REFERENCE,
         reference_id=uuid.uuid4(),
     )
 

@@ -29,6 +29,7 @@ from app.middleware.rate_limit import RateLimitMiddleware, RateLimitRedis
 from app.middleware.request_id import RequestIdMiddleware
 from app.middleware.request_logger import RequestLoggerMiddleware
 from app.middleware.security_headers import SecurityHeadersMiddleware
+from app.middleware.unhandled_error import UnhandledErrorMiddleware
 from app.modules.analytics.cache_keys import analytics_prefix
 from app.observability import (
     create_http_metrics,
@@ -170,6 +171,10 @@ def create_app(  # noqa: PLR0913
         # Between CORS and the body guard: a throttled caller must not get far
         # enough to have its body buffered, but its 429 still needs CORS headers.
         app.add_middleware(RateLimitMiddleware, redis=rate_limit_redis, settings=settings)
+    # Just inside CORS: an unexpected failure is answered here, so the 500 still
+    # passes back through CORS, the security headers, the request id and the
+    # access log like every other response does.
+    app.add_middleware(UnhandledErrorMiddleware, settings=settings)
     app.add_middleware(
         CORSMiddleware,
         # A wildcard is expressed as a regex because the allow-list form cannot

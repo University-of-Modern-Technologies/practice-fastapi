@@ -29,6 +29,7 @@ if TYPE_CHECKING:
     from app.db.models.finance import BankTransaction
     from app.db.models.product import Product
     from app.db.models.user import User
+    from app.db.models.warehouse import Warehouse
 
 TOTALS_NON_NEGATIVE = "subtotal >= 0 AND discount_total >= 0 AND tax_total >= 0 AND total >= 0"
 
@@ -48,6 +49,10 @@ class Order(Base):
     )
     deal_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("deals.id", ondelete="SET NULL"), nullable=True
+    )
+    #: The warehouse the order reserved stock in; set on confirmation.
+    warehouse_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("warehouses.id", ondelete="RESTRICT"), nullable=True
     )
     status: Mapped[OrderStatus] = mapped_column(
         pg_enum(OrderStatus, "OrderStatus"),
@@ -72,6 +77,7 @@ class Order(Base):
     owner: Mapped[User] = relationship(back_populates="orders", lazy="raise")
     contact: Mapped[Contact | None] = relationship(back_populates="orders", lazy="raise")
     deal: Mapped[Deal | None] = relationship(back_populates="orders", lazy="raise")
+    warehouse: Mapped[Warehouse | None] = relationship(back_populates="orders", lazy="raise")
     items: Mapped[list[OrderItem]] = relationship(
         back_populates="order", lazy="raise", passive_deletes=True
     )
@@ -84,6 +90,7 @@ class Order(Base):
         Index(None, "owner_id", "status", "deleted_at"),
         Index(None, "contact_id"),
         Index(None, "deal_id"),
+        Index(None, "warehouse_id"),
         Index(None, "status", "placed_at"),
         Index(None, "deleted_at"),
         CheckConstraint(TOTALS_NON_NEGATIVE, name="totals_non_negative"),

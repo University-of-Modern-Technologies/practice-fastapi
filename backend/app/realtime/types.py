@@ -8,13 +8,29 @@ fakes and free of a dependency on the auth and RBAC modules.
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any, Final, Literal, Protocol, runtime_checkable
 
 #: Close code sent to every client during a graceful shutdown.
 CLOSE_CODE_GOING_AWAY: Final = 1001
+
+#: Close code for a socket whose credentials stopped being valid: the access
+#: token it was opened with expired, or the session behind it ended — a logout,
+#: a revocation, a disabled account. It sits in the application range so a
+#: client can tell it from a transport failure. Reconnecting with a renewed
+#: token is the right answer to either case: a session that is really over is
+#: then refused at the handshake.
+CLOSE_CODE_SESSION_ENDED: Final = 4001
+
+#: Close reason sent with ``CLOSE_CODE_SESSION_ENDED`` when the token ran out.
+CLOSE_REASON_TOKEN_EXPIRED: Final = "Access token expired"
+
+#: Close reason sent with ``CLOSE_CODE_SESSION_ENDED`` when the session ended.
+CLOSE_REASON_SESSION_ENDED: Final = "Session ended"
 
 #: Close code used when the handshake carries no usable access token. Only sent
 #: by a server that cannot answer a handshake with an HTTP status.
@@ -64,6 +80,15 @@ class AuthContextLike(Protocol):
     @property
     def session_id(self) -> uuid.UUID: ...
 
+    @property
+    def expires_at(self) -> datetime | None:
+        """When the access token presented at the handshake stops being valid.
+
+        The socket is closed at that moment; an identity without it is held
+        until the socket closes.
+        """
+        ...
+
 
 class RealtimeSocketLike(Protocol):
     """Minimal structural view of a client socket."""
@@ -110,6 +135,8 @@ class RealtimeConnection:
     auth: AuthContextLike
     topics: set[str] = field(default_factory=set)
     is_open: bool = True
+    #: Closes the socket when the access token it was opened with expires.
+    expiry: asyncio.TimerHandle | None = None
 
 
 def connected_frame(connection_id: str, user_id: str) -> OutboundFrame:

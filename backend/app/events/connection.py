@@ -1,13 +1,18 @@
 """Event store connectivity.
 
 A store that is down at startup must not abort the boot: the handshake failure
-path here logs and returns instead of propagating, and the driver is left to
-re-establish the connection in the background. The instance still reports itself
-unready until the store answers again — see the readiness check below.
+path here logs and returns instead of propagating. The driver re-establishes the
+connection on its own, and a background task keeps asking until the store
+answers, so the indexes are created then rather than on the next boot. The
+instance reports itself unready until the store answers — see the readiness
+check below — and ready as soon as it does.
 """
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
+from collections.abc import Callable
 from typing import Any, cast
 
 from pymongo import AsyncMongoClient
@@ -29,16 +34,31 @@ CONNECT_TIMEOUT_MS = 10_000
 SOCKET_TIMEOUT_MS = 45_000
 MAX_POOL_SIZE = 10
 
+#: Pause between handshakes while the store is unreachable. The sibling backend
+#: waits as long (`EVENT_STORE_RETRY_DELAY_MS`).
+RETRY_DELAY_SECONDS = 5.0
+
 EVENT_STORE_READINESS_CHECK_NAME = "event-store"
+
+ClientFactory = Callable[..., Any]
 
 
 class EventStore:
     """Owns the client and exposes the events collection."""
 
-    def __init__(self, settings: Settings) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        *,
+        retry_delay_seconds: float = RETRY_DELAY_SECONDS,
+        client_factory: ClientFactory = AsyncMongoClient,
+    ) -> None:
         self._settings = settings
+        self._retry_delay_seconds = retry_delay_seconds
+        self._client_factory = client_factory
         self._client: AsyncMongoClient[dict[str, Any]] | None = None
         self._collection: DomainEventCollection | None = None
+        self._retry: asyncio.Task[None] | None = None
 
     @property
     def collection(self) -> DomainEventCollection | None:
@@ -49,7 +69,7 @@ class EventStore:
         if self._client is not None:
             return
 
-        client: AsyncMongoClient[dict[str, Any]] = AsyncMongoClient(
+        client: AsyncMongoClient[dict[str, Any]] = self._client_factory(
             self._settings.mongodb_url,
             serverSelectionTimeoutMS=SERVER_SELECTION_TIMEOUT_MS,
             connectTimeoutMS=CONNECT_TIMEOUT_MS,
@@ -62,17 +82,47 @@ class EventStore:
         # once, here, so no other module has to know the driver's types.
         self._collection = cast(DomainEventCollection, database[DOMAIN_EVENT_COLLECTION])
 
+        if not await self._initialise():
+            # The collection reference is kept: the driver reconnects on its
+            # own, so appends start succeeding again without a restart. What
+            # waits for the store is the index creation.
+            self._retry = asyncio.create_task(
+                self._retry_until_reachable(), name="event-store-retry"
+            )
+
+    async def _initialise(self) -> bool:
+        """Pings the store and, once it answers, creates the indexes.
+
+        Returns whether the store answered. An index failure is logged and not
+        retried: appends work without the indexes, and a store that answers
+        but refuses them will not change its mind in five seconds.
+        """
+        client, collection = self._client, self._collection
+        if client is None or collection is None:
+            return True
         try:
             await client.admin.command("ping")
-            await ensure_indexes(self._collection, self._settings.event_log_retention_days)
         except Exception as error:
-            # The collection reference is kept: the driver reconnects on its own,
-            # so appends start succeeding again without a restart. Only the
-            # indexes are missed, and they are created on the next boot.
-            logger.error("Event store is unavailable at startup", err=repr(error))
-            return
+            logger.error(
+                "Event store is unavailable; retrying in the background",
+                err=repr(error),
+                retryInSeconds=self._retry_delay_seconds,
+            )
+            return False
+
+        try:
+            await ensure_indexes(collection, self._settings.event_log_retention_days)
+        except Exception as error:
+            logger.error("Failed to create the event log indexes", err=repr(error))
 
         logger.info("Event store connected")
+        return True
+
+    async def _retry_until_reachable(self) -> None:
+        while True:
+            await asyncio.sleep(self._retry_delay_seconds)
+            if await self._initialise():
+                return
 
     async def ping(self) -> None:
         """Readiness probe: raises when the store cannot be reached."""
@@ -82,6 +132,11 @@ class EventStore:
         await self._client.admin.command("ping")
 
     async def close(self) -> None:
+        if self._retry is not None:
+            retry, self._retry = self._retry, None
+            retry.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await retry
         if self._client is None:
             return
         client, self._client, self._collection = self._client, None, None

@@ -146,8 +146,31 @@ async def handle_http_exception(request: Request, exc: Exception) -> Response:
     )
 
 
+def unhandled_error_response(exc: BaseException, settings: Settings) -> JSONResponse:
+    """Logs an unexpected failure and builds the 500 envelope for it.
+
+    Called with the correlation id already current: by the middleware that
+    catches the exception inside the stack, and by the last-resort handler
+    below once it has rebound the id.
+    """
+    logger.error("Unhandled request error", exc_info=exc)
+    return error_response(
+        status_code=500,
+        code="INTERNAL_SERVER_ERROR",
+        # An unexpected exception message can carry internals — a table name, a
+        # file path, part of a query — so it is only echoed where a developer,
+        # not a user, is reading it.
+        message="Internal server error" if settings.is_production else str(exc),
+    )
+
+
 def build_unhandled_handler(settings: Settings):  # type: ignore[no-untyped-def]
-    """Creates the last-resort handler for anything that is not an `AppError`."""
+    """Creates the last-resort handler for anything that is not an `AppError`.
+
+    A failure inside a route never gets this far: `UnhandledErrorMiddleware`
+    answers it within the stack, so the response still carries the security and
+    CORS headers. What remains is a failure in the outermost layers themselves.
+    """
 
     async def handle_unhandled(request: Request, exc: Exception) -> Response:
         # Starlette runs this handler outside every user middleware, after the
@@ -155,15 +178,7 @@ def build_unhandled_handler(settings: Settings):  # type: ignore[no-untyped-def]
         # id is rebound from the request for the log line and the envelope.
         request_id = get_request_id() or request_id_of(request.scope)
         with bound_request_id(request_id):
-            logger.error("Unhandled request error", exc_info=exc)
-            response = error_response(
-                status_code=500,
-                code="INTERNAL_SERVER_ERROR",
-                # An unexpected exception message can carry internals — a table
-                # name, a file path, part of a query — so it is only echoed
-                # where a developer, not a user, is reading it.
-                message="Internal server error" if settings.is_production else str(exc),
-            )
+            response = unhandled_error_response(exc, settings)
         # Nor does this response pass back through that middleware, so the
         # header it adds to every other response is set here.
         if request_id is not None:

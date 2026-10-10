@@ -16,6 +16,8 @@ SortOrder = Literal["asc", "desc"]
 
 DEFAULT_PAGE_SIZE = 20
 MAX_PAGE_SIZE = 100
+#: The last page a list serves; past it a client narrows the filter instead.
+MAX_PAGE = 100
 
 
 class ListQuery(BaseModel):
@@ -28,7 +30,7 @@ class ListQuery(BaseModel):
 
     model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
 
-    page: int = Field(default=1, ge=1)
+    page: int = Field(default=1, ge=1, le=MAX_PAGE)
     page_size: int = Field(default=DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE)
     search: str | None = Field(default=None, min_length=1, max_length=64)
     sort_order: SortOrder = "desc"

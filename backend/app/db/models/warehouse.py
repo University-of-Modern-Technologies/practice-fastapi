@@ -22,10 +22,12 @@ from app.db.enums import StockMovementType, pg_enum
 from app.db.types import CreatedAt, UpdatedAt, UuidFk, UuidPk, Version
 
 if TYPE_CHECKING:
+    from app.db.models.order import Order
     from app.db.models.product import Product
     from app.db.models.user import User
 
 QUANTITIES_NON_NEGATIVE = "quantity_on_hand >= 0 AND quantity_reserved >= 0"
+MOVEMENT_QUANTITY_SIGN = "quantity > 0 OR (type = 'ADJUSTMENT' AND quantity <> 0)"
 
 
 class Warehouse(Base):
@@ -46,6 +48,7 @@ class Warehouse(Base):
         back_populates="warehouse", lazy="raise", passive_deletes=True
     )
     movements: Mapped[list[StockMovement]] = relationship(back_populates="warehouse", lazy="raise")
+    orders: Mapped[list[Order]] = relationship(back_populates="warehouse", lazy="raise")
 
     __table_args__ = (UniqueConstraint("code"),)
 
@@ -116,5 +119,6 @@ class StockMovement(Base):
         Index(None, "warehouse_id", "product_id", "created_at"),
         Index(None, "reference_type", "reference_id"),
         Index(None, "type", "created_at"),
-        CheckConstraint("quantity > 0", name="quantity_positive"),
+        # An adjustment carries its sign; every other movement is a positive amount.
+        CheckConstraint(MOVEMENT_QUANTITY_SIGN, name="quantity_sign"),
     )

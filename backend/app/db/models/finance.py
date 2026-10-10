@@ -7,7 +7,16 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
-from sqlalchemy import CHAR, CheckConstraint, ForeignKey, Index, String, text
+from sqlalchemy import (
+    CHAR,
+    Boolean,
+    CheckConstraint,
+    ForeignKey,
+    Index,
+    String,
+    UniqueConstraint,
+    text,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -93,6 +102,7 @@ class BankTransaction(Base):
         default=PaymentMatchStatus.UNMATCHED,
         server_default=text("'UNMATCHED'"),
     )
+    #: An order is settled by at most one payment.
     matched_order_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("orders.id", ondelete="SET NULL"), nullable=True
     )
@@ -100,6 +110,10 @@ class BankTransaction(Base):
         ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
     matched_at: Mapped[datetime | None]
+    #: Set when a person removes a match; automatic reconciliation skips the row.
+    auto_match_disabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
     version: Mapped[Version]
     created_at: Mapped[CreatedAt]
     updated_at: Mapped[UpdatedAt]
@@ -115,7 +129,7 @@ class BankTransaction(Base):
     __table_args__ = (
         Index(None, "statement_id", "booked_at"),
         Index(None, "match_status", "booked_at"),
-        Index(None, "matched_order_id"),
+        UniqueConstraint("matched_order_id"),
         Index(None, "booked_at"),
         CheckConstraint("btrim(external_id) <> ''", name="external_id_nonempty"),
         CheckConstraint("btrim(counterparty_name) <> ''", name="counterparty_nonempty"),

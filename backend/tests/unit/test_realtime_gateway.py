@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import uuid
 from collections import deque
 from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
@@ -17,6 +19,9 @@ from app.factory import create_app
 from app.realtime.auth import BEARER_SUBPROTOCOL
 from app.realtime.gateway import RealtimeGateway, create_realtime_router
 from app.realtime.types import (
+    CLOSE_CODE_SESSION_ENDED,
+    CLOSE_REASON_SESSION_ENDED,
+    CLOSE_REASON_TOKEN_EXPIRED,
     AuthContextLike,
     RealtimeGatewayOptions,
 )
@@ -35,6 +40,7 @@ class FakeAuth:
 
     user_id: uuid.UUID = DEFAULT_USER_ID
     session_id: uuid.UUID = DEFAULT_SESSION_ID
+    expires_at: datetime | None = None
 
 
 @dataclass(slots=True)
@@ -575,3 +581,189 @@ async def test_the_socket_stays_open_after_an_oversized_frame() -> None:
     assert socket.closed is None
     assert socket.sent[-1] == {"type": "pong"}
     assert gateway.stats().connections == 1
+
+
+# ---------------------------------------------------------------------------
+# A socket lives no longer than the credentials it was opened with.
+# ---------------------------------------------------------------------------
+
+EXPIRED = (CLOSE_CODE_SESSION_ENDED, CLOSE_REASON_TOKEN_EXPIRED)
+ENDED = (CLOSE_CODE_SESSION_ENDED, CLOSE_REASON_SESSION_ENDED)
+
+
+def _expiring_in(seconds: float) -> datetime:
+    return datetime.now(tz=UTC) + timedelta(seconds=seconds)
+
+
+async def _settle() -> None:
+    """Lets the closes the gateway started from synchronous code run."""
+    for _ in range(3):
+        await asyncio.sleep(0)
+
+
+async def test_a_socket_is_closed_with_4001_when_its_token_expires() -> None:
+    gateway = _gateway()
+    socket = FakeSocket()
+    connection = await gateway.register(socket, FakeAuth(expires_at=_expiring_in(0.05)))
+    await gateway.handle_frame(connection, '{"type":"subscribe","topic":"deals"}')
+
+    assert gateway.stats().connections == 1
+    await asyncio.sleep(0.1)
+
+    assert socket.closed == EXPIRED
+    assert gateway.stats() == type(gateway.stats())(connections=0, topics=0, subscriptions=0)
+    await gateway.publish("deals", {"dealId": "d1"})
+    assert all(frame["type"] != "event" for frame in socket.sent)
+
+
+async def test_a_socket_whose_token_is_already_spent_is_closed_at_once() -> None:
+    gateway = _gateway()
+    socket = FakeSocket()
+
+    await gateway.register(socket, FakeAuth(expires_at=_expiring_in(-1)))
+    await _settle()
+
+    assert socket.closed == EXPIRED
+
+
+async def test_a_socket_that_went_away_leaves_no_expiry_behind() -> None:
+    gateway = _gateway()
+    socket = FakeSocket()
+    connection = await gateway.register(socket, FakeAuth(expires_at=_expiring_in(0.05)))
+
+    gateway.forget(connection)
+    await asyncio.sleep(0.1)
+
+    assert connection.expiry is None
+    assert socket.closed is None
+
+
+async def test_exactly_the_sockets_of_a_revoked_session_are_closed() -> None:
+    gateway = _gateway()
+    revoked, sibling, stranger = FakeSocket(), FakeSocket(), FakeSocket()
+    other_session = uuid.uuid4()
+    connections = [
+        await gateway.register(revoked, FakeAuth()),
+        await gateway.register(sibling, FakeAuth(session_id=other_session)),
+        await gateway.register(stranger, FakeAuth(user_id=OTHER_USER_ID, session_id=uuid.uuid4())),
+    ]
+    for connection in connections:
+        await gateway.handle_frame(connection, '{"type":"subscribe","topic":"deals"}')
+
+    gateway.sessions_revoked([DEFAULT_SESSION_ID])
+    await _settle()
+
+    assert revoked.closed == ENDED
+    assert sibling.closed is None
+    assert stranger.closed is None
+    await gateway.publish("deals", {"dealId": "d1"})
+    assert all(frame["type"] != "event" for frame in revoked.sent)
+    assert sibling.sent[-1]["type"] == "event"
+
+
+async def test_every_socket_of_a_user_whose_sessions_all_ended_is_closed() -> None:
+    gateway = _gateway()
+    first, second, stranger = FakeSocket(), FakeSocket(), FakeSocket()
+    await gateway.register(first, FakeAuth())
+    await gateway.register(second, FakeAuth(session_id=uuid.uuid4()))
+    await gateway.register(stranger, FakeAuth(user_id=OTHER_USER_ID))
+
+    gateway.user_sessions_revoked(DEFAULT_USER_ID)
+    await _settle()
+
+    assert first.closed == ENDED
+    assert second.closed == ENDED
+    assert stranger.closed is None
+    assert gateway.stats().connections == 1
+
+
+class _OpenWebSocketDriver(_WebSocketDriver):
+    """A peer that stays connected until the server closes the socket."""
+
+    def __init__(self, inbound: list[Message]) -> None:
+        super().__init__(inbound)
+        self._closed = asyncio.Event()
+
+    async def receive(self) -> Message:
+        if self._inbound:
+            return self._inbound.popleft()
+        await self._closed.wait()
+        return {"type": "websocket.disconnect", "code": CLOSE_CODE_SESSION_ENDED}
+
+    async def send(self, message: Message) -> None:
+        await super().send(message)
+        if message["type"] == "websocket.close":
+            self._closed.set()
+
+
+async def test_a_served_socket_is_closed_when_its_handshake_token_expires(
+    settings: Settings,
+) -> None:
+    async def verify_briefly(token: str) -> AuthContextLike:
+        del token
+        return FakeAuth(expires_at=_expiring_in(0.05))
+
+    gateway = RealtimeGateway(
+        ws_path=WS_PATH, verify_access_token=verify_briefly, can_subscribe=_allow_all
+    )
+    app = _build_app(settings, gateway)
+    scope_driver = _OpenWebSocketDriver([{"type": "websocket.connect"}])
+
+    scope: dict[str, Any] = {
+        "type": "websocket",
+        "asgi": {"version": "3.0", "spec_version": "2.3"},
+        "http_version": "1.1",
+        "scheme": "ws",
+        "path": WS_PATH,
+        "raw_path": WS_PATH.encode(),
+        "query_string": b"",
+        "root_path": "",
+        "headers": [(b"sec-websocket-protocol", f"{BEARER_SUBPROTOCOL}, jwt".encode())],
+        "client": ("127.0.0.1", 12345),
+        "server": ("testserver", 80),
+        "subprotocols": [],
+    }
+    await asyncio.wait_for(app(scope, scope_driver.receive, scope_driver.send), timeout=2)
+
+    close = scope_driver.sent[-1]
+    assert close["type"] == "websocket.close"
+    assert (close["code"], close["reason"]) == EXPIRED
+    assert gateway.stats().connections == 0
+
+
+# ---------------------------------------------------------------------------
+# The frames of one connection are answered one at a time, in order.
+# ---------------------------------------------------------------------------
+
+
+async def test_a_burst_of_subscribes_cannot_pass_the_limit(settings: Settings) -> None:
+    async def slow_allow(_auth: AuthContextLike, _topic: str) -> bool:
+        await asyncio.sleep(0.01)
+        return True
+
+    gateway = RealtimeGateway(
+        ws_path=WS_PATH,
+        verify_access_token=_verify_ok,
+        can_subscribe=slow_allow,
+        options=RealtimeGatewayOptions(max_subscriptions_per_connection=2),
+    )
+    topics = ["deals", "orders", "entity:deal:d1", "entity:order:o1"]
+
+    driver = await _handshake(
+        _build_app(settings, gateway),
+        subprotocol_header=f"{BEARER_SUBPROTOCOL}, jwt-value",
+        inbound=[
+            {"type": "websocket.receive", "text": json.dumps({"type": "subscribe", "topic": t})}
+            for t in topics
+        ],
+    )
+
+    _greeting, *answers = driver.frames()
+    assert answers[:2] == [
+        {"type": "subscribed", "topic": "deals"},
+        {"type": "subscribed", "topic": "orders"},
+    ]
+    assert [answer["code"] for answer in answers[2:]] == [
+        "SUBSCRIPTION_LIMIT_REACHED",
+        "SUBSCRIPTION_LIMIT_REACHED",
+    ]
