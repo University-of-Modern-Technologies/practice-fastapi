@@ -14,17 +14,19 @@ from decimal import Decimal
 from typing import Any, cast
 
 import pytest
+from sqlalchemy import Update
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Session
 
 from app.core.errors import AppError, ConflictError, NotFoundError
-from app.core.reporting import default_report_window_to
 from app.db.enums import OrderStatus, PaymentMatchStatus, PermissionScope, TransactionDirection
 from app.db.models.audit import AuditLog
 from app.db.models.finance import BankStatement, BankTransaction
 from app.db.models.order import Order
 from app.events.types import DomainEvent
+from app.modules.analytics.kyiv_time import DEFAULT_KYIV_WINDOW_FROM, default_kyiv_window_to
 from app.modules.finance.provider import ProviderStatement
 from app.modules.finance.schemas import (
     FinanceSummaryParams,
@@ -35,6 +37,8 @@ from app.modules.finance.service import RECONCILE_BATCH_SIZE, FinanceService
 from app.modules.finance.stub_provider import STUB_TRANSACTION_COUNT, stub_statement
 from app.modules.finance.types import (
     BANK_PROVIDER_UNAVAILABLE,
+    CURRENCY_MISMATCH,
+    ORDER_ALREADY_MATCHED,
     STATEMENT_DUPLICATE_EXTERNAL_ID,
     STATEMENT_ENTITY_TYPE,
     STATEMENT_IMPORTED,
@@ -44,6 +48,7 @@ from app.modules.finance.types import (
     TRANSACTION_ENTITY_TYPE,
     TRANSACTION_MATCHED,
     TRANSACTION_NOT_FOUND,
+    TRANSACTION_NOT_INCOMING,
     TRANSACTION_NOT_MATCHED,
     TRANSACTION_ORDER_NOT_FOUND,
     TRANSACTION_UNMATCHED,
@@ -211,6 +216,7 @@ def make_transaction(**overrides: Any) -> BankTransaction:
         "matched_order_id": None,
         "matched_at": None,
         "matched_by_id": None,
+        "auto_match_disabled": False,
         "version": 1,
         "created_at": NOW,
         "updated_at": NOW,
@@ -519,7 +525,9 @@ async def test_a_manual_match_sets_the_four_columns_together() -> None:
 
     assert result.match_status is PaymentMatchStatus.MATCHED
     assert result.matched_order_id == ORDER_ID
-    assignments = set_clause_of(session.statements[2])
+    # Statements: the transaction, the order, the payment already settling the
+    # order (none), and then the write.
+    assignments = set_clause_of(session.statements[3])
     assert "match_status" in assignments
     assert "matched_order_id" in assignments
     assert "matched_at" in assignments
@@ -539,7 +547,7 @@ async def test_a_manual_match_is_guarded_by_the_version_in_the_statement() -> No
         ACCESS, TRANSACTION_ID, MatchTransactionRequest(order_id=ORDER_ID, version=1)
     )
 
-    guard = where_of(session.statements[2])
+    guard = where_of(session.statements[3])
     assert "bank_transactions.id" in guard
     assert "bank_transactions.version" in guard
 
@@ -1032,13 +1040,17 @@ async def test_the_summary_reads_every_figure_from_one_query() -> None:
 
 
 async def test_an_unnamed_window_uses_the_shared_default() -> None:
-    """The default does not depend on imported statements: 1 January to today."""
+    """The default does not depend on imported statements: 1 January to today.
+
+    Both ends on the Kyiv calendar: Kyiv midnight of 1 January is 22:00 UTC on
+    31 December, and today ends at the next Kyiv midnight.
+    """
     session = FakeSession()
 
     result = await make_service(session).summary(ACCESS, FinanceSummaryParams())
 
-    assert result.from_ == datetime(2026, 1, 1, tzinfo=UTC)
-    assert result.to == default_report_window_to()
+    assert result.from_ == datetime(2025, 12, 31, 22, tzinfo=UTC)
+    assert result.to == default_kyiv_window_to()
     # The grouped query is the only read: no latest-statement lookup precedes it.
     assert len(session.statements) == 1
 
@@ -1050,14 +1062,14 @@ async def test_a_missing_bound_uses_the_shared_default_while_an_explicit_one_win
     lower_bound_result = await make_service(lower_bound_session).summary(ACCESS, lower_bound)
 
     assert lower_bound_result.from_ == datetime(2026, 1, 10, tzinfo=UTC)
-    assert lower_bound_result.to == default_report_window_to()
+    assert lower_bound_result.to == default_kyiv_window_to()
 
     upper_bound_session = FakeSession()
     upper_bound = FinanceSummaryParams.model_validate({"to": "2026-01-20T00:00:00Z"})
 
     upper_bound_result = await make_service(upper_bound_session).summary(ACCESS, upper_bound)
 
-    assert upper_bound_result.from_ == datetime(2026, 1, 1, tzinfo=UTC)
+    assert upper_bound_result.from_ == DEFAULT_KYIV_WINDOW_FROM
     assert upper_bound_result.to == datetime(2026, 1, 20, tzinfo=UTC)
 
 
@@ -1122,3 +1134,281 @@ async def test_a_whole_share_is_published_without_a_fraction() -> None:
     rendered = result.model_dump_json(by_alias=True)
     assert '"status":"MATCHED","count":4,"amount":"1000.00","share":1}' in rendered
     assert '"status":"UNMATCHED","count":0,"amount":"0.00","share":0}' in rendered
+
+
+# --- decisions on money ------------------------------------------------------
+
+#: How PostgreSQL words the lost race for an order another payment settled.
+ORDER_TAKEN = (
+    'duplicate key value violates unique constraint "bank_transactions_matched_order_id_key"'
+)
+OTHER_TRANSACTION_ID = uuid.UUID("77777777-7777-4777-8777-777777777777")
+
+
+class RacingSession(FakeSession):
+    """Fails guarded writes in turn, the way the database reports a lost race.
+
+    Each entry of ``write_failures`` belongs to one ``UPDATE``: an exception is
+    raised for it, ``None`` lets it through to the scripted answer.
+    """
+
+    def __init__(self, write_failures: list[Exception | None]) -> None:
+        super().__init__()
+        self.write_failures = write_failures
+
+    async def execute(self, statement: Any) -> FakeResult:
+        if isinstance(statement, Update) and self.write_failures:
+            failure = self.write_failures.pop(0)
+            if failure is not None:
+                self.statements.append(statement)
+                raise failure
+        return await super().execute(statement)
+
+
+class CommittingSession(FakeSession):
+    """A stand-in with the ORM event bus, so a commit can be staged by hand."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.sync_session = Session()
+
+    def commit(self) -> None:
+        self.sync_session.dispatch.after_commit(self.sync_session)
+
+
+def second_payment(**overrides: Any) -> BankTransaction:
+    """A payment that quotes a different order than the first one."""
+    values: dict[str, Any] = {
+        "id": OTHER_TRANSACTION_ID,
+        "external_id": "stub-txn-0002",
+        "reference": "Payment for ORD-2026-0002",
+    }
+    return make_transaction(**(values | overrides))
+
+
+def second_order_row() -> tuple[Any, ...]:
+    return candidate_row(order_id=OTHER_ORDER_ID, order_number="ORD-2026-0002")
+
+
+async def test_an_order_another_payment_settles_is_refused_by_hand() -> None:
+    """An order is settled by at most one payment."""
+    session = FakeSession()
+    session.execute_queue = [[make_transaction()], [make_order()]]
+    session.scalar_queue = [OTHER_TRANSACTION_ID]
+    publisher = RecordingPublisher()
+
+    with pytest.raises(ConflictError) as failure:
+        await make_service(session, publisher=publisher).match(
+            ACCESS, TRANSACTION_ID, MatchTransactionRequest(order_id=ORDER_ID, version=1)
+        )
+
+    assert failure.value.status_code == 409
+    assert failure.value.code == ORDER_ALREADY_MATCHED
+    assert failure.value.details == {"orderId": str(ORDER_ID)}
+    assert "bank_transactions.matched_order_id" in where_of(session.statements[2])
+    assert not any(isinstance(statement, Update) for statement in session.statements)
+    assert audit_actions(session) == []
+    assert publisher.published == []
+
+
+async def test_a_race_the_unique_constraint_caught_is_the_same_conflict() -> None:
+    """The request that loses the race is told so, not handed a 500."""
+    session = RacingSession([integrity_error(ORDER_TAKEN)])
+    session.execute_queue = [[make_transaction()], [make_order()]]
+    publisher = RecordingPublisher()
+
+    with pytest.raises(ConflictError) as failure:
+        await make_service(session, publisher=publisher).match(
+            ACCESS, TRANSACTION_ID, MatchTransactionRequest(order_id=ORDER_ID, version=1)
+        )
+
+    assert failure.value.code == ORDER_ALREADY_MATCHED
+    assert failure.value.details == {"orderId": str(ORDER_ID)}
+    assert audit_actions(session) == []
+    assert publisher.published == []
+
+
+async def test_another_integrity_failure_of_a_match_is_not_disguised_as_a_race() -> None:
+    session = RacingSession([integrity_error('violates check constraint "match_consistency"')])
+    session.execute_queue = [[make_transaction()], [make_order()]]
+
+    with pytest.raises(IntegrityError):
+        await make_service(session).match(
+            ACCESS, TRANSACTION_ID, MatchTransactionRequest(order_id=ORDER_ID, version=1)
+        )
+
+
+async def test_the_rule_is_offered_only_orders_in_its_currency_that_nothing_settles() -> None:
+    """One payment per order and one currency, as the candidate query narrows by them.
+
+    The check reads the transaction the batch writes in, so an order matched
+    earlier in the same run is already out of the running for the lines after.
+    """
+    session = FakeSession()
+    session.execute_queue = [[make_transaction()], []]
+
+    await make_service(session).reconcile(ACCESS)
+
+    criteria = where_of(session.statements[1])
+    assert "NOT (EXISTS (SELECT" in criteria
+    assert "bank_transactions.matched_order_id = orders.id" in criteria
+    assert "orders.currency = " in criteria
+
+
+async def test_a_batch_line_whose_order_was_settled_meanwhile_is_skipped() -> None:
+    """The lost race costs one line, never the batch."""
+    session = RacingSession([integrity_error(ORDER_TAKEN), None])
+    matched = second_payment(
+        match_status=PaymentMatchStatus.MATCHED, matched_order_id=OTHER_ORDER_ID, version=2
+    )
+    session.execute_queue = [
+        [make_transaction(), second_payment()],
+        [candidate_row()],
+        [second_order_row()],
+        [matched],
+    ]
+    publisher = RecordingPublisher()
+
+    result = await make_service(session, publisher=publisher).reconcile(ACCESS)
+
+    assert (result.examined, result.matched, result.unmatched) == (2, 1, 0)
+    # Each write sits in a savepoint of its own, so the refused one rolls back
+    # exactly itself.
+    assert session.savepoints == 2
+    assert [event.entity_id for event in publisher.published] == [str(OTHER_TRANSACTION_ID)]
+
+
+async def test_a_payment_in_another_currency_is_refused_by_hand() -> None:
+    """Compared before the amounts, which cannot be compared across it."""
+    session = FakeSession()
+    session.execute_queue = [[make_transaction()], [make_order(currency="EUR")]]
+
+    with pytest.raises(AppError) as failure:
+        await make_service(session).match(
+            ACCESS, TRANSACTION_ID, MatchTransactionRequest(order_id=ORDER_ID, version=1)
+        )
+
+    assert failure.value.status_code == 422
+    assert failure.value.code == CURRENCY_MISMATCH
+    assert failure.value.details == {"currency": "USD", "orderCurrency": "EUR"}
+    assert not any(isinstance(statement, Update) for statement in session.statements)
+
+
+async def test_a_payment_in_another_currency_is_never_matched_automatically() -> None:
+    """The rule refuses what the query, narrowed as it is, might return."""
+    session = FakeSession()
+    order_in_euro = list(candidate_row())
+    order_in_euro[4] = "EUR"
+    session.execute_queue = [[make_transaction()], [tuple(order_in_euro)]]
+
+    result = await make_service(session).reconcile(ACCESS)
+
+    assert (result.matched, result.unmatched) == (0, 1)
+
+
+async def test_an_outgoing_payment_is_refused_by_hand() -> None:
+    """A payment we made is not a payment we got, whoever says so."""
+    session = FakeSession()
+    session.execute_queue = [[make_transaction(direction=TransactionDirection.DEBIT)]]
+
+    with pytest.raises(ConflictError) as failure:
+        await make_service(session).match(
+            ACCESS, TRANSACTION_ID, MatchTransactionRequest(order_id=ORDER_ID, version=1)
+        )
+
+    assert failure.value.code == TRANSACTION_NOT_INCOMING
+    # Refused before the order is even looked up.
+    assert len(session.statements) == 1
+
+
+async def test_a_match_taken_back_by_hand_is_marked_for_the_rule_to_leave_alone() -> None:
+    """The person's decision is not overruled by the next run."""
+    session = FakeSession()
+    matched = make_transaction(
+        match_status=PaymentMatchStatus.MATCHED,
+        matched_order_id=ORDER_ID,
+        matched_at=NOW,
+        matched_by_id=ACTOR_ID,
+        version=2,
+    )
+    session.execute_queue = [[matched], [make_transaction(version=3, auto_match_disabled=True)]]
+
+    result = await make_service(session).unmatch(ACCESS, TRANSACTION_ID, 2)
+
+    assert result.auto_match_disabled is True
+    assert "auto_match_disabled" in set_clause_of(session.statements[1])
+
+
+async def test_the_rule_passes_over_a_line_a_person_took_a_match_back_from() -> None:
+    session = FakeSession()
+
+    await make_service(session).reconcile(ACCESS)
+
+    assert "bank_transactions.auto_match_disabled IS false" in where_of(session.statements[0])
+
+
+async def test_a_person_may_match_such_a_line_by_hand_and_the_mark_is_cleared() -> None:
+    session = FakeSession()
+    session.execute_queue = [
+        [make_transaction(auto_match_disabled=True)],
+        [make_order()],
+        [make_transaction(match_status=PaymentMatchStatus.MATCHED, matched_order_id=ORDER_ID)],
+    ]
+
+    result = await make_service(session).match(
+        ACCESS, TRANSACTION_ID, MatchTransactionRequest(order_id=ORDER_ID, version=1)
+    )
+
+    assert result.auto_match_disabled is False
+    assert "auto_match_disabled" in set_clause_of(session.statements[3])
+
+
+async def test_a_line_that_moved_under_the_batch_is_skipped_and_the_rest_goes_on() -> None:
+    """As in the sibling backend — one stale line, not a 409 for the batch."""
+    session = FakeSession()
+    matched = second_payment(
+        match_status=PaymentMatchStatus.MATCHED, matched_order_id=OTHER_ORDER_ID, version=2
+    )
+    session.execute_queue = [
+        [make_transaction(), second_payment()],
+        [candidate_row()],
+        [],  # the guarded write finds the first line's version moved on
+        [second_order_row()],
+        [matched],
+    ]
+    publisher = RecordingPublisher()
+
+    result = await make_service(session, publisher=publisher).reconcile(ACCESS)
+
+    assert (result.examined, result.matched, result.unmatched, result.suggested) == (2, 1, 0, 0)
+    assert audit_actions(session) == [TRANSACTION_MATCHED]
+    assert [event.entity_id for event in publisher.published] == [str(OTHER_TRANSACTION_ID)]
+
+
+async def test_an_outgoing_line_that_moved_under_the_batch_is_not_counted() -> None:
+    """The tally counts what was written."""
+    session = FakeSession()
+    session.execute_queue = [[make_transaction(direction=TransactionDirection.DEBIT)], []]
+
+    result = await make_service(session).reconcile(ACCESS)
+
+    assert (result.examined, result.ignored) == (1, 0)
+
+
+async def test_the_matches_of_a_batch_are_announced_once_the_batch_has_committed() -> None:
+    """The batch is one transaction, so its events wait for its commit."""
+    session = CommittingSession()
+    matched = make_transaction(
+        match_status=PaymentMatchStatus.MATCHED, matched_order_id=ORDER_ID, version=2
+    )
+    session.execute_queue = [[make_transaction()], [candidate_row()], [matched]]
+    publisher = RecordingPublisher()
+
+    result = await make_service(session, publisher=publisher).reconcile(ACCESS)
+
+    assert result.matched == 1
+    assert publisher.published == []
+
+    session.commit()
+
+    assert [event.event_type for event in publisher.published] == [TRANSACTION_MATCHED]

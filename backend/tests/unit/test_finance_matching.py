@@ -24,6 +24,7 @@ from app.modules.finance.matching import (
     MatchSubject,
     amounts_match,
     collapse,
+    currencies_match,
     matches_counterparty,
     outcome_for,
     references_order,
@@ -57,6 +58,7 @@ def make_candidate(**overrides: object) -> MatchCandidate:
 def make_subject(**overrides: object) -> MatchSubject:
     values: dict[str, object] = {
         "amount": Decimal("1800.00"),
+        "currency": "USD",
         "booked_at": BOOKED_AT,
         "reference": "Payment for ORD-2026-0001",
         "counterparty_name": "Halcyon Supplies",
@@ -279,3 +281,14 @@ def test_a_blank_order_number_is_never_read_into_a_reference() -> None:
     """Every string contains the empty one."""
     assert references_order("Payment for order ORD-2026-0001", "") is False
     assert references_order("Payment for order ORD-2026-0001", "   ") is False
+
+
+# --- the currency ----------------------------------------------------------
+
+
+def test_a_payment_in_another_currency_is_never_a_candidate() -> None:
+    """The same number in another currency is a different amount of money."""
+    assert currencies_match("USD", "USD")
+    assert not currencies_match("USD", "EUR")
+    assert select_candidates(make_subject(currency="EUR"), [make_candidate()]) == []
+    assert select_candidates(make_subject(), [make_candidate(currency="EUR")]) == []

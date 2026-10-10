@@ -15,6 +15,7 @@ from app.core.errors import AppError, ConflictError
 from app.db.enums import DealStage
 from app.modules.deals.state import deal_state
 from app.modules.deals.types import (
+    DEAL_CLOSED,
     INVALID_DEAL_PROBABILITY,
     INVALID_DEAL_STAGE_TRANSITION,
 )
@@ -27,6 +28,7 @@ __all__ = [
     "MIN_PROBABILITY",
     "TERMINAL_DEAL_STAGES",
     "WON_PROBABILITY",
+    "assert_deal_editable",
     "assert_deal_probability",
     "assert_deal_stage_transition",
     "can_transition_deal_stage",
@@ -67,6 +69,19 @@ DEFAULT_DEAL_PROBABILITY: Mapping[DealStage, int] = {
 def is_terminal_deal_stage(stage: DealStage) -> bool:
     """Whether the pipeline ends at this stage."""
     return stage in TERMINAL_DEAL_STAGES
+
+
+def assert_deal_editable(stage: DealStage) -> None:
+    """Refuses to edit the fields of a deal that has closed.
+
+    A won or lost deal is a record of what happened, not an estimate any more:
+    its amount, currency and dates are what the reports already counted, and
+    editing them would rewrite history. Only the fields are frozen here; whether
+    a closed deal may still move is the stage machine's decision.
+    """
+    if not is_terminal_deal_stage(stage):
+        return
+    raise ConflictError("A closed deal cannot be edited", DEAL_CLOSED, {"stage": str(stage)})
 
 
 def can_transition_deal_stage(from_stage: DealStage, to_stage: DealStage) -> bool:

@@ -16,15 +16,22 @@ from datetime import date
 from decimal import Decimal
 from typing import Annotated, Literal, Self
 
-from pydantic import BeforeValidator, Field, WithJsonSchema, field_validator, model_validator
+from pydantic import (
+    BeforeValidator,
+    Field,
+    PlainSerializer,
+    WithJsonSchema,
+    field_validator,
+    model_validator,
+)
 
-from app.core.pagination import DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, SortOrder
+from app.core.pagination import DEFAULT_PAGE_SIZE, MAX_PAGE, MAX_PAGE_SIZE, SortOrder
 from app.core.responses import CamelModel
-from app.core.serializers import Money, UtcDate, UtcDatetime
+from app.core.serializers import Money, UtcDatetime
+from app.core.validation import IsoDate
 from app.db.enums import DealStage
 from app.modules.deals.transition import MAX_PROBABILITY, MIN_PROBABILITY
 from app.modules.deals.types import (
-    MAX_DEAL_PAGE,
     MAX_SEARCH_LENGTH,
     MAX_TITLE_LENGTH,
     DealSortField,
@@ -60,6 +67,10 @@ def _parse_currency(value: object) -> object:
         message = "Currency must be a three-letter code"
         raise ValueError(message)
     return code.upper()
+
+
+def _format_calendar_date(value: date) -> str:
+    return value.isoformat()
 
 
 def _require_json_number(value: object) -> object:
@@ -104,6 +115,15 @@ CurrencyIn = Annotated[str, BeforeValidator(_parse_currency)]
 Probability = Annotated[int, Field(ge=MIN_PROBABILITY, le=MAX_PROBABILITY)]
 #: The same bound as it arrives in a request body, where it must be a number.
 BodyProbability = Annotated[Probability, BeforeValidator(_require_json_number)]
+#: A calendar day on the way in: ``YYYY-MM-DD`` text only, never a timestamp.
+CalendarDateIn = IsoDate
+#: A calendar day on the way out, in the same ``YYYY-MM-DD`` form it came in.
+#: It is the same day for everybody who reads it, so it is not an instant.
+CalendarDateOut = Annotated[
+    date,
+    PlainSerializer(_format_calendar_date, return_type=str),
+    WithJsonSchema({"type": "string", "format": "date"}, mode="serialization"),
+]
 #: Optimistic locking counter as the client echoes it back.
 Version = Annotated[int, Field(ge=1), BeforeValidator(_require_json_number)]
 #: Trimmed before it is measured, so a title of spaces is an empty title.
@@ -122,7 +142,7 @@ class DealOut(CamelModel):
     currency: str
     probability: int
     version: int
-    expected_close_date: UtcDate | None
+    expected_close_date: CalendarDateOut | None
     closed_at: UtcDatetime | None
     created_at: UtcDatetime
     updated_at: UtcDatetime
@@ -143,7 +163,7 @@ class CreateDealRequest(CamelModel):
     amount: AmountIn
     currency: CurrencyIn | None = None
     probability: BodyProbability | None = None
-    expected_close_date: date | None = None
+    expected_close_date: CalendarDateIn | None = None
 
     # Every optional field here may be left out, but none may be sent as null:
     # a new deal has nothing to clear.
@@ -177,7 +197,7 @@ class UpdateDealRequest(CamelModel):
     amount: AmountIn | None = None
     currency: CurrencyIn | None = None
     probability: BodyProbability | None = None
-    expected_close_date: date | None = None
+    expected_close_date: CalendarDateIn | None = None
 
     # These back non-nullable columns, so an explicit null is a bad request
     # rather than a silent no-op that still moves the version on.
@@ -219,7 +239,7 @@ class DealListParams(CamelModel):
     through a browser, and none of them are the client asking for anything.
     """
 
-    page: int = Field(default=1, ge=1, le=MAX_DEAL_PAGE)
+    page: int = Field(default=1, ge=1, le=MAX_PAGE)
     page_size: int = Field(default=DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE)
     search: str | None = Field(default=None, min_length=1, max_length=MAX_SEARCH_LENGTH)
     owner_id: uuid.UUID | None = None
@@ -229,8 +249,8 @@ class DealListParams(CamelModel):
     max_amount: AmountIn | None = None
     min_probability: Probability | None = None
     max_probability: Probability | None = None
-    expected_close_from: date | None = None
-    expected_close_to: date | None = None
+    expected_close_from: CalendarDateIn | None = None
+    expected_close_to: CalendarDateIn | None = None
     sort_by: DealSortField = "createdAt"
     sort_order: SortOrder = "desc"
 

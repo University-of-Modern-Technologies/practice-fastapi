@@ -3,9 +3,11 @@
 Two responsibilities live here. The first answers "may this user do this?" and
 is on the hot path of nearly every request, so the answer is cached as one
 snapshot per user. The second edits roles, and every edit that could change an
-answer drops the affected snapshots immediately — a stale permission is a
-security bug, not a stale read. Each edit is also written to the audit trail on
-the same session, so the edit and its entry commit or roll back together.
+answer drops the affected snapshots as soon as it commits — a stale permission
+is a security bug, not a stale read, and a snapshot dropped before the commit
+could be rebuilt from the old rows by a concurrent request. Each edit is also
+written to the audit trail on the same session, so the edit and its entry
+commit or roll back together.
 
 The audit package is imported lazily. Its router guards itself with this
 module's permission dependency, so importing it at the top here would close an
@@ -26,6 +28,7 @@ from app.core.errors import AppError, ConflictError, NotFoundError
 from app.db.enums import PermissionScope
 from app.db.models.rbac import Permission, Role, RolePermission, UserRole
 from app.db.models.user import User
+from app.modules.rbac.commit import after_commit
 from app.modules.rbac.schemas import (
     CreateRoleRequest,
     PermissionAssignment,
@@ -187,8 +190,8 @@ class RbacService:
             ),
         )
         # Every holder of this role now carries a snapshot that no longer
-        # matches the database.
-        await self.invalidate_all_user_permissions()
+        # matches the database, once this change commits.
+        await after_commit(self._session, self.invalidate_all_user_permissions)
         return replaced
 
     async def _load_cached_permissions(self, user_id: uuid.UUID) -> CachedUserPermissions:

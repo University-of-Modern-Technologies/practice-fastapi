@@ -17,8 +17,8 @@ from decimal import Decimal
 import pytest
 from pydantic import ValidationError
 
-from app.core.reporting import DEFAULT_REPORT_WINDOW_FROM, default_report_window_to
 from app.db.enums import PaymentMatchStatus, TransactionDirection
+from app.modules.analytics.kyiv_time import DEFAULT_KYIV_WINDOW_FROM, default_kyiv_window_to
 from app.modules.finance.schemas import (
     MAX_SUMMARY_DAYS,
     BankStatementOut,
@@ -51,6 +51,7 @@ def make_transaction_out(**overrides: object) -> BankTransactionOut:
         "matched_order_id": None,
         "matched_at": None,
         "matched_by_id": None,
+        "auto_match_disabled": False,
         "version": 1,
         "created_at": NOW,
         "updated_at": NOW,
@@ -107,6 +108,19 @@ def test_a_transaction_is_published_in_camel_case() -> None:
     assert "matchStatus" in published
     assert "counterpartyName" in published
     assert "match_status" not in published
+
+
+def test_a_transaction_says_whether_the_rule_may_match_it() -> None:
+    """The mark a manual unmatch leaves, under the sibling's name and place."""
+    published = make_transaction_out(auto_match_disabled=True).model_dump(
+        by_alias=True, mode="json"
+    )
+
+    assert published["autoMatchDisabled"] is True
+    keys = list(published)
+    # Between the match columns and the version, where the sibling puts it.
+    assert keys[keys.index("matchedById") + 1] == "autoMatchDisabled"
+    assert keys[keys.index("autoMatchDisabled") + 1] == "version"
 
 
 # --- money on the way in ---------------------------------------------------
@@ -166,18 +180,32 @@ def test_an_unknown_sort_column_is_refused() -> None:
         TransactionListParams(sort_by="counterpartyName")
 
 
-def test_a_booking_bound_without_a_zone_is_read_as_utc() -> None:
+def test_a_booking_bound_without_a_zone_is_read_on_the_kyiv_clock() -> None:
     """The ledger's bounds follow the rule every report bound follows.
 
-    Refusing here while the summary next door read the same value as UTC made
-    one date valid on one screen and an error on the other.
+    Refusing here while the summary next door read the same value made one date
+    valid on one screen and an error on the other. A bare date is the day as
+    Kyiv lives it, so it starts at Kyiv midnight.
     """
     params = TransactionListParams.model_validate(
         {"bookedFrom": "2026-01-05", "bookedTo": "2026-01-06T12:00:00+02:00"}
     )
 
-    assert params.booked_from == datetime(2026, 1, 5, tzinfo=UTC)
+    assert params.booked_from == datetime(2026, 1, 4, 22, tzinfo=UTC)
     assert params.booked_to == datetime(2026, 1, 6, 10, tzinfo=UTC)
+
+
+def test_a_payment_booked_at_half_past_midnight_in_kyiv_is_in_that_day() -> None:
+    """A day of the ledger is a Kyiv day, not the UTC one still running."""
+    params = TransactionListParams.model_validate(
+        {"bookedFrom": "2026-03-11", "bookedTo": "2026-03-12"}
+    )
+    booked = datetime(2026, 3, 10, 22, 30, tzinfo=UTC)
+
+    assert params.booked_from == datetime(2026, 3, 10, 22, tzinfo=UTC)
+    assert params.booked_from is not None
+    assert params.booked_to is not None
+    assert params.booked_from <= booked < params.booked_to
 
 
 @pytest.mark.parametrize("junk", ["1", "2026-13-01", "2026-01-05T10:00:00+0200"])
@@ -232,15 +260,17 @@ def test_a_summary_with_no_bounds_takes_the_shared_default() -> None:
     """Each bound defaults on its own, before anything is checked."""
     params = FinanceSummaryParams()
 
-    assert params.range_from == DEFAULT_REPORT_WINDOW_FROM
-    assert params.range_to == default_report_window_to()
+    # Kyiv midnight of 1 January to the next Kyiv midnight.
+    assert params.range_from == DEFAULT_KYIV_WINDOW_FROM
+    assert params.range_from == datetime(2025, 12, 31, 22, tzinfo=UTC)
+    assert params.range_to == default_kyiv_window_to()
 
 
 def test_one_bound_alone_is_paired_with_the_default() -> None:
     params = FinanceSummaryParams.model_validate({"from": NOW})
 
     assert params.range_from == NOW
-    assert params.range_to == default_report_window_to()
+    assert params.range_to == default_kyiv_window_to()
 
 
 @pytest.mark.parametrize("bounds", [{"from": "9999-01-01T00:00:00Z"}, {"to": "2025-12-31"}])
@@ -277,12 +307,12 @@ def test_a_summary_bound_arrives_under_its_published_name() -> None:
     assert params.range_from == NOW
 
 
-def test_a_summary_bound_without_a_zone_is_read_as_utc() -> None:
-    params = FinanceSummaryParams.model_validate(
-        {"from": "2026-01-01T00:00:00", "to": "2026-01-31T00:00:00"}
-    )
+def test_a_summary_bound_without_a_zone_is_read_on_the_kyiv_clock() -> None:
+    params = FinanceSummaryParams.model_validate({"from": "2026-03-01T10:30", "to": "2026-04-01"})
 
-    assert params.range_from == datetime(2026, 1, 1, tzinfo=UTC)
+    # UTC+2 on 1 March, UTC+3 on 1 April: the clocks moved in between.
+    assert params.range_from == datetime(2026, 3, 1, 8, 30, tzinfo=UTC)
+    assert params.range_to == datetime(2026, 3, 31, 21, tzinfo=UTC)
 
 
 def test_an_upside_down_summary_window_is_refused() -> None:

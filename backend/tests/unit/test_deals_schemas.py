@@ -47,9 +47,9 @@ def test_an_amount_travels_as_a_string_with_a_fixed_scale() -> None:
     # Shortest exact form: a stored amount reaches the client without the
     # padding the column carries, exactly as the sibling backend renders it.
     assert payload["amount"] == "12.5"
-    # A date-only column still travels as a full timestamp: the client parses
-    # every temporal field the same way.
-    assert payload["expectedCloseDate"] == "2026-09-01T00:00:00.000Z"
+    # A calendar day travels as a calendar day, the same form it came in as:
+    # it is the same day for everybody who reads it, not an instant.
+    assert payload["expectedCloseDate"] == "2026-09-01"
     assert payload["createdAt"] == "2026-08-12T15:23:45.123Z"
 
 
@@ -226,4 +226,43 @@ def test_a_search_of_whitespace_is_refused_and_a_page_has_a_ceiling() -> None:
     with pytest.raises(ValidationError):
         DealListParams.model_validate({"search": "   "})
     with pytest.raises(ValidationError):
-        DealListParams.model_validate({"page": 1_000_001})
+        DealListParams.model_validate({"page": 101})
+
+
+@pytest.mark.parametrize(
+    "value", [1_798_675_200, 1_798_675_200_000, "1798675200", 1.5, True, "2026-12-31T00:00:00Z"]
+)
+def test_a_timestamp_is_not_taken_for_a_calendar_day(value: object) -> None:
+    """The framework would read a number as a Unix timestamp; the other backend
+    refuses it, and so does this one."""
+    with pytest.raises(ValidationError):
+        CreateDealRequest.model_validate(
+            {"title": "Opportunity", "amount": "1.00", "expectedCloseDate": value}
+        )
+    with pytest.raises(ValidationError):
+        UpdateDealRequest.model_validate({"version": 1, "expectedCloseDate": value})
+    with pytest.raises(ValidationError):
+        DealListParams.model_validate({"expectedCloseFrom": value})
+
+
+@pytest.mark.parametrize("value", ["2026-02-31", "2026-13-01", "2026-1-5"])
+def test_a_calendar_day_has_to_exist(value: str) -> None:
+    with pytest.raises(ValidationError):
+        CreateDealRequest.model_validate(
+            {"title": "Opportunity", "amount": "1.00", "expectedCloseDate": value}
+        )
+
+
+def test_a_calendar_day_is_read_as_written() -> None:
+    request = CreateDealRequest.model_validate(
+        {"title": "Opportunity", "amount": "1.00", "expectedCloseDate": "2028-02-29"}
+    )
+    params = DealListParams.model_validate(
+        {"expectedCloseFrom": "2026-01-01", "expectedCloseTo": "2026-12-31"}
+    )
+
+    assert request.expected_close_date == date(2028, 2, 29)
+    assert (params.expected_close_from, params.expected_close_to) == (
+        date(2026, 1, 1),
+        date(2026, 12, 31),
+    )

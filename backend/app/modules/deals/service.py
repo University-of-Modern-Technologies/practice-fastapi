@@ -42,6 +42,7 @@ from app.modules.deals.schemas import (
 )
 from app.modules.deals.transition import (
     DEFAULT_DEAL_PROBABILITY,
+    assert_deal_editable,
     assert_deal_probability,
     assert_deal_stage_transition,
     closed_at_for_stage,
@@ -49,6 +50,7 @@ from app.modules.deals.transition import (
 )
 from app.modules.deals.types import (
     CONTACT_NOT_FOUND,
+    CURRENCY_NOT_SUPPORTED,
     DEAL_CONCURRENT_MODIFICATION,
     DEAL_CREATED,
     DEAL_DELETED,
@@ -62,6 +64,7 @@ from app.modules.deals.types import (
     INVALID_INITIAL_DEAL_STAGE,
     DealAccess,
     DealSortField,
+    OrganizationCurrencyResolver,
 )
 
 #: Columns a client may sort by, under the names the client uses.
@@ -107,6 +110,26 @@ def _assert_amount(amount: Decimal) -> None:
     """
     if not amount.is_finite() or amount < 0:
         raise AppError("Amount must be non-negative", 400, INVALID_DEAL_AMOUNT)
+
+
+def _assert_organization_currency(currency: str, expected: str) -> None:
+    """Refuses a deal in a currency the organization does not keep books in.
+
+    Pipeline totals add deals up as if the units were the same, so a deal in
+    another currency is refused rather than converted at a rate nobody chose.
+    """
+    if currency == expected:
+        return
+    raise AppError(
+        f"Deals are kept in the organization currency {expected}",
+        422,
+        CURRENCY_NOT_SUPPORTED,
+        {"currency": currency, "expected": expected},
+    )
+
+
+async def _default_currency() -> str:
+    return DEFAULT_CURRENCY
 
 
 def _assert_initial_stage(stage: DealStage | None) -> None:
@@ -160,12 +183,18 @@ class DealsService:
         session: AsyncSession,
         events: DomainEventPublisher | None = None,
         audit: AuditService | None = None,
+        resolve_organization_currency: OrganizationCurrencyResolver | None = None,
     ) -> None:
         self._session = session
         self._events: DomainEventPublisher = events if events is not None else NoopPublisher()
         # The trail is written on the very session the change is written on, so
         # a rolled back deal cannot leave an entry claiming it happened.
         self._audit = audit if audit is not None else AuditService(session)
+        self._resolve_currency: OrganizationCurrencyResolver = (
+            resolve_organization_currency
+            if resolve_organization_currency is not None
+            else _default_currency
+        )
 
     async def list_deals(
         self, access: DealAccess, params: DealListParams
@@ -188,6 +217,9 @@ class DealsService:
             data.probability if data.probability is not None else DEFAULT_DEAL_PROBABILITY[stage]
         )
         assert_deal_probability(stage, probability)
+        expected_currency = await self._organization_currency()
+        currency = data.currency if data.currency is not None else expected_currency
+        _assert_organization_currency(currency, expected_currency)
         await self._require_owner(data.owner_id)
         await self._require_contact(access, data.contact_id)
 
@@ -198,7 +230,7 @@ class DealsService:
             title=data.title,
             stage=stage,
             amount=quantize_money(data.amount),
-            currency=data.currency if data.currency is not None else DEFAULT_CURRENCY,
+            currency=currency,
             probability=probability,
             version=1,
             expected_close_date=data.expected_close_date,
@@ -222,9 +254,14 @@ class DealsService:
         """
         if data.amount is not None:
             _assert_amount(data.amount)
+        if data.currency is not None:
+            _assert_organization_currency(data.currency, await self._organization_currency())
 
         existing = await self._require_active(access, deal_id)
         self._assert_version(existing.version, data.version)
+        # Only the fields are frozen; the stage machine decides on its own
+        # whether a closed deal may still move.
+        assert_deal_editable(existing.stage)
 
         fields = data.model_fields_set
         owner_id = data.owner_id if data.owner_id is not None else existing.owner_id
@@ -369,6 +406,9 @@ class DealsService:
                 "Deal was modified by another request", DEAL_CONCURRENT_MODIFICATION
             )
         return to_deal_out(written)
+
+    async def _organization_currency(self) -> str:
+        return (await self._resolve_currency()).upper()
 
     @staticmethod
     def _owned(access: DealAccess) -> list[ColumnElement[bool]]:

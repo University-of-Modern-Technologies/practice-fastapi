@@ -9,13 +9,15 @@ from typing import Any, cast
 import pytest
 from sqlalchemy import Select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Session
+from sqlalchemy.util import greenlet_spawn
 
 from app.db.enums import PermissionScope
 from app.db.models.rbac import Permission, Role, RolePermission
 from app.modules.audit import AuditEvent, AuditService
 from app.modules.rbac.schemas import CreateRoleRequest, ReplaceRolePermissionsRequest
 from app.modules.rbac.service import RbacService
-from app.modules.rbac.types import Actor
+from app.modules.rbac.types import Actor, CachePort, user_permissions_prefix
 
 NOW = datetime(2026, 8, 12, 15, 23, 45, 123_000, tzinfo=UTC)
 ACTOR = Actor(actor_id=uuid.UUID("10000000-0000-4000-8000-000000000001"), ip_address="203.0.113.7")
@@ -195,3 +197,64 @@ async def test_the_role_returned_after_a_replacement_is_reloaded_rather_than_reu
     final_read = session.statements[-1]
     assert isinstance(final_read, Select)
     assert final_read.get_execution_options().get("populate_existing") is True
+
+
+class CommittingSession(FakeSession):
+    """The scripted session, with a real transaction whose commit can be awaited."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.sync_session = Session()
+        self.sync_session.begin()
+
+    async def commit(self) -> None:
+        await greenlet_spawn(self.sync_session.commit)
+
+
+class RecordingCache:
+    def __init__(self) -> None:
+        self.dropped_prefixes: list[str] = []
+
+    async def get(self, key: str) -> Any:
+        del key
+
+    async def set(self, key: str, value: Any, ttl_seconds: int) -> None:
+        del key, value, ttl_seconds
+
+    async def delete(self, keys: str | list[str]) -> None:
+        del keys
+
+    async def invalidate_prefix(self, prefix: str) -> None:
+        self.dropped_prefixes.append(prefix)
+
+
+# Dropped before the commit, a snapshot could be rebuilt from
+# the old grants by a concurrent request and served for the whole TTL.
+async def test_snapshots_are_dropped_only_once_a_role_change_commits() -> None:
+    role_id = uuid.uuid4()
+    session = CommittingSession()
+    session.rows[(Role, role_id)] = Role(id=role_id, name="support")
+    session.execute_queue = [
+        [("contacts:read", PERMISSION_ID)],
+        make_role(PermissionScope.ALL, role_id=role_id),
+        None,
+        make_role(PermissionScope.OWN, role_id=role_id),
+    ]
+    cache = RecordingCache()
+    service = RbacService(
+        cast("AsyncSession", session),
+        cast("CachePort", cache),
+        audit=cast("AuditService", RecordingAudit()),
+    )
+
+    await service.replace_role_permissions(
+        ACTOR,
+        role_id,
+        ReplaceRolePermissionsRequest.model_validate(
+            {"permissions": [{"resource": "contacts", "action": "read", "scope": "OWN"}]}
+        ),
+    )
+    assert cache.dropped_prefixes == []
+
+    await session.commit()
+    assert cache.dropped_prefixes == [user_permissions_prefix()]
