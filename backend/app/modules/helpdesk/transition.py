@@ -11,15 +11,16 @@ from __future__ import annotations
 from collections.abc import Mapping
 from datetime import UTC, datetime
 
-from app.core.errors import AppError
+from app.core.errors import AppError, ConflictError
 from app.db.enums import TicketStatus
-from app.modules.helpdesk.types import TICKET_TRANSITION_NOT_ALLOWED
+from app.modules.helpdesk.types import TICKET_CLOSED, TICKET_TRANSITION_NOT_ALLOWED
 
 __all__ = [
     "ALLOWED_TICKET_STATUS_TRANSITIONS",
     "INITIAL_TICKET_STATUS",
     "TERMINAL_TICKET_STATUSES",
     "TRANSITION_NOT_ALLOWED_STATUS",
+    "assert_ticket_editable",
     "assert_ticket_status_transition",
     "can_transition_ticket_status",
     "is_terminal_ticket_status",
@@ -52,6 +53,19 @@ TRANSITION_NOT_ALLOWED_STATUS = 422
 def is_terminal_ticket_status(status: TicketStatus) -> bool:
     """Whether the lifecycle ends at this status."""
     return status in TERMINAL_TICKET_STATUSES
+
+
+def assert_ticket_editable(status: TicketStatus) -> None:
+    """Refuses to edit the fields of a closed ticket.
+
+    Only ``CLOSED`` is final: a resolved ticket may still be reopened, so it
+    stays editable. Whether a closed ticket may still move is the lifecycle's
+    decision, not this one's; this freezes the fields the reports and the
+    customer already saw.
+    """
+    if not is_terminal_ticket_status(status):
+        return
+    raise ConflictError("A closed ticket cannot be edited", TICKET_CLOSED, {"status": str(status)})
 
 
 def can_transition_ticket_status(from_status: TicketStatus, to_status: TicketStatus) -> bool:

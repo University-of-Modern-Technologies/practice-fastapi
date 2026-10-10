@@ -17,7 +17,6 @@ __all__ = [
     "CONTACT_NOT_FOUND",
     "CONTACT_OWNER_NOT_FOUND",
     "CONTACT_UPDATED",
-    "MAX_CONTACT_PAGE",
     "ContactAccess",
     "ContactSortField",
 ]
@@ -33,7 +32,6 @@ CONTACT_OWNER_NOT_FOUND = "CONTACT_OWNER_NOT_FOUND"
 #: low enough that the row offset it implies stays a small integer for the
 #: database: an unbounded page number is otherwise a way to make the query
 #: itself fail.
-MAX_CONTACT_PAGE = 1_000_000
 
 #: Entity and event labels; the realtime topics and the event log key on them.
 CONTACT_ENTITY_TYPE = "contact"

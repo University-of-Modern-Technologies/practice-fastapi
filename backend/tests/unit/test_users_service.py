@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
@@ -10,6 +11,8 @@ import pytest
 from pydantic import ValidationError
 from sqlalchemy import Delete, Select, Update
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Session
+from sqlalchemy.util import greenlet_spawn
 
 from app.core.errors import ConflictError, NotFoundError
 from app.db.models.rbac import Role, UserRole
@@ -604,3 +607,145 @@ async def test_revoking_an_already_revoked_session_writes_nothing_to_the_trail()
     await make_service(session, audit=audit).revoke_session(ACTOR, user.id, row.id)
 
     assert audit.events == []
+
+
+class CommittingSession(FakeSession):
+    """The scripted session, with a real transaction whose commit can be awaited.
+
+    The rows still come from the script; only the commit hooks are real, which
+    is what decides when a side effect of the write runs.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.sync_session = Session()
+        self.sync_session.begin()
+
+    async def commit(self) -> None:
+        await greenlet_spawn(self.sync_session.commit)
+
+
+class RecordingRevocations:
+    """Collects what the service reports about sessions it ended."""
+
+    def __init__(self) -> None:
+        self.ended: list[str] = []
+
+    def sessions_revoked(self, session_ids: Sequence[uuid.UUID]) -> None:
+        self.ended.extend(f"session:{session_id}" for session_id in session_ids)
+
+    def user_sessions_revoked(self, user_id: uuid.UUID) -> None:
+        self.ended.append(f"user:{user_id}")
+
+
+def make_committing_service(
+    session: CommittingSession,
+    invalidator: RecordingInvalidator,
+    revocations: RecordingRevocations,
+) -> UsersService:
+    return UsersService(
+        cast("AsyncSession", session),
+        invalidator,
+        cast("AuditService", RecordingAudit()),
+        sessions=revocations,
+    )
+
+
+# Dropped before the commit, the snapshot could be rebuilt from
+# the old rows by a concurrent request and served for the whole TTL.
+async def test_cached_permissions_are_dropped_only_once_the_change_commits() -> None:
+    user = make_user()
+    role_id = uuid.uuid4()
+    session = CommittingSession()
+    session.execute_queue = [[user], [role_id], [], [user]]
+    invalidator = RecordingInvalidator()
+    service = make_committing_service(session, invalidator, RecordingRevocations())
+
+    await service.update(
+        ACTOR, user.id, UpdateUserRequest.model_validate({"roleIds": [str(role_id)]})
+    )
+    assert invalidator.invalidated == []
+
+    await session.commit()
+    assert invalidator.invalidated == [user.id]
+
+
+# A socket opened with a session must not outlive it.
+async def test_a_disabled_account_has_its_sockets_closed_once_the_change_commits() -> None:
+    user = make_user()
+    session = CommittingSession()
+    session.execute_queue = [[user], [], [user]]
+    revocations = RecordingRevocations()
+    service = make_committing_service(session, RecordingInvalidator(), revocations)
+
+    await service.disable(ACTOR, user.id)
+    assert revocations.ended == []
+
+    await session.commit()
+    assert revocations.ended == [f"user:{user.id}"]
+
+
+async def test_a_password_change_ends_every_session_of_the_account() -> None:
+    user = make_user()
+    session = CommittingSession()
+    session.execute_queue = [[user], [], [user]]
+    revocations = RecordingRevocations()
+    service = make_committing_service(session, RecordingInvalidator(), revocations)
+
+    await service.update(
+        ACTOR, user.id, UpdateUserRequest.model_validate({"password": "new-password"})
+    )
+    await session.commit()
+
+    assert revocations.ended == [f"user:{user.id}"]
+
+
+async def test_a_rename_ends_no_session() -> None:
+    user = make_user()
+    session = CommittingSession()
+    session.execute_queue = [[user], [user]]
+    revocations = RecordingRevocations()
+    service = make_committing_service(session, RecordingInvalidator(), revocations)
+
+    await service.update(ACTOR, user.id, UpdateUserRequest.model_validate({"name": "Renamed"}))
+    await session.commit()
+
+    assert revocations.ended == []
+
+
+async def test_a_revoked_session_is_reported_once_the_revocation_commits() -> None:
+    user = make_user()
+    row = SessionRow(
+        id=uuid.uuid4(),
+        user_id=user.id,
+        token_hash="digest",
+        expires_at=NOW + timedelta(days=7),
+        created_at=NOW,
+        updated_at=NOW,
+    )
+    session = CommittingSession()
+    session.scalar_queue = [user.id]
+    session.rows[(SessionRow, row.id)] = row
+    revocations = RecordingRevocations()
+    service = make_committing_service(session, RecordingInvalidator(), revocations)
+
+    await service.revoke_session(ACTOR, user.id, row.id)
+    assert revocations.ended == []
+
+    await session.commit()
+    assert revocations.ended == [f"session:{row.id}"]
+
+
+async def test_a_change_that_rolls_back_reports_nothing() -> None:
+    user = make_user()
+    session = CommittingSession()
+    session.execute_queue = [[user], [], [user]]
+    invalidator = RecordingInvalidator()
+    revocations = RecordingRevocations()
+    service = make_committing_service(session, invalidator, revocations)
+
+    await service.disable(ACTOR, user.id)
+    await greenlet_spawn(session.sync_session.rollback)
+
+    assert invalidator.invalidated == []
+    assert revocations.ended == []

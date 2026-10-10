@@ -46,6 +46,7 @@ from app.modules.helpdesk.service import (
 )
 from app.modules.helpdesk.types import (
     TICKET_ASSIGNEE_NOT_FOUND,
+    TICKET_CLOSED,
     TICKET_CONCURRENT_MODIFICATION,
     TICKET_CONTACT_NOT_FOUND,
     TICKET_CREATED,
@@ -851,3 +852,43 @@ async def test_an_update_naming_an_unknown_owner_writes_nothing() -> None:
 
     assert error.value.code == "TICKET_OWNER_NOT_FOUND"
     assert len(session.statements) == 2  # the read and the owner lookup, no write
+
+
+# --- closed tickets ----------------------------------------------------------
+
+
+async def test_the_fields_of_a_closed_ticket_are_frozen() -> None:
+    session = FakeSession()
+    session.execute_queue = [[make_ticket(status=TicketStatus.CLOSED)]]
+    publisher = RecordingPublisher()
+
+    with pytest.raises(ConflictError) as error:
+        await make_service(session, publisher).update(
+            ALL_ACCESS,
+            TICKET_ID,
+            UpdateTicketRequest.model_validate({"version": 1, "subject": "Rewritten afterwards"}),
+        )
+
+    assert error.value.status_code == 409
+    assert error.value.code == TICKET_CLOSED
+    assert error.value.details == {"status": "CLOSED"}
+    # Only the read happened: nothing written, recorded or announced.
+    assert len(session.statements) == 1
+    assert audit_actions(session) == []
+    assert publisher.published == []
+
+
+async def test_a_resolved_ticket_may_yet_be_reopened_so_it_is_still_edited() -> None:
+    session = FakeSession()
+    session.execute_queue = [
+        [make_ticket(status=TicketStatus.RESOLVED, resolved_at=NOW)],
+        [make_ticket(status=TicketStatus.RESOLVED, resolved_at=NOW, version=2)],
+    ]
+
+    await make_service(session).update(
+        ALL_ACCESS,
+        TICKET_ID,
+        UpdateTicketRequest.model_validate({"version": 1, "priority": "LOW"}),
+    )
+
+    assert audit_actions(session) == [TICKET_UPDATED]

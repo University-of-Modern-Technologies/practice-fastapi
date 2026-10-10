@@ -275,5 +275,5 @@ def test_a_blank_search_is_refused_and_a_page_has_a_ceiling() -> None:
     with pytest.raises(ValidationError):
         TicketListParams.model_validate({"search": "   "})
     with pytest.raises(ValidationError):
-        TicketListParams.model_validate({"page": 1_000_001})
+        TicketListParams.model_validate({"page": 101})
     assert TicketListParams.model_validate({"page": "2"}).page == 2

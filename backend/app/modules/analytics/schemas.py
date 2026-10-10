@@ -4,9 +4,9 @@ Two things are worth stating before the code.
 
 A date range is *normalised*, not merely validated: a caller may send neither
 bound, either one, or both, and what reaches the service is always a resolved
-half-open interval ``[from, to)`` in UTC. That is what lets a cache key be built
-from the query — two requests that mean the same window produce the same key
-however the client spelled it.
+half-open interval ``[from, to)`` in UTC, its days cut at Kyiv midnight. That
+is what lets a cache key be built from the query — two requests that mean the
+same window produce the same key however the client spelled it.
 
 A limit is clamped rather than rejected. A caller asking for "everything" gets
 the largest page the report is willing to build instead of an error, while the
@@ -30,14 +30,15 @@ from pydantic import (
     model_validator,
 )
 
-from app.core.reporting import (
-    DEFAULT_REPORT_WINDOW_FROM,
-    MAX_REPORT_WINDOW_DAYS,
-    default_report_window_to,
-)
+from app.core.reporting import MAX_REPORT_WINDOW_DAYS
 from app.core.responses import CamelModel
 from app.core.serializers import UtcDatetime
 from app.db.enums import DealStage
+from app.modules.analytics.kyiv_time import (
+    DEFAULT_KYIV_WINDOW_FROM,
+    default_kyiv_window_to,
+    kyiv_wall_clock_to_utc,
+)
 from app.modules.analytics.types import (
     AnalyticsPeriod,
     DealFunnelQuery,
@@ -79,9 +80,10 @@ __all__ = [
 
 #: Widest window a single report may scan. See ``app.core.reporting``.
 MAX_RANGE_DAYS = MAX_REPORT_WINDOW_DAYS
-#: Start of the window applied when the caller does not name one; the end is
-#: today. See ``app.core.reporting``.
-DEFAULT_RANGE_FROM = DEFAULT_REPORT_WINDOW_FROM
+#: Start of the window applied when the caller does not name one — Kyiv
+#: midnight of 1 January 2026; the end is the close of today in Kyiv. See
+#: ``kyiv_time``.
+DEFAULT_RANGE_FROM = DEFAULT_KYIV_WINDOW_FROM
 #: Hard ceiling for every ``limit``; larger values are clamped, not rejected.
 MAX_LIMIT = 100
 DEFAULT_LIMIT = 10
@@ -180,12 +182,16 @@ def _as_utc(value: datetime) -> datetime:
     """Reads a bound as UTC, at the resolution the data is stored in.
 
     A client may send ``2026-01-01``, which parses without a zone. Treating that
-    as local time would move the window by the server's offset, so a missing
-    zone is read as UTC rather than as "wherever this process happens to run".
+    as the server's local time would move the window by wherever this process
+    happens to run, so a missing zone is read on the Kyiv clock — the calendar
+    every report is cut on: ``2026-03-01`` is the instant that day begins in
+    Kyiv, and ``2026-03-01T10:00`` is ten in the morning there. An explicit
+    ``Z`` or offset is taken as written.
     """
-    aware = value if value.tzinfo is not None else value.replace(tzinfo=UTC)
     try:
-        resolved = aware.astimezone(UTC)
+        resolved = (
+            value.astimezone(UTC) if value.tzinfo is not None else kyiv_wall_clock_to_utc(value)
+        )
     except OverflowError as error:
         raise ValueError(_NOT_AN_INSTANT) from error
     if not _EARLIEST_YEAR <= resolved.year <= _LATEST_YEAR:
@@ -197,8 +203,8 @@ def _as_utc(value: datetime) -> datetime:
 
 
 #: A date bound as every report — and the finance module — reads it: ISO 8601
-#: by the grammar above, a missing zone meaning UTC, normalised to UTC at
-#: millisecond resolution.
+#: by the grammar above, a missing zone meaning the Kyiv clock, normalised to
+#: UTC at millisecond resolution.
 ReportInstant = Annotated[datetime, BeforeValidator(_require_iso_instant), AfterValidator(_as_utc)]
 
 
@@ -221,9 +227,10 @@ class DateRangeParams(CamelModel):
     @model_validator(mode="after")
     def _resolve_range(self) -> DateRangeParams:
         # Each bound defaults on its own, so a caller may send neither, either,
-        # or both. The start is fixed and the end is the close of today, so a
-        # report asked for without a window includes what was entered today.
-        to = self.to if self.to is not None else default_report_window_to()
+        # or both. The start is fixed and the end is the close of today in
+        # Kyiv, so a report asked for without a window includes what was
+        # entered today.
+        to = self.to if self.to is not None else default_kyiv_window_to()
         from_ = self.from_ if self.from_ is not None else DEFAULT_RANGE_FROM
 
         if from_ >= to:

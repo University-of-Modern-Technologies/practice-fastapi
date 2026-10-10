@@ -45,6 +45,7 @@ from app.modules.analytics.decimal import (
     sum_decimals,
     to_scaled_integer,
 )
+from app.modules.analytics.kyiv_time import REPORT_TIME_ZONE
 from app.modules.analytics.schemas import (
     DealFunnelConversion,
     DealFunnelReport,
@@ -132,18 +133,21 @@ def sales_summary_statement(query: SalesSummaryQuery) -> Select[Any]:
     # The bucket width is a bound parameter like everything else: it arrives as
     # a validated enum member, and it still never becomes SQL text.
     #
-    # Buckets are cut on the UTC calendar, named explicitly. Truncating a
+    # Buckets are cut on the Kyiv calendar, named explicitly. Truncating a
     # timestamptz on its own uses the session's time zone, so the same orders
     # would fall into different days depending on how the connection happened
-    # to be configured. Converting to UTC wall time, truncating, and converting
-    # back pins every bucket to a UTC midnight.
+    # to be configured. Converting to Kyiv wall time, truncating, and
+    # converting back pins every bucket to a Kyiv midnight, summer time
+    # included — an order at half past midnight in Kyiv belongs to the day the
+    # person who placed it saw on the clock.
     #
     # The first bucket starts where its calendar unit starts, which may be
     # before ``from`` (a week asked for from a Wednesday starts on the Monday).
     # Its figures still cover only the window: the bounds below filter the
     # orders, the truncation only labels them.
     bucket = func.timezone(
-        "UTC", func.date_trunc(query.period.value, func.timezone("UTC", dated))
+        REPORT_TIME_ZONE,
+        func.date_trunc(query.period.value, func.timezone(REPORT_TIME_ZONE, dated)),
     ).label("bucket_start")
 
     criteria: list[ColumnElement[bool]] = [

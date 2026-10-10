@@ -39,7 +39,11 @@ from app.modules.auth.types import (
     AuthContext,
     AuthResult,
     ClientInfo,
+    NoopSessionRevocationListener,
+    SessionRevocationListener,
+    notify_sessions_revoked,
 )
+from app.modules.rbac.commit import after_commit
 from app.modules.rbac.types import create_permission_key, parse_permission_key
 
 #: The session half of a refresh token, exactly as it is issued. Nothing else
@@ -112,13 +116,22 @@ class AuthService:
     """Sign-in, session rotation and access-token verification."""
 
     def __init__(
-        self, session: AsyncSession, config: AuthConfig, client: ClientInfo | None = None
+        self,
+        session: AsyncSession,
+        config: AuthConfig,
+        client: ClientInfo | None = None,
+        sessions: SessionRevocationListener | None = None,
     ) -> None:
         self._session = session
         self._config = config
         # Recorded on the session a login opens or a refresh renews; without it
         # (a caller outside HTTP) the stored values are left as they are.
         self._client = client
+        # Told about a session a logout ended, so a socket opened with it is
+        # closed now rather than when its access token runs out.
+        self._sessions: SessionRevocationListener = (
+            sessions if sessions is not None else NoopSessionRevocationListener()
+        )
 
     async def login(self, data: LoginRequest) -> AuthResult:
         """Verifies credentials and opens a new session.
@@ -162,21 +175,49 @@ class AuthService:
     async def logout(self, refresh_token: str | None) -> None:
         """Revokes the session a refresh token points at.
 
-        Logging out without a usable token is not an error: the caller asked to
-        end a session that is already over, and the outcome they wanted holds.
+        Only the holder of the whole token may end its session: the session id
+        alone is not a secret. Logging out without a usable token is not an
+        error: the caller asked to end a session that is, for them, already
+        over. Every such case is answered alike, so the answer never says
+        whether the session exists.
         """
         if not refresh_token:
             return
         try:
-            session_id, _ = split_refresh_token(refresh_token)
+            session_id, secret = split_refresh_token(refresh_token)
         except UnauthorizedError:
             return
 
-        await self._session.execute(
+        row = await self._session.get(SessionRow, session_id)
+        # The secret is checked in every case, against a throwaway digest when
+        # there is no row, so a missing session costs the same time as a wrong
+        # secret.
+        secret_matches = await verify_password_async(
+            secret, row.token_hash if row is not None else DUMMY_PASSWORD_HASH
+        )
+        if row is None or not secret_matches or row.revoked_at is not None:
+            return
+
+        # Conditional on the digest just checked: a refresh that rotated the
+        # secret in the meantime leaves this, now stale, token without effect.
+        result = await self._session.execute(
             update(SessionRow)
-            .where(SessionRow.id == session_id, SessionRow.revoked_at.is_(None))
+            .where(
+                SessionRow.id == row.id,
+                SessionRow.token_hash == row.token_hash,
+                SessionRow.revoked_at.is_(None),
+            )
             .values(revoked_at=datetime.now(tz=UTC))
         )
+        if cast("CursorResult[Any]", result).rowcount != 1:
+            return
+
+        ended = row.id
+
+        async def notify() -> None:
+            notify_sessions_revoked(self._sessions, session_ids=[ended])
+
+        await after_commit(self._session, notify)
 
     async def authenticate(self, access_token: str) -> AuthContext:
         """Turns a bearer token into an identity.
@@ -192,9 +233,13 @@ class AuthService:
 
         subject = claims.get("sub")
         raw_session_id = claims.get("sessionId")
+        expiry = claims.get("exp")
         if claims.get("type") != "access" or not isinstance(subject, str):
             raise UnauthorizedError()
         if not isinstance(raw_session_id, str):
+            raise UnauthorizedError()
+        # A token without a lifetime would be valid forever; none is ever issued.
+        if not isinstance(expiry, int | float) or isinstance(expiry, bool):
             raise UnauthorizedError()
 
         try:
@@ -211,7 +256,11 @@ class AuthService:
         if user is None or not user.is_active:
             raise UnauthorizedError()
 
-        return AuthContext(user_id=user_id, session_id=session_id)
+        return AuthContext(
+            user_id=user_id,
+            session_id=session_id,
+            expires_at=datetime.fromtimestamp(expiry, tz=UTC),
+        )
 
     async def me(self, user_id: uuid.UUID) -> AuthenticatedUser:
         """The signed-in account with its roles and full permission list."""

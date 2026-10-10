@@ -21,7 +21,6 @@ import uuid
 from typing import Annotated, Self
 
 from pydantic import (
-    AwareDatetime,
     BeforeValidator,
     Field,
     StringConstraints,
@@ -29,12 +28,12 @@ from pydantic import (
     model_validator,
 )
 
-from app.core.pagination import DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, SortOrder
+from app.core.pagination import DEFAULT_PAGE_SIZE, MAX_PAGE, MAX_PAGE_SIZE, SortOrder
 from app.core.responses import CamelModel
 from app.core.serializers import UtcDatetime
+from app.core.validation import IsoAwareDatetime
 from app.db.enums import CallDirection, CallDisposition
 from app.modules.calls.types import (
-    MAX_CALL_PAGE,
     MAX_NOTES_LENGTH,
     MAX_NUMBER_LENGTH,
     MAX_SEARCH_LENGTH,
@@ -215,7 +214,7 @@ class CallListParams(CamelModel):
     through a browser, and none of them are the client asking for anything.
     """
 
-    page: int = Field(default=1, ge=1, le=MAX_CALL_PAGE)
+    page: int = Field(default=1, ge=1, le=MAX_PAGE)
     page_size: int = Field(default=DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE)
     search: str | None = Field(default=None, min_length=1, max_length=MAX_SEARCH_LENGTH)
     direction: CallDirection | None = None
@@ -226,8 +225,8 @@ class CallListParams(CamelModel):
     # A zone is required rather than assumed: "2026-09-01T00:00:00" means a
     # different instant in every office that sends it, and silently reading it
     # as UTC would answer a question the caller did not ask.
-    started_from: AwareDatetime | None = None
-    started_to: AwareDatetime | None = None
+    started_from: IsoAwareDatetime | None = None
+    started_to: IsoAwareDatetime | None = None
     #: Whether the call has been attached to a contact at all. The one filter
     #: that asks about absence, and the reason it exists: unattached calls are
     #: the work queue of this module.

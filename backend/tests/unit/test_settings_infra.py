@@ -52,9 +52,28 @@ def test_a_trusted_proxy_must_be_an_address_or_a_network(value: str) -> None:
         build(trusted_proxies=value)
 
 
-@pytest.mark.parametrize(("timeout_ms", "seconds"), [(15_000, 15), (1_500, 2), (999, 1), (1, 1)])
-def test_the_shutdown_timeout_never_rounds_down_to_zero(timeout_ms: int, seconds: int) -> None:
-    assert build(shutdown_timeout_ms=timeout_ms).graceful_shutdown_seconds == seconds
+@pytest.mark.parametrize(
+    ("grace_ms", "seconds"), [(10_000, 10), (1_500, 2), (999, 1), (1, 1), (0, 0)]
+)
+def test_the_grace_period_is_what_the_server_waits_for_in_flight_requests(
+    grace_ms: int, seconds: int
+) -> None:
+    """The grace period, not the overall timeout, as in the sibling backend."""
+    settings = build(shutdown_grace_period_ms=grace_ms, shutdown_timeout_ms=15_000)
+
+    assert settings.graceful_shutdown_seconds == seconds
+
+
+#: `stop_grace_period` of the API service in compose: past it the container
+#: runtime kills the process, so the whole stop has to end earlier.
+COMPOSE_STOP_GRACE_PERIOD_MS = 20_000
+
+
+def test_the_default_stop_ends_before_the_container_is_killed() -> None:
+    settings = build()
+
+    budget = settings.shutdown_drain_delay_ms + settings.shutdown_grace_period_ms
+    assert budget <= settings.shutdown_timeout_ms < COMPOSE_STOP_GRACE_PERIOD_MS
 
 
 def test_sql_is_not_logged_unless_asked_for() -> None:
