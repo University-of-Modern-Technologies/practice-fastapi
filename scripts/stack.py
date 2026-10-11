@@ -326,6 +326,7 @@ def seed_demo() -> None:
 
 
 def test() -> None:
+    ensure_installed(FRONTEND_ROOT)
     run(["uv", "run", "pytest"], cwd=BACKEND_ROOT)
     run(["npm", "test"], cwd=FRONTEND_ROOT)
 
@@ -333,6 +334,9 @@ def test() -> None:
 def check() -> None:
     # The API and web client jobs of CI; integration tests, the migrations check
     # and the image build run there as well (`test:integration`, `docker:build`).
+    # The client install is checked up front, so its absence fails before the
+    # minutes of backend checks rather than after them; uv installs the backend.
+    ensure_installed(FRONTEND_ROOT)
     check_api()
     check_web()
 
@@ -345,6 +349,7 @@ def check_api() -> None:
 
 
 def check_web() -> None:
+    ensure_installed(FRONTEND_ROOT)
     run(["npm", "run", "ci"], cwd=FRONTEND_ROOT)
 
 
