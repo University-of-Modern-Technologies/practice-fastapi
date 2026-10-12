@@ -38,11 +38,6 @@ export const productPriceSchema = z
   .min(1, 'Вкажіть ціну')
   .regex(AMOUNT_PATTERN, 'Ціна — невідʼємне число, до двох знаків після коми');
 
-export const productCurrencySchema = z
-  .string()
-  .trim()
-  .regex(/^[A-Za-z]{3}$/, 'Код валюти — три літери, наприклад USD');
-
 /** Used by the price range in the filter row, where an empty value means «no bound». */
 export const priceBoundSchema = z
   .string()
@@ -54,9 +49,10 @@ export const priceBoundSchema = z
 export interface ProductFormValues {
   readonly sku: string;
   readonly name: string;
-  readonly description?: string;
-  readonly category?: string;
+  readonly description?: string | undefined;
+  readonly category?: string | undefined;
   readonly unitPrice: string;
-  readonly currency: string;
+  /** Shown, never sent: the API fills in the organisation's currency on create. */
+  readonly currency?: string | undefined;
   readonly isActive: boolean;
 }

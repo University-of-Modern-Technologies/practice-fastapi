@@ -477,6 +477,6 @@ async def test_only_a_unique_violation_is_reported_as_a_duplicate() -> None:
 
 
 def test_a_page_number_has_an_upper_bound() -> None:
-    assert ContactListParams.model_validate({"page": 1_000_000}).page == 1_000_000
+    assert ContactListParams.model_validate({"page": 100}).page == 100
     with pytest.raises(ValidationError):
-        ContactListParams.model_validate({"page": 1_000_001})
+        ContactListParams.model_validate({"page": 101})

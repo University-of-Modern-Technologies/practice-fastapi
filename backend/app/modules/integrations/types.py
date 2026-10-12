@@ -10,22 +10,71 @@ returns the domain object and the serialiser is the schema itself.
 from __future__ import annotations
 
 import enum
+import uuid
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from typing import Protocol
 
 from app.core.responses import CamelModel
 from app.core.serializers import UtcDatetime
+from app.db.enums import OrderStatus, PermissionScope
 
 __all__ = [
+    "ORDER_NOT_FOUND",
+    "ORDER_NOT_SHIPPABLE",
     "SHIPMENT_STATUSES",
+    "SHIPPABLE_ORDER_STATUSES",
     "CircuitState",
     "DeliveryHealthDto",
     "DeliveryQuoteDto",
+    "FindOrderForShipment",
     "NoopQuoteCache",
     "QuoteCachePort",
+    "ShipmentAccess",
     "ShipmentDto",
+    "ShipmentOrder",
     "ShipmentStatus",
     "TransportKind",
+]
+
+#: Machine codes of the order check that guards every delivery request.
+ORDER_NOT_FOUND = "ORDER_NOT_FOUND"
+ORDER_NOT_SHIPPABLE = "ORDER_NOT_SHIPPABLE"
+
+#: Order statuses a parcel may leave the warehouse in: confirmed (stock is
+#: reserved) or already paid. A draft has nothing reserved yet, a cancelled
+#: order has released its stock, and a fulfilled one has already been shipped.
+SHIPPABLE_ORDER_STATUSES = (OrderStatus.CONFIRMED, OrderStatus.PAID)
+
+
+@dataclass(frozen=True, slots=True)
+class ShipmentAccess:
+    """Who is asking for a delivery, and how much of the order book they see.
+
+    The breadth is the caller's ``orders:read`` grant, not their integrations
+    one: whether an order is visible is a question about orders. ``None`` means
+    the caller sees no orders at all.
+    """
+
+    actor_id: uuid.UUID
+    order_scope: PermissionScope | None
+
+
+@dataclass(frozen=True, slots=True)
+class ShipmentOrder:
+    """The little the delivery integration needs to know about an order."""
+
+    status: str
+
+
+#: Reads the order a delivery is requested for.
+#:
+#: Contract for the implementation: return the order only if it exists, is not
+#: soft-deleted and is visible at ``scope`` (``OWN`` — owned by ``actor_id``;
+#: ``ALL`` — any owner); otherwise ``None``. Any status is returned: checking it
+#: is the caller's business.
+type FindOrderForShipment = Callable[
+    [uuid.UUID, uuid.UUID, PermissionScope], Awaitable[ShipmentOrder | None]
 ]
 
 

@@ -28,6 +28,13 @@ describe('listQuery', () => {
     expect(listQuery(params()).build<TestQuery>()).toEqual({ page: 1, pageSize: 20 });
   });
 
+  it('holds page and pageSize to the ceiling the API accepts', () => {
+    expect(listQuery(params({ page: 250, pageSize: 500 })).build<TestQuery>()).toEqual({
+      page: 100,
+      pageSize: 100,
+    });
+  });
+
   describe('text', () => {
     it('drops an absent or empty value', () => {
       const query = listQuery(params({ label: '' }))

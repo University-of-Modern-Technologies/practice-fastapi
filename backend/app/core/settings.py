@@ -201,6 +201,11 @@ class Settings(BaseSettings):
     mongo_password: str | None = Field(default=None, repr=False)
     mongo_db: str | None = None
 
+    # Stopping, as in the sibling backend: readiness turns 503 and the listener
+    # keeps serving for the drain delay; then it closes and in-flight requests
+    # get the grace period before they are cut off; the timeout caps the whole
+    # stop, counted from the signal, and forces the exit when it runs out.
+    shutdown_drain_delay_ms: int = Field(default=0, ge=0, le=300_000)
     shutdown_grace_period_ms: int = Field(default=10_000, ge=0, le=300_000)
     shutdown_timeout_ms: int = Field(default=15_000, ge=1, le=300_000)
 
@@ -353,12 +358,14 @@ class Settings(BaseSettings):
 
     @property
     def graceful_shutdown_seconds(self) -> int:
-        """`SHUTDOWN_TIMEOUT_MS` in the whole seconds the server counts in.
+        """`SHUTDOWN_GRACE_PERIOD_MS` in the whole seconds the server counts in.
 
-        Rounded up, never down to zero: a timeout under a second would
-        otherwise cut every in-flight request off the moment a stop begins.
+        This is how long in-flight requests may still finish once the listener
+        has closed. Rounded up, so a grace under a second is not lost; zero
+        stays zero, which cuts in-flight requests off at once — as it does in
+        the sibling backend.
         """
-        return max(1, math.ceil(self.shutdown_timeout_ms / 1000))
+        return math.ceil(self.shutdown_grace_period_ms / 1000)
 
 
 @lru_cache(maxsize=1)

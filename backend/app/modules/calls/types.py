@@ -21,7 +21,6 @@ __all__ = [
     "CALL_PROVIDER_UNAVAILABLE",
     "CALL_RECORDING_UNAVAILABLE",
     "CALL_UPDATED",
-    "MAX_CALL_PAGE",
     "MAX_EXTERNAL_ID_LENGTH",
     "MAX_NOTES_LENGTH",
     "MAX_NUMBER_LENGTH",
@@ -63,7 +62,6 @@ MAX_SEARCH_LENGTH = 160
 #: Highest page a list request may ask for: far beyond any real call log, and
 #: low enough that the row offset it implies stays a small integer for the
 #: database instead of making the query itself fail.
-MAX_CALL_PAGE = 1_000_000
 
 #: Sortable columns, named as the client spells them. The default is
 #: ``startedAt`` rather than ``createdAt``: a call log is read as a timeline of

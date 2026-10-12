@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { RolesService } from './roles.service';
-import { PERMISSION_CATALOGUE, isKnownPermission } from './roles.types';
+import { PERMISSION_CATALOGUE, grantsOutsideMatrix, isKnownPermission } from './roles.types';
 
 const json = (status: number, body: unknown): Response =>
   new Response(JSON.stringify(body), {
@@ -89,11 +89,64 @@ describe('RolesService', () => {
   });
 });
 
+/**
+ * The permission catalogue as both backends seed it (`prisma/seed.ts`,
+ * `scripts/seed.py`). Copied here on purpose: when the API grows a module, this
+ * list is what makes the missing matrix row a failing test instead of a role
+ * that silently cannot be granted it.
+ */
+const SEEDED_PERMISSIONS = [
+  'users:read',
+  'users:create',
+  'users:update',
+  'users:disable',
+  'contacts:read',
+  'contacts:write',
+  'contacts:delete',
+  'deals:read',
+  'deals:write',
+  'deals:delete',
+  'audit:read',
+  'products:read',
+  'products:write',
+  'products:delete',
+  'orders:read',
+  'orders:write',
+  'orders:delete',
+  'warehouse:read',
+  'warehouse:write',
+  'settings:read',
+  'settings:write',
+  'analytics:read',
+  'integrations:read',
+  'integrations:write',
+  'ai:use',
+  'helpdesk:read',
+  'helpdesk:write',
+  'helpdesk:delete',
+  'calls:read',
+  'calls:write',
+  'calls:delete',
+  'finance:read',
+  'finance:write',
+];
+
 describe('permission catalogue', () => {
   it('lists every permission the API seeds, without duplicates', () => {
     const keys = PERMISSION_CATALOGUE.map(([resource, action]) => `${resource}:${action}`);
-    expect(keys).toHaveLength(25);
-    expect(new Set(keys).size).toBe(25);
+    expect([...keys].sort()).toEqual([...SEEDED_PERMISSIONS].sort());
+    expect(new Set(keys).size).toBe(keys.length);
+  });
+
+  // The PUT replaces the whole set: a grant the matrix cannot draw has to be
+  // sent back as it was, or saving the role would revoke it.
+  it('names the grants the matrix cannot show, so the editor keeps them', () => {
+    const grants = [
+      { resource: 'deals', action: 'read', scope: 'ALL' as const },
+      { resource: 'reports', action: 'schedule', scope: 'OWN' as const },
+    ];
+
+    expect(grantsOutsideMatrix(grants)).toEqual([grants[1]]);
   });
 
   it('knows a real pair and refuses one the API would answer 400 for', () => {

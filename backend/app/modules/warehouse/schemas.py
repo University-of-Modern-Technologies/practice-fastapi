@@ -8,14 +8,14 @@ stored so that it can never disagree with the two quantities it is derived from.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
 from typing import Self
 
 from pydantic import Field, computed_field, field_validator, model_validator
 
-from app.core.pagination import DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE
+from app.core.pagination import DEFAULT_PAGE_SIZE, MAX_PAGE, MAX_PAGE_SIZE
 from app.core.responses import CamelModel
 from app.core.serializers import UtcDatetime
+from app.core.validation import IsoDatetime
 from app.db.enums import StockMovementType
 
 MIN_CODE_LENGTH = 2
@@ -73,7 +73,10 @@ class StockMovementOut(CamelModel):
     warehouse_id: uuid.UUID
     product_id: uuid.UUID
     type: StockMovementType
-    quantity: int
+    #: An adjustment keeps the sign of its delta; every other movement is positive.
+    quantity: int = Field(
+        description="Додатна для всіх рухів, крім ADJUSTMENT: коригування зберігає знак дельти."
+    )
     reference_type: str | None
     reference_id: uuid.UUID | None
     actor_id: uuid.UUID | None
@@ -250,7 +253,7 @@ class WarehouseListParams(CamelModel):
     arguments; FastAPI reads a model as query parameters just as happily.
     """
 
-    page: int = Field(default=1, ge=1)
+    page: int = Field(default=1, ge=1, le=MAX_PAGE)
     page_size: int = Field(default=DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE)
     search: str | None = Field(default=None, min_length=1, max_length=MAX_SEARCH_LENGTH)
     is_active: bool | None = None
@@ -266,7 +269,7 @@ class WarehouseListParams(CamelModel):
 class StockListParams(CamelModel):
     """Query of ``GET /stock``."""
 
-    page: int = Field(default=1, ge=1)
+    page: int = Field(default=1, ge=1, le=MAX_PAGE)
     page_size: int = Field(default=DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE)
     warehouse_id: uuid.UUID | None = None
     product_id: uuid.UUID | None = None
@@ -278,7 +281,7 @@ class StockListParams(CamelModel):
 class MovementListParams(CamelModel):
     """Query of ``GET /movements``."""
 
-    page: int = Field(default=1, ge=1)
+    page: int = Field(default=1, ge=1, le=MAX_PAGE)
     page_size: int = Field(default=DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE)
     warehouse_id: uuid.UUID | None = None
     product_id: uuid.UUID | None = None
@@ -287,8 +290,8 @@ class MovementListParams(CamelModel):
         default=None, min_length=1, max_length=MAX_REFERENCE_TYPE_LENGTH
     )
     reference_id: uuid.UUID | None = None
-    created_from: datetime | None = None
-    created_to: datetime | None = None
+    created_from: IsoDatetime | None = None
+    created_to: IsoDatetime | None = None
 
     @model_validator(mode="after")
     def _require_ordered_window(self) -> Self:

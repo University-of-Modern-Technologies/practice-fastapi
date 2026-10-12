@@ -26,6 +26,8 @@ const OPERATION_ERRORS: Readonly<Record<string, string>> = {
   WAREHOUSE_INACTIVE: 'Склад неактивний — операції з ним заборонені',
   INVALID_STOCK_ADJUSTMENT: 'Коригування не може дорівнювати нулю',
   STOCK_ADJUSTMENT_NOTE_REQUIRED: 'Коригування потребує коментаря',
+  STOCK_ORDER_REFERENCE_FORBIDDEN:
+    'Резервом замовлення керує саме замовлення — вручну його не резервують, не знімають і не списують',
 };
 
 export const describeStockError = (error: unknown): string | null =>

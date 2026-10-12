@@ -4,6 +4,8 @@ export {
   DEFAULT_REPORT_RANGE_LABEL,
   MAX_REPORT_RANGE_DAYS,
   defaultReportRange,
+  toReportWindow,
+  type CalendarWindow,
 } from './reporting';
 export { FONT_FAMILY, FONT_FAMILY_MONO, PALETTE, RADIUS, SURFACE } from './theme';
 export {

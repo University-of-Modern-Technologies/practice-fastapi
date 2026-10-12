@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime, timedelta
 from typing import Any, Self
 
@@ -83,6 +84,12 @@ class _IndexKeySpecsConflictError(Exception):
     code = 86
 
 
+class _IndexOptionsConflictError(Exception):
+    """What the server answers when the same keys already carry another name."""
+
+    code = 85
+
+
 class FakeCollection:
     def __init__(self) -> None:
         self.documents: list[dict[str, Any]] = []
@@ -108,8 +115,13 @@ class FakeCollection:
         existing = self._by_name(name)
         if existing is not None and existing[0] != list(keys):
             raise _IndexKeySpecsConflictError
+        if existing is None and any(stored == list(keys) for stored, _ in self.indexes):
+            raise _IndexOptionsConflictError
         self.indexes.append((list(keys), kwargs))
         return name
+
+    async def index_information(self) -> dict[str, dict[str, Any]]:
+        return {options.get("name", ""): {"key": keys} for keys, options in self.indexes}
 
     async def drop_index(self, index_or_name: str) -> None:
         self.indexes = [item for item in self.indexes if item[1].get("name") != index_or_name]
@@ -354,6 +366,88 @@ async def test_an_outdated_index_definition_is_replaced_rather_than_skipped(
     # The indexes queued after the conflicting one still got created.
     assert RETENTION_INDEX in by_name
     assert ACTOR_HISTORY_INDEX in by_name
+
+
+async def test_the_same_keys_under_another_name_are_renamed_rather_than_skipped(
+    collection: FakeCollection,
+) -> None:
+    """An index someone created by hand, or under the driver's default name."""
+    await collection.create_index([("eventType", 1)], name="eventType_1")
+
+    await ensure_indexes(collection, retention_days=90)
+
+    assert collection.dropped == ["eventType_1"]
+    names = {options["name"] for _, options in collection.indexes}
+    assert names == {EVENT_TYPE_INDEX, ENTITY_HISTORY_INDEX, ACTOR_HISTORY_INDEX, RETENTION_INDEX}
+
+
+class _FakeAdmin:
+    def __init__(self, failures: int) -> None:
+        self.failures = failures
+        self.pings = 0
+
+    async def command(self, name: str) -> dict[str, int]:
+        assert name == "ping"
+        self.pings += 1
+        if self.pings <= self.failures:
+            message = "connection refused"
+            raise ConnectionError(message)
+        return {"ok": 1}
+
+
+class _FakeClient:
+    """Stands in for the driver: refuses the first pings, then answers."""
+
+    def __init__(self, failures: int) -> None:
+        self.admin = _FakeAdmin(failures)
+        self.collection = FakeCollection()
+        self.closed = False
+
+    def get_default_database(self, default: str) -> dict[str, FakeCollection]:  # noqa: ARG002
+        return {"domain_events": self.collection}
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+async def _wait_until(condition: Any, timeout: float = 1.0) -> None:
+    async with asyncio.timeout(timeout):
+        while not condition():
+            await asyncio.sleep(0.005)
+
+
+async def test_a_store_down_at_startup_is_retried_until_it_answers(settings: Settings) -> None:
+    client = _FakeClient(failures=2)
+    store = EventStore(settings, retry_delay_seconds=0.01, client_factory=lambda *_a, **_k: client)
+    probe = create_event_store_readiness_check(store)
+
+    await store.connect()  # does not raise, does not wait for the store
+    assert client.collection.indexes == []
+    with pytest.raises(ConnectionError):
+        await probe.check()  # 503 while the store is still down
+
+    await _wait_until(lambda: len(client.collection.indexes) == 4)
+
+    # The indexes were created by the background retry, not left for the next
+    # boot, and the probe answers as soon as the store does.
+    await probe.check()
+    pings = client.admin.pings
+    await asyncio.sleep(0.05)
+    assert client.admin.pings == pings, "retrying stops once the store answered"
+    await store.close()
+
+
+async def test_closing_the_store_stops_the_retry(settings: Settings) -> None:
+    client = _FakeClient(failures=1_000)
+    store = EventStore(settings, retry_delay_seconds=0.01, client_factory=lambda *_a, **_k: client)
+
+    await store.connect()
+    await store.close()
+    pings = client.admin.pings
+    await asyncio.sleep(0.05)
+
+    assert client.admin.pings == pings
+    assert client.closed is True
 
 
 def test_the_default_publisher_does_nothing() -> None:

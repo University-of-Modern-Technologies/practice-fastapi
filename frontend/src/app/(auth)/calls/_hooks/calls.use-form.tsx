@@ -1,15 +1,10 @@
 'use client';
 
 import { Col, Form, Input, Row, Select, type FormInstance } from 'antd';
-import { useCallback, useMemo, useState, type ReactNode } from 'react';
+import { useCallback, useMemo, type ReactNode } from 'react';
 import { ConflictAlert, ReferenceSelect, applyServerErrors, zodRule } from '@/components';
 import { ApiError } from '@/shared/api';
-import {
-  useHasPermission,
-  useMutationFeedback,
-  useUnsavedChanges,
-  useVersionConflict,
-} from '@/shared/hooks';
+import { useHasPermission, useMutationFeedback, useRecordForm } from '@/shared/hooks';
 import { useResolvedUser, useUserOptions, userLabel } from '../../users/users.queries';
 import { useUpdateCall } from '../calls.queries';
 import type { Call, UpdateCallInput } from '../calls.types';
@@ -18,8 +13,9 @@ import { CALL_NOTES_MAX, callNotesSchema, type CallFormValues } from '../calls.v
 interface UseCallFormOptions {
   readonly call: Call;
   readonly onSaved: (call: Call) => void;
-  /** Re-reads the record after a lost race, so the next save carries the current version. */
-  readonly onReload?: (() => unknown) | undefined;
+  /** Re-reads the record after a lost race; the form then shows it with its version. */
+  readonly onReload?:
+    (() => Promise<{ readonly data?: Call | undefined; readonly isError?: boolean }>) | undefined;
   readonly isReloading?: boolean | undefined;
 }
 
@@ -41,6 +37,15 @@ interface UseCallFormResult {
 }
 
 /**
+ * A call as the form shows it. Both fields are named, absent ones included, so
+ * a re-read clears a value the other person removed instead of keeping ours.
+ */
+const toCallValues = (call: Call): Partial<CallFormValues> => ({
+  notes: call.notes ?? undefined,
+  ownerId: call.ownerId ?? undefined,
+});
+
+/**
  * The edit form of a call — and it has only one route, because a call is never
  * typed in by hand. What happened on the line is the provider's record; what
  * the form owns is what the company decided about it afterwards: who is
@@ -57,9 +62,16 @@ export const useCallForm = ({
   isReloading = false,
 }: UseCallFormOptions): UseCallFormResult => {
   const [form] = Form.useForm<CallFormValues>();
-  const [isDirty, setIsDirty] = useState(false);
   const { reportSuccess, reportFailure } = useMutationFeedback();
-  const { hasConflict, handleError: handleConflict, clearConflict } = useVersionConflict();
+  // `base` is the copy on screen: its values are in the fields and its version
+  // is the one a save sends — linking the call elsewhere on the card bumps it.
+  const { base, markDirty, adopt, hasConflict, handleConflict, reload } = useRecordForm({
+    form,
+    record: call,
+    toValues: toCallValues,
+    onReload,
+  });
+  const edited = base ?? call;
 
   const update = useUpdateCall(call.id);
 
@@ -67,15 +79,8 @@ export const useCallForm = ({
   // mounted, so the form never fires a request it may not make.
   const canReadUsers = useHasPermission('users', 'read');
 
-  useUnsavedChanges(isDirty);
-
-  const initialValues = useMemo<Partial<CallFormValues>>(
-    () => ({
-      ...(call.notes === null ? {} : { notes: call.notes }),
-      ...(call.ownerId === null ? {} : { ownerId: call.ownerId }),
-    }),
-    [call],
-  );
+  // Read once, at mount; every later copy reaches the fields through the hook.
+  const initialValues = useMemo<Partial<CallFormValues>>(() => toCallValues(edited), [edited]);
 
   const handleError = useCallback(
     (error: unknown) => {
@@ -86,7 +91,7 @@ export const useCallForm = ({
       if (
         error instanceof ApiError &&
         error.isForbidden &&
-        form.getFieldValue('ownerId') !== call.ownerId
+        form.getFieldValue('ownerId') !== edited.ownerId
       ) {
         form.setFields([
           { name: 'ownerId', errors: ['Немає прав призначити дзвінок іншому власнику'] },
@@ -97,7 +102,7 @@ export const useCallForm = ({
       if (applyServerErrors(form, error)) return;
       reportFailure(error);
     },
-    [call.ownerId, form, handleConflict, reportFailure],
+    [edited.ownerId, form, handleConflict, reportFailure],
   );
 
   const submit = useCallback(() => {
@@ -107,8 +112,8 @@ export const useCallForm = ({
         const notes = values.notes?.trim();
 
         const input: UpdateCallInput = {
-          // The version read with the record; a stale one answers 409.
-          version: call.version,
+          // The version of the copy the user edited; a stale one answers 409.
+          version: edited.version,
           // An emptied field is "there is nothing to say", which is `null` —
           // an empty string would store a note that consists of nothing.
           notes: notes ? notes : null,
@@ -119,8 +124,7 @@ export const useCallForm = ({
 
         update.mutate(input, {
           onSuccess: (saved) => {
-            setIsDirty(false);
-            clearConflict();
+            adopt(saved);
             reportSuccess('Дзвінок збережено');
             onSaved(saved);
           },
@@ -130,11 +134,7 @@ export const useCallForm = ({
       // A form that failed its own rules has already marked the offending
       // fields; there is nothing further to report.
       .catch(() => undefined);
-  }, [call.version, clearConflict, form, handleError, onSaved, reportSuccess, update]);
-
-  const reload = useCallback(() => {
-    void Promise.resolve(onReload?.()).finally(() => clearConflict());
-  }, [clearConflict, onReload]);
+  }, [adopt, edited.version, form, handleError, onSaved, reportSuccess, update]);
 
   const fields = (
     <Row gutter={16}>
@@ -176,7 +176,7 @@ export const useCallForm = ({
       initialValues,
       layout: 'vertical',
       requiredMark: false,
-      onValuesChange: () => setIsDirty(true),
+      onValuesChange: markDirty,
       onFinish: submit,
     },
     fields,

@@ -3,14 +3,14 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
 from typing import Any
 
 from pydantic import Field
 
-from app.core.pagination import MAX_PAGE_SIZE
+from app.core.pagination import MAX_PAGE, MAX_PAGE_SIZE
 from app.core.responses import CamelModel
 from app.core.serializers import UtcDatetime
+from app.core.validation import IsoDatetime
 from app.modules.audit.types import DEFAULT_AUDIT_PAGE_SIZE
 
 
@@ -22,11 +22,11 @@ class AuditHistoryParams(CamelModel):
     as query parameters just as happily.
     """
 
-    page: int = Field(default=1, ge=1)
+    page: int = Field(default=1, ge=1, le=MAX_PAGE)
     page_size: int = Field(default=DEFAULT_AUDIT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE)
     action: str | None = Field(default=None, min_length=1, max_length=64)
-    created_from: datetime | None = None
-    created_to: datetime | None = None
+    created_from: IsoDatetime | None = None
+    created_to: IsoDatetime | None = None
 
 
 class AuditListParams(AuditHistoryParams):

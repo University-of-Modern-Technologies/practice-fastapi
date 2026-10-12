@@ -25,6 +25,7 @@ from app.core.serializers import format_datetime
 from app.db.models.setting import OrganizationSetting
 from app.db.models.warehouse import Warehouse
 from app.modules.audit import AuditEvent, AuditService
+from app.modules.rbac.commit import after_commit
 from app.modules.settings.cache_keys import setting_value_key, settings_list_key
 from app.modules.settings.registry import (
     SETTING_KEYS,
@@ -271,6 +272,14 @@ class SettingsService:
             await self._cache.set(cache_key, payload, self._ttl_seconds)
 
     async def _invalidate(self, key: str) -> None:
-        """Drops the entry for the key and the listing that contains it."""
-        with contextlib.suppress(Exception):
-            await self._cache.delete([setting_value_key(key), settings_list_key()])
+        """Drops the entry for the key and the listing that contains it.
+
+        Not before the write commits: a concurrent read in between would find
+        the cache empty, read the old row and cache it again for the whole TTL.
+        """
+
+        async def drop() -> None:
+            with contextlib.suppress(Exception):
+                await self._cache.delete([setting_value_key(key), settings_list_key()])
+
+        await after_commit(self._session, drop)

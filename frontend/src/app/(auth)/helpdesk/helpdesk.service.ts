@@ -1,4 +1,5 @@
 import { ApiError, http, listQuery, type Page, type QueryValue } from '@/shared/api';
+import { withListLimits } from '@/shared/api/list-limits';
 import type { ListParams } from '@/shared/hooks';
 import type { Id } from '@/types/domain';
 import {
@@ -34,8 +35,8 @@ export const toTicketListQuery = (params: ListParams<TicketFilter>): TicketListQ
     .text('contactId')
     .text('assigneeId')
     .text('ownerId')
-    .text('openedFrom')
-    .text('openedTo')
+    .dayStart('openedFrom')
+    .dayEnd('openedTo')
     .sort(isTicketSortField)
     .build<TicketListQuery>();
 
@@ -77,7 +78,7 @@ const toUpdateBody = (input: UpdateTicketInput): Readonly<Record<string, unknown
 export const HelpdeskService = {
   list: (query: TicketListQuery, signal?: AbortSignal): Promise<Page<Ticket>> =>
     http.get<Page<Ticket>>(ROUTES.collection, {
-      params: query as Readonly<Record<string, QueryValue>>,
+      params: withListLimits(query) as Readonly<Record<string, QueryValue>>,
       ...(signal ? { signal } : {}),
     }),
 

@@ -106,7 +106,8 @@ class CreateProductRequest(CamelModel):
     description: ProductDescription | None = None
     category: ProductCategory | None = None
     unit_price: MoneyAmount
-    currency: CurrencyCode = "USD"
+    #: Left out, the product is priced in the organisation's currency.
+    currency: CurrencyCode | None = None
     is_active: bool = True
 
     # A new entry has nothing to clear, so a null is a malformed request.

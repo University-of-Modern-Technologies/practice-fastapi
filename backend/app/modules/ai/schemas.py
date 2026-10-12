@@ -12,9 +12,10 @@ a 400 before a single token is paid for.
 from __future__ import annotations
 
 import uuid
+from datetime import date
 from typing import Annotated
 
-from pydantic import Field, StringConstraints, field_validator
+from pydantic import AfterValidator, Field, StringConstraints, field_validator
 
 from app.core.responses import CamelModel
 from app.modules.ai.types import DEFAULT_AI_MAX_INPUT_CHARS, ResolvedInquiryCategory
@@ -43,9 +44,25 @@ CurrencyCode = Annotated[
     str, StringConstraints(strip_whitespace=True, to_upper=True, pattern=r"^[A-Za-z]{3}$")
 ]
 
+
+def _require_real_day(value: str) -> str:
+    """Refuses a day that does not exist, such as ``2026-02-31``."""
+    try:
+        date.fromisoformat(value)
+    except ValueError:
+        message = "Expected a real calendar date"
+        raise ValueError(message) from None
+    return value
+
+
 #: A plain calendar day, kept as text: it is a label in a prompt, never a value
-#: this module does arithmetic on.
-CalendarDate = Annotated[str, StringConstraints(pattern=r"^\d{4}-\d{2}-\d{2}$")]
+#: this module does arithmetic on. Still a real one, in the same ``YYYY-MM-DD``
+#: form the deal itself carries.
+CalendarDate = Annotated[
+    str,
+    StringConstraints(pattern=r"^\d{4}-\d{2}-\d{2}$"),
+    AfterValidator(_require_real_day),
+]
 
 FreeText = Annotated[
     str,

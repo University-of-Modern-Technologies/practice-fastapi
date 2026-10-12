@@ -24,11 +24,13 @@ __all__ = [
     "INSUFFICIENT_RESERVATION",
     "INSUFFICIENT_STOCK",
     "INVALID_STOCK_ADJUSTMENT",
+    "ORDER_REFERENCE_TYPE",
     "PRODUCT_NOT_FOUND",
     "STOCK_ADJUSTMENT_NOTE_REQUIRED",
     "STOCK_CONCURRENT_MODIFICATION",
     "STOCK_ENTITY_TYPE",
     "STOCK_LEVEL_NOT_FOUND",
+    "STOCK_ORDER_REFERENCE_FORBIDDEN",
     "STOCK_QUANTITY_OUT_OF_RANGE",
     "WAREHOUSE_CODE_IMMUTABLE",
     "WAREHOUSE_CODE_TAKEN",
@@ -54,6 +56,11 @@ WAREHOUSE_RESOURCE = "warehouse"
 WAREHOUSE_ENTITY_TYPE = "warehouse"
 STOCK_ENTITY_TYPE = "stock"
 
+#: The reference type an order writes on every movement it causes. Reservations
+#: held under it belong to the order: only the order's own transitions release
+#: or issue them, and reserving the same order line twice changes nothing.
+ORDER_REFERENCE_TYPE = "order"
+
 # Machine codes are shared between the service, the router and the tests, so a
 # rename cannot silently change what a client is allowed to branch on.
 WAREHOUSE_NOT_FOUND = "WAREHOUSE_NOT_FOUND"
@@ -68,6 +75,7 @@ STOCK_CONCURRENT_MODIFICATION = "STOCK_CONCURRENT_MODIFICATION"
 INVALID_STOCK_ADJUSTMENT = "INVALID_STOCK_ADJUSTMENT"
 STOCK_ADJUSTMENT_NOTE_REQUIRED = "STOCK_ADJUSTMENT_NOTE_REQUIRED"
 STOCK_QUANTITY_OUT_OF_RANGE = "STOCK_QUANTITY_OUT_OF_RANGE"
+STOCK_ORDER_REFERENCE_FORBIDDEN = "STOCK_ORDER_REFERENCE_FORBIDDEN"
 
 
 class InsufficientStockError(ConflictError):
@@ -188,7 +196,8 @@ class MovementPlan:
     event_type: str
     warehouse_id: uuid.UUID
     product_id: uuid.UUID
-    #: Always positive; the database rejects a movement of zero or fewer units.
+    #: Positive for every movement except an adjustment, which keeps the sign of
+    #: its delta: summing the ledger then reproduces the level it explains.
     quantity: int
     on_hand_delta: int
     reserved_delta: int

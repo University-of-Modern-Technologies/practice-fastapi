@@ -27,8 +27,11 @@ from app.modules.orders.types import OrderAccess, OrderStockEffect
 # importing the stock module, which would otherwise import the state back.
 
 __all__ = [
+    "FALLBACK_ORDER_DEFAULTS",
     "ORDER_STOCK_REFERENCE_TYPE",
     "NoopStockOperations",
+    "OrderDefaults",
+    "OrderDefaultsResolver",
     "OrderStockChange",
     "OrderStockEffect",
     "OrderStockInput",
@@ -99,11 +102,30 @@ class OrderStockOperations(Protocol):
     ) -> OrderStockChange: ...
 
 
-#: Resolves the warehouse an order draws on. An order carries no warehouse of
-#: its own, so the choice is a deployment decision: the callback runs on the
-#: order's session and returns the target warehouse id, or nothing at all when
-#: none is configured.
+#: Resolves the warehouse a confirmation reserves in. The choice is a deployment
+#: decision: the callback runs on the order's session and returns the target
+#: warehouse id, or nothing at all when none is configured. The warehouse it
+#: names is written onto the order, and every later movement of that order goes
+#: to the same warehouse; the resolver is consulted again only for an order
+#: confirmed before the order kept its warehouse.
 OrderWarehouseResolver = Callable[[AsyncSession], Awaitable[uuid.UUID | None]]
+
+
+@dataclass(frozen=True, slots=True)
+class OrderDefaults:
+    """The organisation settings a new order is created with."""
+
+    #: The organisation's single currency; an order in any other is refused.
+    currency: str
+    #: Leads every generated order number, as in ``ORD-20260101-ABC123``.
+    number_prefix: str
+
+
+#: Without a resolver every order is in USD and numbered ``ORD-``.
+FALLBACK_ORDER_DEFAULTS = OrderDefaults(currency="USD", number_prefix="ORD")
+
+#: Reads the organisation settings an order depends on, on the order's session.
+OrderDefaultsResolver = Callable[[AsyncSession], Awaitable[OrderDefaults]]
 
 
 class _NoopStockChange:
@@ -153,9 +175,15 @@ async def _no_warehouse(session: AsyncSession) -> uuid.UUID | None:  # noqa: ARG
     return None
 
 
+async def _fallback_defaults(session: AsyncSession) -> OrderDefaults:  # noqa: ARG001
+    """Resolver for a deployment that wired no organisation settings."""
+    return FALLBACK_ORDER_DEFAULTS
+
+
 @dataclass(frozen=True, slots=True)
 class OrdersStockPort:
     """Everything the orders service needs to move stock, injected as one unit."""
 
     operations: OrderStockOperations
     resolve_warehouse_id: OrderWarehouseResolver = _no_warehouse
+    resolve_order_defaults: OrderDefaultsResolver = _fallback_defaults

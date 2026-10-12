@@ -43,6 +43,37 @@ describe('toDealSummaryBody', () => {
     ).toMatchObject({ probability: 0 });
   });
 
+  // A deal record carries the close date as an instant; the route's pattern is
+  // `^\d{4}-\d{2}-\d{2}$` and refuses anything longer with a 400.
+  it('sends the expected close date as the bare day the route accepts', () => {
+    const fromRecord = toDealSummaryBody({
+      id: DEAL_ID,
+      title: 'X',
+      stage: 'LEAD',
+      expectedCloseDate: '2026-09-01T00:00:00.000Z',
+    });
+    const fromDay = toDealSummaryBody({
+      id: DEAL_ID,
+      title: 'X',
+      stage: 'LEAD',
+      expectedCloseDate: '2026-09-01',
+    });
+
+    expect(fromRecord).toMatchObject({ expectedCloseDate: '2026-09-01' });
+    expect(fromDay).toMatchObject({ expectedCloseDate: '2026-09-01' });
+  });
+
+  it('drops a close date it cannot read rather than sending it', () => {
+    const body = toDealSummaryBody({
+      id: DEAL_ID,
+      title: 'X',
+      stage: 'LEAD',
+      expectedCloseDate: 'not a date',
+    });
+
+    expect(body).not.toHaveProperty('expectedCloseDate');
+  });
+
   it('normalises the currency the way the API stores it', () => {
     expect(
       toDealSummaryBody({ id: DEAL_ID, title: 'X', stage: 'LEAD', currency: 'usd' }),

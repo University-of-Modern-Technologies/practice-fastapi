@@ -1,15 +1,10 @@
 'use client';
 
 import { Col, Form, Input, Row, Select, type FormInstance } from 'antd';
-import { useCallback, useMemo, useState, type ReactNode } from 'react';
+import { useCallback, useMemo, type ReactNode } from 'react';
 import { ConflictAlert, ReferenceSelect, applyServerErrors, zodRule } from '@/components';
 import { ApiError } from '@/shared/api';
-import {
-  useHasPermission,
-  useMutationFeedback,
-  useUnsavedChanges,
-  useVersionConflict,
-} from '@/shared/hooks';
+import { useHasPermission, useMutationFeedback, useRecordForm } from '@/shared/hooks';
 import {
   contactLabel,
   useContactOptions,
@@ -19,6 +14,8 @@ import { useResolvedUser, useUserOptions, userLabel } from '../../users/users.qu
 import { useCreateTicket, useUpdateTicket } from '../helpdesk.queries';
 import {
   TICKET_ERROR,
+  TICKET_ERROR_MESSAGES,
+  isTicketClosed,
   type CreateTicketInput,
   type Ticket,
   type UpdateTicketInput,
@@ -51,8 +48,9 @@ interface UseTicketFormOptions {
   /** Absent on the create route; present, and the form edits that record. */
   readonly ticket?: Ticket | undefined;
   readonly onSaved: (ticket: Ticket) => void;
-  /** Re-reads the record after a lost race, so the next save carries the current version. */
-  readonly onReload?: (() => unknown) | undefined;
+  /** Re-reads the record after a lost race; the form then shows it with its version. */
+  readonly onReload?:
+    (() => Promise<{ readonly data?: Ticket | undefined; readonly isError?: boolean }>) | undefined;
   readonly isReloading?: boolean | undefined;
 }
 
@@ -62,6 +60,7 @@ interface UseTicketFormResult {
     readonly initialValues: Partial<TicketFormValues>;
     readonly layout: 'vertical';
     readonly requiredMark: boolean;
+    readonly disabled: boolean;
     readonly onValuesChange: () => void;
     readonly onFinish: () => void;
   };
@@ -69,9 +68,25 @@ interface UseTicketFormResult {
   readonly conflictAlert: ReactNode;
   readonly submit: () => void;
   readonly isSaving: boolean;
+  /** A closed ticket: the form only shows it, and offers no save. */
+  readonly isReadOnly: boolean;
   /** Routes a failed write to the field it belongs to; also used by the delete action. */
   readonly handleError: (error: unknown) => void;
 }
+
+/**
+ * A ticket as the form shows it. Every field is named, absent ones included,
+ * so a re-read clears a value the other person removed instead of keeping ours.
+ */
+const toTicketValues = (ticket: Ticket): Partial<TicketFormValues> => ({
+  subject: ticket.subject,
+  body: ticket.body,
+  channel: ticket.channel,
+  priority: ticket.priority,
+  ownerId: ticket.ownerId,
+  contactId: ticket.contactId ?? undefined,
+  assigneeId: ticket.assigneeId ?? undefined,
+});
 
 /**
  * The one form behind both helpdesk routes. `status` is absent from it by
@@ -86,9 +101,15 @@ export const useTicketForm = ({
   isReloading = false,
 }: UseTicketFormOptions): UseTicketFormResult => {
   const [form] = Form.useForm<TicketFormValues>();
-  const [isDirty, setIsDirty] = useState(false);
-  const { reportSuccess, reportFailure } = useMutationFeedback();
-  const { hasConflict, handleError: handleConflict, clearConflict } = useVersionConflict();
+  const { reportSuccess, reportFailureWith } = useMutationFeedback();
+  // `base` is the copy on screen: its values are in the fields and its version
+  // is the one a save sends, even after a fresher copy reached the cache.
+  const { base, markDirty, adopt, hasConflict, handleConflict, reload } = useRecordForm({
+    form,
+    record: ticket,
+    toValues: toTicketValues,
+    onReload,
+  });
 
   const create = useCreateTicket();
   const update = useUpdateTicket(ticket?.id ?? '');
@@ -99,26 +120,32 @@ export const useTicketForm = ({
   const canReadContacts = useHasPermission('contacts', 'read');
   const canReadUsers = useHasPermission('users', 'read');
 
-  useUnsavedChanges(isDirty);
+  /**
+   * A closed ticket is final and the API refuses to edit it. A resolved one is
+   * not — it can be reopened — so it keeps its form. Both copies count: the one
+   * on screen and the one the cache holds after a transition on this page.
+   */
+  const isReadOnly =
+    (base !== undefined && isTicketClosed(base.status)) ||
+    (ticket !== undefined && isTicketClosed(ticket.status));
 
+  // Read once, at mount; every later copy reaches the fields through the hook.
   const initialValues = useMemo<Partial<TicketFormValues>>(
-    () =>
-      ticket
-        ? {
-            subject: ticket.subject,
-            body: ticket.body,
-            channel: ticket.channel,
-            priority: ticket.priority,
-            ownerId: ticket.ownerId,
-            ...(ticket.contactId === null ? {} : { contactId: ticket.contactId }),
-            ...(ticket.assigneeId === null ? {} : { assigneeId: ticket.assigneeId }),
-          }
-        : { channel: 'EMAIL', priority: 'NORMAL' },
-    [ticket],
+    () => (base ? toTicketValues(base) : { channel: 'EMAIL', priority: 'NORMAL' }),
+    [base],
   );
 
   const handleError = useCallback(
     (error: unknown) => {
+      // Somebody closed the ticket while this form was open. It is a 409, but
+      // saving again cannot help: the page says why and shows the ticket as it
+      // now stands.
+      if (error instanceof ApiError && error.code === TICKET_ERROR.closed) {
+        reportFailureWith(TICKET_ERROR_MESSAGES)(error);
+        reload();
+        return;
+      }
+
       if (handleConflict(error)) return;
 
       if (error instanceof ApiError) {
@@ -134,7 +161,7 @@ export const useTicketForm = ({
         }
         // Handing a record to somebody else is refused with 403 rather than
         // with a code of its own, so the status is what identifies it here.
-        if (error.isForbidden && ticket && form.getFieldValue('ownerId') !== ticket.ownerId) {
+        if (error.isForbidden && base && form.getFieldValue('ownerId') !== base.ownerId) {
           form.setFields([
             { name: 'ownerId', errors: ['Немає прав призначити звернення іншому власнику'] },
           ]);
@@ -143,29 +170,29 @@ export const useTicketForm = ({
       }
 
       if (applyServerErrors(form, error)) return;
-      reportFailure(error);
+      reportFailureWith(TICKET_ERROR_MESSAGES)(error);
     },
-    [form, handleConflict, reportFailure, ticket],
+    [base, form, handleConflict, reload, reportFailureWith],
   );
 
   const handleSaved = useCallback(
     (saved: Ticket, text: string) => {
-      setIsDirty(false);
-      clearConflict();
+      adopt(saved);
       reportSuccess(text);
       onSaved(saved);
     },
-    [clearConflict, onSaved, reportSuccess],
+    [adopt, onSaved, reportSuccess],
   );
 
   const submit = useCallback(() => {
+    if (isReadOnly) return;
     void form
       .validateFields()
       .then((values) => {
-        if (ticket) {
+        if (base) {
           const input: UpdateTicketInput = {
-            // The version read with the record; a stale one answers 409.
-            version: ticket.version,
+            // The version of the copy the user edited; a stale one answers 409.
+            version: base.version,
             subject: values.subject.trim(),
             body: values.body.trim(),
             channel: values.channel,
@@ -201,11 +228,7 @@ export const useTicketForm = ({
       // A form that failed its own rules has already marked the offending
       // fields; there is nothing further to report.
       .catch(() => undefined);
-  }, [create, form, handleError, handleSaved, ticket, update]);
-
-  const reload = useCallback(() => {
-    void Promise.resolve(onReload?.()).finally(() => clearConflict());
-  }, [clearConflict, onReload]);
+  }, [base, create, form, handleError, handleSaved, isReadOnly, update]);
 
   const userPicker = (placeholder: string): ReactNode =>
     canReadUsers ? (
@@ -303,13 +326,15 @@ export const useTicketForm = ({
       initialValues,
       layout: 'vertical',
       requiredMark: false,
-      onValuesChange: () => setIsDirty(true),
+      disabled: isReadOnly,
+      onValuesChange: markDirty,
       onFinish: submit,
     },
     fields,
     conflictAlert: <ConflictAlert open={hasConflict} onReload={reload} isReloading={isReloading} />,
     submit,
     isSaving: create.isPending || update.isPending,
+    isReadOnly,
     handleError,
   };
 };

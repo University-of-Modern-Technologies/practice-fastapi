@@ -1,9 +1,10 @@
-"""Idempotent development seed.
+"""Development seed for an empty database.
 
-Every write is an upsert keyed on a natural identifier, so running the script a
-second time refreshes the demo data instead of duplicating it. Identifiers of
-the demo records are fixed constants for the same reason: a rerun has to land on
-the rows it wrote last time.
+The stack runs it on every start, so it does nothing once the database holds
+users; otherwise each restart would bring back changed passwords, disabled users
+and the stock levels the demo started with. Writes are still upserts keyed on a
+natural identifier with fixed record ids, so a seed interrupted half way, or run
+against a database emptied by hand, lands on the same rows.
 
 Run with ``python -m scripts.seed``.
 """
@@ -908,6 +909,9 @@ async def seed() -> None:
     try:
         # One transaction: a partially seeded database is worse than none.
         async with engine.begin() as connection:
+            if await connection.scalar(select(func.count()).select_from(table_of(User))):
+                print("The database already holds users; the seed leaves it as it is.")
+                return
             roles, _ = await seed_rbac(connection)
             await seed_users(connection, roles, password_hash)
             await seed_crm(connection)

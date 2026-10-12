@@ -22,7 +22,7 @@ different sides of a rollback.
 from __future__ import annotations
 
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import Any
 
 from sqlalchemy import ColumnElement, Executable, insert, select, update
@@ -55,10 +55,12 @@ from app.modules.warehouse.schemas import (
 )
 from app.modules.warehouse.types import (
     INVALID_STOCK_ADJUSTMENT,
+    ORDER_REFERENCE_TYPE,
     PRODUCT_NOT_FOUND,
     STOCK_ADJUSTMENT_NOTE_REQUIRED,
     STOCK_ENTITY_TYPE,
     STOCK_LEVEL_NOT_FOUND,
+    STOCK_ORDER_REFERENCE_FORBIDDEN,
     STOCK_QUANTITY_OUT_OF_RANGE,
     WAREHOUSE_CODE_IMMUTABLE,
     WAREHOUSE_CODE_TAKEN,
@@ -180,12 +182,7 @@ def receive_plan(data: StockOperationInput) -> MovementPlan:
 
 
 def issue_plan(data: StockOperationInput) -> MovementPlan:
-    """An issue removes units; against a reservation it frees them as well.
-
-    Without that second delta the row would breach the database rule that
-    reserved units can never exceed the units on hand.
-    """
-    from_reservation = bool(getattr(data, "from_reservation", False))
+    """An issue removes units from the shelf and nothing else."""
     return MovementPlan(
         movement_type=StockMovementType.ISSUE,
         event_type="stock.issued",
@@ -193,11 +190,24 @@ def issue_plan(data: StockOperationInput) -> MovementPlan:
         product_id=data.product_id,
         quantity=data.quantity,
         on_hand_delta=-data.quantity,
-        reserved_delta=-data.quantity if from_reservation else 0,
+        reserved_delta=0,
         reference_type=data.reference_type,
         reference_id=data.reference_id,
         note=_optional_note(data),
     )
+
+
+def issue_plans(data: StockOperationInput) -> list[MovementPlan]:
+    """An issue against a reservation is two movements.
+
+    The reservation is released first, then the goods leave the shelf. Both
+    are written, so summing the ledger reproduces the reserved counter as well
+    as the on-hand one; an issue that freed reserved units silently would leave
+    the ledger short of a release it never recorded.
+    """
+    if not getattr(data, "from_reservation", False):
+        return [issue_plan(data)]
+    return [release_plan(data), issue_plan(data)]
 
 
 def reserve_plan(data: StockOperationInput) -> MovementPlan:
@@ -246,7 +256,7 @@ def adjust_plan(data: StockAdjustmentInput) -> MovementPlan:
         event_type="stock.adjusted",
         warehouse_id=data.warehouse_id,
         product_id=data.product_id,
-        quantity=abs(data.delta),
+        quantity=data.delta,
         on_hand_delta=data.delta,
         reserved_delta=0,
         reference_type=data.reference_type,
@@ -260,13 +270,18 @@ class StockChange:
 
     The event is built but not published: the transaction has not committed yet
     and may still roll back, so the caller announces the change by calling
-    ``publish_committed`` once its own work has succeeded.
+    ``publish_committed`` once its own work has succeeded. ``movement`` is the
+    last movement written, or ``None`` when the request changed nothing — a
+    repeated reservation of an order line the order already holds.
     """
 
     __slots__ = ("_publish", "level", "movement")
 
     def __init__(
-        self, level: StockLevelOut, movement: StockMovementOut, publish: Callable[[], None]
+        self,
+        level: StockLevelOut,
+        movement: StockMovementOut | None,
+        publish: Callable[[], None],
     ) -> None:
         self.level = level
         self.movement = movement
@@ -297,6 +312,70 @@ def _map_integrity_error(error: IntegrityError) -> AppError:
     if "check constraint" in text:
         return InsufficientStockError()
     return ConflictError(str(error.orig or error))
+
+
+def assert_not_order_reference(
+    operation: str, reference_type: str | None, reference_id: Any
+) -> None:
+    """Refuses a manual movement of stock an order holds.
+
+    A reservation held for an order is the order's own: its transitions reserve
+    it on confirmation, release it on cancellation and issue it on fulfilment.
+    A manual movement under the order's reference would promise or free units
+    behind the order's back.
+    """
+    if reference_type != ORDER_REFERENCE_TYPE:
+        return
+    raise ConflictError(
+        "Stock held for an order is released and issued only by the order itself",
+        STOCK_ORDER_REFERENCE_FORBIDDEN,
+        {
+            "operation": operation,
+            "referenceType": reference_type,
+            "referenceId": None if reference_id is None else str(reference_id),
+        },
+    )
+
+
+async def _held_order_reservation(session: AsyncSession, plan: MovementPlan) -> uuid.UUID | None:
+    """The warehouse where this order line already holds a reservation, if any.
+
+    The ledger is the record: whatever an order reserved and has not yet
+    released or issued is still held. Only an order's reservation is looked up
+    — other references carry no identity a repeat could be matched against.
+    """
+    if (
+        plan.movement_type is not StockMovementType.RESERVATION
+        or plan.reference_type != ORDER_REFERENCE_TYPE
+        or plan.reference_id is None
+    ):
+        return None
+    rows = (
+        await session.execute(
+            select(StockMovement.warehouse_id, StockMovement.type, StockMovement.quantity)
+            .where(
+                StockMovement.product_id == plan.product_id,
+                StockMovement.reference_type == ORDER_REFERENCE_TYPE,
+                StockMovement.reference_id == plan.reference_id,
+                StockMovement.type.in_(
+                    (
+                        StockMovementType.RESERVATION,
+                        StockMovementType.RELEASE,
+                        StockMovementType.ISSUE,
+                    )
+                ),
+            )
+            .order_by(StockMovement.warehouse_id)
+        )
+    ).all()
+    held: dict[uuid.UUID, int] = {}
+    for warehouse_id, movement_type, quantity in rows:
+        sign = 1 if movement_type is StockMovementType.RESERVATION else -1
+        held[warehouse_id] = held.get(warehouse_id, 0) + sign * quantity
+    for warehouse_id, quantity in held.items():
+        if quantity > 0:
+            return warehouse_id
+    return None
 
 
 async def _require_writable_warehouse(session: AsyncSession, warehouse_id: uuid.UUID) -> None:
@@ -416,6 +495,21 @@ async def apply_stock_movement(
     """
     await _require_writable_warehouse(session, plan.warehouse_id)
 
+    # Reserving an order line that is already reserved is a repeat, not a
+    # second promise: the level is reported as it stands and nothing is written.
+    held_in = await _held_order_reservation(session, plan)
+    if held_in is not None:
+        held = (
+            await session.execute(
+                select(StockLevel).where(
+                    StockLevel.warehouse_id == held_in,
+                    StockLevel.product_id == plan.product_id,
+                )
+            )
+        ).scalar_one_or_none()
+        if held is not None:
+            return StockChange(to_stock_level_out(held), None, _nothing_to_announce)
+
     existing = (
         await session.execute(
             select(StockLevel).where(
@@ -473,6 +567,32 @@ async def apply_stock_movement(
             ),
         ),
     )
+
+
+def _nothing_to_announce() -> None:
+    """A repeat that wrote nothing announces nothing."""
+
+
+async def apply_stock_movements(
+    session: AsyncSession,
+    publisher: DomainEventPublisher,
+    access: StockActor,
+    plans: Sequence[MovementPlan],
+) -> StockChange:
+    """Applies the plans one after another on the caller's session.
+
+    Several plans describe one request the ledger records as several movements;
+    a failing step rolls back the steps before it together with the session.
+    The change reports the last level and movement and announces every step.
+    """
+    changes = [await apply_stock_movement(session, publisher, access, plan) for plan in plans]
+    last = changes[-1]
+
+    def publish() -> None:
+        for change in changes:
+            change.publish_committed()
+
+    return StockChange(last.level, last.movement, publish)
 
 
 class _WarehousePage(PagedQuery[Warehouse, WarehouseListParams, WarehouseOut]):
@@ -647,22 +767,25 @@ class WarehouseService:
         return await _MovementPage(self._session).run(params)
 
     async def receive(self, access: WarehouseAccess, data: ReceiveStockRequest) -> StockLevelOut:
-        return await self._apply(access, receive_plan(data))
+        return await self._apply(access, [receive_plan(data)])
 
     async def issue(self, access: WarehouseAccess, data: IssueStockRequest) -> StockLevelOut:
-        return await self._apply(access, issue_plan(data))
+        assert_not_order_reference("issue", data.reference_type, data.reference_id)
+        return await self._apply(access, issue_plans(data))
 
     async def reserve(self, access: WarehouseAccess, data: ReserveStockRequest) -> StockLevelOut:
-        return await self._apply(access, reserve_plan(data))
+        assert_not_order_reference("reserve", data.reference_type, data.reference_id)
+        return await self._apply(access, [reserve_plan(data)])
 
     async def release(self, access: WarehouseAccess, data: ReleaseStockRequest) -> StockLevelOut:
-        return await self._apply(access, release_plan(data))
+        assert_not_order_reference("release", data.reference_type, data.reference_id)
+        return await self._apply(access, [release_plan(data)])
 
     async def adjust(self, access: WarehouseAccess, data: AdjustStockRequest) -> StockLevelOut:
-        return await self._apply(access, adjust_plan(data))
+        return await self._apply(access, [adjust_plan(data)])
 
-    async def _apply(self, access: WarehouseAccess, plan: MovementPlan) -> StockLevelOut:
-        change = await apply_stock_movement(self._session, self._publisher, access, plan)
+    async def _apply(self, access: WarehouseAccess, plans: Sequence[MovementPlan]) -> StockLevelOut:
+        change = await apply_stock_movements(self._session, self._publisher, access, plans)
         publish_after_commit(self._session, change.publish_committed)
         return change.level
 
@@ -702,7 +825,10 @@ __all__ = [
     "WarehouseService",
     "adjust_plan",
     "apply_stock_movement",
+    "apply_stock_movements",
+    "assert_not_order_reference",
     "issue_plan",
+    "issue_plans",
     "next_quantities",
     "publish_after_commit",
     "receive_plan",

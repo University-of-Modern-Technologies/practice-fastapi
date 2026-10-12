@@ -22,13 +22,18 @@ from app.events.types import DomainEventPublisher, NoopPublisher
 from app.modules.warehouse.service import (
     StockChange,
     adjust_plan,
-    apply_stock_movement,
-    issue_plan,
+    apply_stock_movements,
+    issue_plans,
     receive_plan,
     release_plan,
     reserve_plan,
 )
-from app.modules.warehouse.types import StockActor, StockAdjustmentInput, StockOperationInput
+from app.modules.warehouse.types import (
+    MovementPlan,
+    StockActor,
+    StockAdjustmentInput,
+    StockOperationInput,
+)
 
 __all__ = ["StockOperations", "create_stock_operations"]
 
@@ -46,27 +51,32 @@ class StockOperations:
     async def receive(
         self, session: AsyncSession, access: StockActor, data: StockOperationInput
     ) -> StockChange:
-        return await apply_stock_movement(session, self._publisher, access, receive_plan(data))
+        return await self._apply(session, access, [receive_plan(data)])
 
     async def issue(
         self, session: AsyncSession, access: StockActor, data: StockOperationInput
     ) -> StockChange:
-        return await apply_stock_movement(session, self._publisher, access, issue_plan(data))
+        return await self._apply(session, access, issue_plans(data))
 
     async def reserve(
         self, session: AsyncSession, access: StockActor, data: StockOperationInput
     ) -> StockChange:
-        return await apply_stock_movement(session, self._publisher, access, reserve_plan(data))
+        return await self._apply(session, access, [reserve_plan(data)])
 
     async def release(
         self, session: AsyncSession, access: StockActor, data: StockOperationInput
     ) -> StockChange:
-        return await apply_stock_movement(session, self._publisher, access, release_plan(data))
+        return await self._apply(session, access, [release_plan(data)])
 
     async def adjust(
         self, session: AsyncSession, access: StockActor, data: StockAdjustmentInput
     ) -> StockChange:
-        return await apply_stock_movement(session, self._publisher, access, adjust_plan(data))
+        return await self._apply(session, access, [adjust_plan(data)])
+
+    async def _apply(
+        self, session: AsyncSession, access: StockActor, plans: list[MovementPlan]
+    ) -> StockChange:
+        return await apply_stock_movements(session, self._publisher, access, plans)
 
 
 def create_stock_operations(publisher: DomainEventPublisher | None = None) -> StockOperations:

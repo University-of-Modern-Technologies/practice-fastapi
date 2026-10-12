@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Literal
 
@@ -10,6 +11,8 @@ from app.db.enums import PermissionScope
 
 __all__ = [
     "CONTACT_NOT_FOUND",
+    "CURRENCY_NOT_SUPPORTED",
+    "DEAL_CLOSED",
     "DEAL_CREATED",
     "DEAL_DELETED",
     "DEAL_ENTITY_TYPE",
@@ -22,11 +25,11 @@ __all__ = [
     "INVALID_DEAL_PROBABILITY",
     "INVALID_DEAL_STAGE_TRANSITION",
     "INVALID_INITIAL_DEAL_STAGE",
-    "MAX_DEAL_PAGE",
     "MAX_SEARCH_LENGTH",
     "MAX_TITLE_LENGTH",
     "DealAccess",
     "DealSortField",
+    "OrganizationCurrencyResolver",
 ]
 
 #: Machine codes shared between the service and its tests, so a rename cannot
@@ -41,6 +44,10 @@ INVALID_DEAL_AMOUNT = "INVALID_DEAL_AMOUNT"
 INVALID_DEAL_PROBABILITY = "INVALID_DEAL_PROBABILITY"
 INVALID_DEAL_STAGE_TRANSITION = "INVALID_DEAL_STAGE_TRANSITION"
 INVALID_INITIAL_DEAL_STAGE = "INVALID_INITIAL_DEAL_STAGE"
+#: A won or lost deal is a record of what happened; its fields are frozen.
+DEAL_CLOSED = "DEAL_CLOSED"
+#: Shared with orders and products: one currency per organization.
+CURRENCY_NOT_SUPPORTED = "CURRENCY_NOT_SUPPORTED"
 
 #: Audit actions and domain event types — deliberately the same strings, so one
 #: change is described by one name wherever it is read back.
@@ -52,13 +59,18 @@ DEAL_DELETED = "deal.deleted"
 #: Entity type carried by both the audit trail and the event stream.
 DEAL_ENTITY_TYPE = "deal"
 
+#: Used until the composition root supplies the organization's own setting.
 DEFAULT_CURRENCY = "USD"
+
+#: Reads the currency the organization keeps its books in
+#: (``organization.defaultCurrency``). Asked on every write rather than once,
+#: so a changed setting applies to the next deal without a restart.
+type OrganizationCurrencyResolver = Callable[[], Awaitable[str]]
 MAX_TITLE_LENGTH = 160
 MAX_SEARCH_LENGTH = 160
 #: Highest page a list request may ask for: far beyond any real pipeline, and
 #: low enough that the row offset it implies stays a small integer for the
 #: database instead of making the query itself fail.
-MAX_DEAL_PAGE = 1_000_000
 
 #: Sortable columns, named as the client spells them.
 DealSortField = Literal[

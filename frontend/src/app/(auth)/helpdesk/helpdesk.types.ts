@@ -1,4 +1,4 @@
-import type { Id, IsoDate, IsoDateTime } from '@/types/domain';
+import type { Id, IsoDateTime } from '@/types/domain';
 
 /**
  * A ticket as the API returns it. `number` is the human handle operators quote
@@ -84,8 +84,9 @@ export interface TicketListQuery {
   readonly contactId?: Id;
   readonly assigneeId?: Id;
   readonly ownerId?: Id;
-  readonly openedFrom?: IsoDate;
-  readonly openedTo?: IsoDate;
+  /** Kyiv day boundaries as UTC instants: the API filters by date-time, the link keeps the day. */
+  readonly openedFrom?: IsoDateTime;
+  readonly openedTo?: IsoDateTime;
   readonly sortBy?: TicketSortField;
   readonly sortOrder?: 'asc' | 'desc';
 }
@@ -137,7 +138,22 @@ export const TICKET_ERROR = {
   conflict: 'TICKET_CONCURRENT_MODIFICATION',
   contactNotFound: 'TICKET_CONTACT_NOT_FOUND',
   assigneeNotFound: 'TICKET_ASSIGNEE_NOT_FOUND',
+  closed: 'TICKET_CLOSED',
 } as const;
+
+/**
+ * A refused write names a condition the operator can act on, so each code gets
+ * its own sentence instead of a generic «перевірте дані».
+ */
+export const TICKET_ERROR_MESSAGES: Readonly<Record<string, string>> = {
+  [TICKET_ERROR.closed]: 'Звернення вже закрито — його дані більше не змінюються',
+};
+
+/**
+ * Only `CLOSED` is final. A resolved ticket can still be reopened, so it stays
+ * editable; a closed one is refused by the API with `TICKET_CLOSED`.
+ */
+export const isTicketClosed = (status: TicketStatus): boolean => status === 'CLOSED';
 
 /**
  * `details` of a refused transition: what the record was, and where it could

@@ -36,8 +36,13 @@ ListParams = Annotated[DealListParams, Query()]
 DealVersion = Annotated[int, Query(ge=1)]
 
 
-def get_deals_service(session: SessionDep, publisher: PublisherDep) -> DealsService:
-    return DealsService(session, publisher)
+def get_deals_service(
+    session: SessionDep, publisher: PublisherDep, request: Request
+) -> DealsService:
+    # The organization's currency is a setting, read through a port the
+    # composition root publishes; without one the service falls back to USD.
+    resolve_currency = getattr(request.app.state, "resolve_organization_currency", None)
+    return DealsService(session, publisher, resolve_organization_currency=resolve_currency)
 
 
 DealsServiceDep = Annotated[DealsService, Depends(get_deals_service)]
@@ -91,7 +96,7 @@ def create_deals_router() -> APIRouter:
         status_code=status.HTTP_201_CREATED,
         tags=["Deals"],
         summary="Створити угоду",
-        responses=refusals(401, 403, 404),
+        responses=refusals(401, 403, 404, 422),
     )
     async def create_deal(
         payload: CreateDealRequest,
@@ -114,7 +119,7 @@ def create_deals_router() -> APIRouter:
         "/{id}",
         tags=["Deals"],
         summary="Оновити угоду без зміни stage",
-        responses=refusals(401, 403, 404, 409),
+        responses=refusals(401, 403, 404, 409, 422),
     )
     async def update_deal(
         id: uuid.UUID,  # noqa: A002

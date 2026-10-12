@@ -1,21 +1,21 @@
 'use client';
 
 import { Col, Form, Input, Row, Switch, type FormInstance } from 'antd';
-import { useCallback, useMemo, useState, type ReactNode } from 'react';
+import { useCallback, useMemo, type ReactNode } from 'react';
 import { ConflictAlert, applyServerErrors, zodRule } from '@/components';
-import { DEFAULT_CURRENCY, Money } from '@/lib/money';
+import { Money } from '@/lib/money';
 import { ApiError } from '@/shared/api';
-import { useMutationFeedback, useUnsavedChanges, useVersionConflict } from '@/shared/hooks';
+import { useMutationFeedback, useRecordForm } from '@/shared/hooks';
 import { useCreateProduct, useUpdateProduct } from '../products.queries';
 import {
   PRODUCT_ERROR,
+  PRODUCT_ERROR_MESSAGES,
   type CreateProductInput,
   type Product,
   type UpdateProductInput,
 } from '../products.types';
 import {
   productCategorySchema,
-  productCurrencySchema,
   productDescriptionSchema,
   productNameSchema,
   productPriceSchema,
@@ -27,8 +27,10 @@ interface UseProductFormOptions {
   /** Absent on the create route; present, and the form edits that record. */
   readonly product?: Product | undefined;
   readonly onSaved: (product: Product) => void;
-  /** Re-reads the record after a lost race, so the next save carries the current version. */
-  readonly onReload?: (() => unknown) | undefined;
+  /** Re-reads the record after a lost race; the form then shows it with its version. */
+  readonly onReload?:
+    | (() => Promise<{ readonly data?: Product | undefined; readonly isError?: boolean }>)
+    | undefined;
   readonly isReloading?: boolean | undefined;
 }
 
@@ -52,6 +54,22 @@ interface UseProductFormResult {
 const asText = (value: string | undefined): string => (value ?? '').trim();
 
 /**
+ * A product as the form shows it. Every field is named, absent ones included,
+ * so a re-read clears a value the other person removed instead of keeping ours.
+ */
+const toProductValues = (product: Product): Partial<ProductFormValues> => ({
+  sku: product.sku,
+  name: product.name,
+  // The stored amount is normalised through Money, so the field shows the same
+  // scale the API keeps rather than whatever it was typed as.
+  unitPrice: Money.parse(product.unitPrice, product.currency).toWire(),
+  currency: product.currency,
+  isActive: product.isActive,
+  description: product.description ?? undefined,
+  category: product.category ?? undefined,
+});
+
+/**
  * The one form behind both product routes. Create and edit differ in exactly
  * two places — the SKU is fixed after creation, and an update carries the
  * version it read — so splitting them into two components would duplicate every
@@ -64,32 +82,24 @@ export const useProductForm = ({
   isReloading = false,
 }: UseProductFormOptions): UseProductFormResult => {
   const [form] = Form.useForm<ProductFormValues>();
-  const [isDirty, setIsDirty] = useState(false);
-  const { reportSuccess, reportFailure } = useMutationFeedback();
-  const { hasConflict, handleError: handleConflict, clearConflict } = useVersionConflict();
+  const { reportSuccess, reportFailureWith } = useMutationFeedback();
+  // `base` is the copy on screen: its values are in the fields and its version
+  // is the one a save sends, even after a fresher copy reached the cache.
+  const { base, markDirty, adopt, hasConflict, handleConflict, reload } = useRecordForm({
+    form,
+    record: product,
+    toValues: toProductValues,
+    onReload,
+  });
 
   const isEdit = product !== undefined;
   const create = useCreateProduct();
   const update = useUpdateProduct(product?.id ?? '');
 
-  useUnsavedChanges(isDirty);
-
+  // Read once, at mount; every later copy reaches the fields through the hook.
   const initialValues = useMemo<Partial<ProductFormValues>>(
-    () =>
-      product
-        ? {
-            sku: product.sku,
-            name: product.name,
-            // The stored amount is normalised through Money, so the field shows
-            // the same scale the API keeps rather than whatever it was typed as.
-            unitPrice: Money.parse(product.unitPrice, product.currency).toWire(),
-            currency: product.currency,
-            isActive: product.isActive,
-            ...(product.description === null ? {} : { description: product.description }),
-            ...(product.category === null ? {} : { category: product.category }),
-          }
-        : { currency: DEFAULT_CURRENCY, isActive: true },
-    [product],
+    () => (base ? toProductValues(base) : { isActive: true }),
+    [base],
   );
 
   const handleError = useCallback(
@@ -104,39 +114,39 @@ export const useProductForm = ({
       }
 
       if (applyServerErrors(form, error)) return;
-      reportFailure(error);
+      reportFailureWith(PRODUCT_ERROR_MESSAGES)(error);
     },
-    [form, handleConflict, reportFailure],
+    [form, handleConflict, reportFailureWith],
   );
 
   const handleSaved = useCallback(
     (saved: Product, text: string) => {
-      setIsDirty(false);
-      clearConflict();
+      adopt(saved);
       reportSuccess(text);
       onSaved(saved);
     },
-    [clearConflict, onSaved, reportSuccess],
+    [adopt, onSaved, reportSuccess],
   );
 
   const submit = useCallback(() => {
     void form
       .validateFields()
       .then((values) => {
-        const currency = values.currency.trim().toUpperCase();
-        const unitPrice = Money.fromInput(values.unitPrice, currency).toWire();
+        // No currency on either route: the catalogue is kept in the
+        // organisation's one, which the API fills in on create, and an update
+        // that echoed it back would be refused for an older product in another.
+        const unitPrice = Money.fromInput(values.unitPrice).toWire();
         const description = asText(values.description);
         const category = asText(values.category);
 
-        if (product) {
+        if (base) {
           const input: UpdateProductInput = {
-            // The version read with the record; a stale one answers 409.
-            version: product.version,
+            // The version of the copy the user edited; a stale one answers 409.
+            version: base.version,
             name: values.name.trim(),
             description: description === '' ? null : description,
             category: category === '' ? null : category,
             unitPrice,
-            currency,
             isActive: values.isActive,
           };
 
@@ -151,7 +161,6 @@ export const useProductForm = ({
           sku: values.sku.trim().toUpperCase(),
           name: values.name.trim(),
           unitPrice,
-          currency,
           isActive: values.isActive,
           ...(description === '' ? {} : { description }),
           ...(category === '' ? {} : { category }),
@@ -165,11 +174,7 @@ export const useProductForm = ({
       // A form that failed its own rules has already marked the offending
       // fields; there is nothing further to report.
       .catch(() => undefined);
-  }, [create, form, handleError, handleSaved, product, update]);
-
-  const reload = useCallback(() => {
-    void Promise.resolve(onReload?.()).finally(() => clearConflict());
-  }, [clearConflict, onReload]);
+  }, [base, create, form, handleError, handleSaved, update]);
 
   const fields = (
     <>
@@ -208,8 +213,12 @@ export const useProductForm = ({
         </Col>
 
         <Col xs={12} md={8}>
-          <Form.Item name="currency" label="Валюта" rules={[zodRule(productCurrencySchema)]}>
-            <Input maxLength={3} placeholder={DEFAULT_CURRENCY} />
+          <Form.Item
+            name="currency"
+            label="Валюта"
+            extra={isEdit ? undefined : 'Валюта організації, задається в налаштуваннях'}
+          >
+            <Input disabled placeholder="Валюта організації" />
           </Form.Item>
         </Col>
       </Row>
@@ -230,7 +239,7 @@ export const useProductForm = ({
       initialValues,
       layout: 'vertical',
       requiredMark: false,
-      onValuesChange: () => setIsDirty(true),
+      onValuesChange: markDirty,
       onFinish: submit,
     },
     fields,

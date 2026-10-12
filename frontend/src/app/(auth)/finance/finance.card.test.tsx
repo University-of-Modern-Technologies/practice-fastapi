@@ -45,6 +45,7 @@ const base: BankTransactionDetail = {
   matchedOrderId: null,
   matchedAt: null,
   matchedById: null,
+  autoMatchDisabled: false,
   version: 2,
   createdAt: '2026-01-17T10:05:00.000Z',
   updatedAt: '2026-01-17T10:05:00.000Z',
@@ -130,6 +131,27 @@ describe('Платіж — стан «потрібен вибір»', () => {
         orderId: 'ord-1',
       });
     });
+  });
+
+  // The payment was matched by someone else meanwhile. That is a 409 too, but
+  // not a lost race: the operator reads the domain's own sentence, and the card
+  // re-reads itself instead of offering a choice that has already been made.
+  it('на «вже зведено» каже саме це й перечитує платіж', async () => {
+    showCard(twoCandidates, ['finance:read', 'finance:write', 'orders:read']);
+    const { ApiError } = await import('@/shared/api');
+    vi.mocked(http.post).mockRejectedValue(
+      new ApiError({ status: 409, code: 'TRANSACTION_ALREADY_MATCHED', message: 'Matched' }),
+    );
+
+    await screen.findByText('SO-1001');
+    const readsBefore = vi.mocked(http.get).mock.calls.length;
+    fireEvent.click(screen.getAllByRole('button', { name: /Звести з цим/ })[0] as HTMLElement);
+
+    expect(
+      await screen.findByText('Транзакцію вже зведено — спершу зніміть наявне зведення'),
+    ).toBeInTheDocument();
+    expect(screen.queryByText('Запис змінив інший користувач')).not.toBeInTheDocument();
+    await waitFor(() => expect(vi.mocked(http.get).mock.calls.length).toBeGreaterThan(readsBefore));
   });
 
   it('дає сказати, що не підходить жоден, а не змушує вибрати з переліку', async () => {
@@ -218,5 +240,85 @@ describe('Платіж — дозволи на розділ', () => {
     showCard(base, ['calls:read']);
 
     expect(await screen.findByText('Недостатньо прав')).toBeInTheDocument();
+  });
+});
+
+describe('Платіж — відмови ручного зведення', () => {
+  // The order was tied to another payment meanwhile. A 409, but not a lost
+  // race: re-reading this payment would not change the answer.
+  it('на «замовлення вже зведене» каже саме це, а не пропонує перечитати', async () => {
+    showCard(twoCandidates, ['finance:read', 'finance:write', 'orders:read']);
+    const { ApiError } = await import('@/shared/api');
+    vi.mocked(http.post).mockRejectedValue(
+      new ApiError({
+        status: 409,
+        code: 'ORDER_ALREADY_MATCHED',
+        message: 'Order already matched',
+        details: { orderId: 'ord-1' },
+      }),
+    );
+
+    await screen.findByText('SO-1001');
+    fireEvent.click(screen.getAllByRole('button', { name: /Звести з цим/ })[0] as HTMLElement);
+
+    expect(
+      await screen.findByText('Це замовлення вже зведено з іншим платежем'),
+    ).toBeInTheDocument();
+    expect(screen.queryByText('Запис змінив інший користувач')).not.toBeInTheDocument();
+  });
+
+  it('пояснює розбіжність валют своїми словами', async () => {
+    showCard(twoCandidates, ['finance:read', 'finance:write', 'orders:read']);
+    const { ApiError } = await import('@/shared/api');
+    vi.mocked(http.post).mockRejectedValue(
+      new ApiError({
+        status: 422,
+        code: 'CURRENCY_MISMATCH',
+        message: 'Currency mismatch',
+        details: { currency: 'USD', orderCurrency: 'EUR' },
+      }),
+    );
+
+    await screen.findByText('SO-1001');
+    fireEvent.click(screen.getAllByRole('button', { name: /Звести з цим/ })[0] as HTMLElement);
+
+    expect(
+      await screen.findByText(
+        'Валюта платежу не збігається з валютою замовлення — зведення відхилено',
+      ),
+    ).toBeInTheDocument();
+  });
+
+  // Outgoing money is never tied to an order, so the action is not offered.
+  it('не пропонує ручне зведення для списання', async () => {
+    showCard({ ...base, direction: 'DEBIT', matchStatus: 'IGNORED' }, [
+      'finance:read',
+      'finance:write',
+      'orders:read',
+    ]);
+
+    await screen.findByText(/Платіж виведено зі зведення/);
+    expect(screen.queryByRole('button', { name: /Звести вручну/ })).not.toBeInTheDocument();
+  });
+});
+
+describe('Платіж — зведення зняла людина', () => {
+  it('позначає, що автоматичне зведення цей платіж пропускає', async () => {
+    showCard({ ...base, matchStatus: 'UNMATCHED', autoMatchDisabled: true }, [
+      'finance:read',
+      'finance:write',
+      'orders:read',
+    ]);
+
+    await screen.findByText(/Це робочий стан, а не помилка/);
+    expect(screen.getAllByText('Без автозведення').length).toBeGreaterThan(0);
+    expect(screen.getByText(/автоматичне зведення цей платіж/)).toBeInTheDocument();
+  });
+
+  it('не ставить позначки на платіж, з яким автозведення працює', async () => {
+    showCard({ ...base, matchStatus: 'UNMATCHED' }, ['finance:read', 'orders:read']);
+
+    await screen.findByText(/Це робочий стан, а не помилка/);
+    expect(screen.queryByText('Без автозведення')).not.toBeInTheDocument();
   });
 });

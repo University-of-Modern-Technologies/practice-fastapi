@@ -108,6 +108,8 @@ class FakeSession:
         self.flushes = 0
         self.refreshed: list[Any] = []
         self.savepoints = 0
+        #: Each commit, with how many calls were on file at that moment.
+        self.commits: list[int] = []
         #: Failures keyed by the identifier of the row they fire on, so one
         #: insert in a batch can lose its race while its neighbours do not.
         self.flush_errors: dict[str, Exception] = {}
@@ -146,6 +148,9 @@ class FakeSession:
 
     async def refresh(self, instance: Any) -> None:
         self.refreshed.append(instance)
+
+    async def commit(self) -> None:
+        self.commits.append(len([row for row in self.added if isinstance(row, Call)]))
 
 
 class RecordingPublisher:
@@ -196,6 +201,24 @@ def make_call(**overrides: Any) -> Call:
         "deleted_at": None,
     }
     return Call(**(values | overrides))
+
+
+class FakeDriverError(Exception):
+    """The driver's own exception, as SQLAlchemy wraps it: a message and a SQLSTATE."""
+
+    def __init__(self, message: str, sqlstate: str) -> None:
+        super().__init__(message)
+        self.sqlstate = sqlstate
+
+
+def duplicate_external_id() -> IntegrityError:
+    return IntegrityError(
+        "INSERT",
+        {},
+        FakeDriverError(
+            'duplicate key value violates unique constraint "calls_external_id_key"', "23505"
+        ),
+    )
 
 
 def make_service(session: FakeSession, provider: Any = None, publisher: Any = None) -> CallsService:
@@ -351,8 +374,7 @@ async def test_a_collision_at_the_database_is_a_skip_rather_than_a_failure() -> 
     already got what it wanted: the call is on file. So the whole import
     succeeds and simply reports nothing created.
     """
-    collision = IntegrityError("INSERT", {}, Exception("duplicate key value: calls_external_id"))
-    session = FakeSession(flush_error=collision)
+    session = FakeSession(flush_error=duplicate_external_id())
 
     result = await make_service(session).sync(ALL_ACCESS)
 
@@ -371,11 +393,7 @@ async def test_one_lost_race_does_not_cost_the_rest_of_the_batch() -> None:
     """
     batch = list(stub_journal()[:3])
     session = FakeSession()
-    session.flush_errors = {
-        batch[1].external_id: IntegrityError(
-            "INSERT", {}, Exception("duplicate key value: calls_external_id")
-        )
-    }
+    session.flush_errors = {batch[1].external_id: duplicate_external_id()}
 
     result = await make_service(session, StaticProvider(batch)).sync(ALL_ACCESS)
 
@@ -391,11 +409,64 @@ async def test_an_integrity_violation_that_is_not_a_duplicate_is_not_swallowed()
     # Anything but the unique external id belongs elsewhere — a foreign key
     # that vanished, a check that failed — and hiding it as a skip would report
     # a successful import of rows that were never written.
-    other = IntegrityError("INSERT", {}, Exception("violates check constraint duration"))
+    other = IntegrityError(
+        "INSERT", {}, FakeDriverError('violates check constraint "duration"', "23514")
+    )
     session = FakeSession(flush_error=other)
 
     with pytest.raises(IntegrityError):
         await make_service(session).sync(ALL_ACCESS)
+
+
+async def test_a_check_named_after_the_external_id_is_still_not_a_duplicate() -> None:
+    """The cause of the old miscount: the check that keeps the identifier
+    non-blank carries ``external_id`` in its name, so matching on the message
+    took a malformed record for one that was already on file."""
+    blank = IntegrityError(
+        "INSERT",
+        {},
+        FakeDriverError(
+            'new row for relation "calls" violates check constraint '
+            '"calls_external_id_nonempty_check"',
+            "23514",
+        ),
+    )
+    session = FakeSession(flush_error=blank)
+
+    with pytest.raises(IntegrityError):
+        await make_service(session).sync(ALL_ACCESS)
+
+
+async def test_each_filed_call_is_committed_and_announced_before_the_next_is_tried() -> None:
+    """A failure half way through the batch costs only the record that failed.
+
+    The calls filed before it are committed one by one, and each one's event
+    goes out with its own commit — not at the end of a loop the failure never
+    reaches.
+    """
+    batch = list(stub_journal()[:3])
+    session = FakeSession()
+    session.flush_errors = {
+        batch[1].external_id: IntegrityError(
+            "INSERT", {}, FakeDriverError('violates check constraint "duration"', "23514")
+        )
+    }
+    publisher = RecordingPublisher()
+
+    with pytest.raises(IntegrityError):
+        await make_service(session, StaticProvider(batch), publisher).sync(ALL_ACCESS)
+
+    assert session.commits == [1]
+    assert [event.entity_id for event in publisher.published] == [str(stored_calls(session)[0].id)]
+
+
+async def test_a_clean_batch_is_committed_one_call_at_a_time() -> None:
+    batch = list(stub_journal()[:3])
+    session = FakeSession()
+
+    await make_service(session, StaticProvider(batch)).sync(ALL_ACCESS)
+
+    assert session.commits == [1, 2, 3]
 
 
 async def test_an_unreachable_provider_is_reported_as_a_bad_gateway() -> None:
@@ -838,4 +909,4 @@ def test_a_blank_search_is_refused_and_a_page_has_a_ceiling() -> None:
     with pytest.raises(ValueError, match="at least 1"):
         CallListParams.model_validate({"search": "   "})
     with pytest.raises(ValueError, match="less than or equal"):
-        CallListParams.model_validate({"page": 1_000_001})
+        CallListParams.model_validate({"page": 101})

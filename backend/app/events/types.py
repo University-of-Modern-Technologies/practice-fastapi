@@ -213,6 +213,8 @@ class DomainEventCollection(Protocol):
 
     async def drop_index(self, index_or_name: str) -> None: ...
 
+    async def index_information(self) -> Mapping[str, Mapping[str, Any]]: ...
+
 
 class DomainEventSource(Protocol):
     """Supplier of the collection, or ``None`` while the store is unreachable.

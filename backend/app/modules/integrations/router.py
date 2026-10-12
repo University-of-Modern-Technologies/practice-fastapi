@@ -15,6 +15,7 @@ from fastapi import APIRouter, Depends, Path, Request, status
 from app.core.openapi import refusals
 from app.core.responses import Envelope
 from app.db.enums import PermissionScope
+from app.modules.auth.dependencies import CurrentAuth
 from app.modules.auth.dependencies import SettingsDep as AppSettingsDep
 from app.modules.integrations.delivery.client import DeliveryClient
 from app.modules.integrations.delivery.factory import create_configured_delivery_client
@@ -27,11 +28,13 @@ from app.modules.integrations.service import IntegrationsService
 from app.modules.integrations.types import (
     DeliveryHealthDto,
     DeliveryQuoteDto,
+    FindOrderForShipment,
     NoopQuoteCache,
     QuoteCachePort,
+    ShipmentAccess,
     ShipmentDto,
 )
-from app.modules.rbac.dependencies import require_permission
+from app.modules.rbac.dependencies import RbacServiceDep, require_permission
 
 RESOURCE = "integrations"
 
@@ -65,14 +68,52 @@ DeliveryClientDep = Annotated[DeliveryClient, Depends(get_delivery_client)]
 QuoteCacheDep = Annotated[QuoteCachePort, Depends(get_quote_cache)]
 
 
+def get_order_lookup(request: Request) -> FindOrderForShipment | None:
+    """The order lookup the composition root published, if it published one.
+
+    Without it the service finds no order and refuses every delivery — the safe
+    default for a check whose whole point is not to ship an unchecked order.
+    """
+    lookup: FindOrderForShipment | None = getattr(
+        request.app.state, "find_order_for_shipment", None
+    )
+    return lookup
+
+
+OrderLookupDep = Annotated[FindOrderForShipment | None, Depends(get_order_lookup)]
+
+
 def get_integrations_service(
-    client: DeliveryClientDep, cache: QuoteCacheDep, config: AppSettingsDep
+    client: DeliveryClientDep,
+    cache: QuoteCacheDep,
+    config: AppSettingsDep,
+    find_order: OrderLookupDep,
 ) -> IntegrationsService:
     # How long a quote may be served from the cache is a deployment setting.
-    return IntegrationsService(client, cache, config.delivery_quote_cache_ttl_seconds)
+    return IntegrationsService(
+        client,
+        cache,
+        config.delivery_quote_cache_ttl_seconds,
+        find_order_for_shipment=find_order,
+    )
 
 
 IntegrationsServiceDep = Annotated[IntegrationsService, Depends(get_integrations_service)]
+
+
+async def get_shipment_access(auth: CurrentAuth, rbac: RbacServiceDep) -> ShipmentAccess:
+    """Which orders the caller may ship.
+
+    A delivery names an order, so whether it is visible is decided by the
+    caller's ``orders:read`` grant, at its own breadth.
+    """
+    return ShipmentAccess(
+        actor_id=auth.user_id,
+        order_scope=await rbac.get_permission_scope(auth.user_id, "orders", "read"),
+    )
+
+
+ShipmentAccessDep = Annotated[ShipmentAccess, Depends(get_shipment_access)]
 
 #: Quotes, shipment status and integration health are all reads. Creating a
 #: shipment dispatches a parcel, and is the only write in the module.
@@ -104,28 +145,30 @@ def create_integrations_router() -> APIRouter:
         "/delivery/quotes",
         tags=["Delivery"],
         summary="Розрахувати вартість доставки",
-        responses=refusals(401, 403, 422, 502, 503, 504),
+        responses=refusals(401, 403, 404, 409, 422, 502, 503, 504),
     )
     async def create_quote(
         payload: QuoteRequest,
         _scope: ReadScope,
+        access: ShipmentAccessDep,
         service: IntegrationsServiceDep,
     ) -> Envelope[DeliveryQuoteDto]:
-        return Envelope(data=await service.request_quote(payload))
+        return Envelope(data=await service.request_quote(access, payload))
 
     @router.post(
         "/delivery/shipments",
         status_code=status.HTTP_201_CREATED,
         tags=["Delivery"],
         summary="Створити відправлення",
-        responses=refusals(401, 403, 422, 502, 503, 504),
+        responses=refusals(401, 403, 404, 409, 422, 502, 503, 504),
     )
     async def create_shipment(
         payload: CreateShipmentRequest,
         _scope: WriteScope,
+        access: ShipmentAccessDep,
         service: IntegrationsServiceDep,
     ) -> Envelope[ShipmentDto]:
-        return Envelope(data=await service.create_shipment(payload))
+        return Envelope(data=await service.create_shipment(access, payload))
 
     @router.get(
         "/delivery/shipments/{id}",

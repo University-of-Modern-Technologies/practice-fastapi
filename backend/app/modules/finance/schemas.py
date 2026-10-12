@@ -29,15 +29,12 @@ from typing import Annotated, Self
 
 from pydantic import Field, PrivateAttr, StringConstraints, model_validator
 
-from app.core.pagination import DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, SortOrder
-from app.core.reporting import (
-    DEFAULT_REPORT_WINDOW_FROM,
-    MAX_REPORT_WINDOW_DAYS,
-    default_report_window_to,
-)
+from app.core.pagination import DEFAULT_PAGE_SIZE, MAX_PAGE, MAX_PAGE_SIZE, SortOrder
+from app.core.reporting import MAX_REPORT_WINDOW_DAYS
 from app.core.responses import CamelModel
 from app.core.serializers import Money, UtcDate, UtcDatetime
 from app.db.enums import OrderStatus, PaymentMatchStatus, TransactionDirection
+from app.modules.analytics.kyiv_time import DEFAULT_KYIV_WINDOW_FROM, default_kyiv_window_to
 from app.modules.analytics.schemas import Rate, ReportInstant
 from app.modules.finance.types import (
     MAX_SEARCH_LENGTH,
@@ -114,6 +111,12 @@ class BankTransactionOut(CamelModel):
     matched_order_id: uuid.UUID | None
     matched_at: UtcDatetime | None
     matched_by_id: uuid.UUID | None
+    #: Set when a person takes a match back; automatic reconciliation skips the
+    #: row until a person matches it again by hand.
+    auto_match_disabled: bool = Field(
+        description="true, якщо зведення зняли вручну: автозведення цей рядок пропускає, "
+        "доки його не зведуть вручну знову."
+    )
     version: int
     created_at: UtcDatetime
     updated_at: UtcDatetime
@@ -221,7 +224,7 @@ class MatchTransactionRequest(CamelModel):
 class StatementListParams(CamelModel):
     """Query string of ``GET /finance/statements``."""
 
-    page: int = Field(default=1, ge=1)
+    page: int = Field(default=1, ge=1, le=MAX_PAGE)
     page_size: int = Field(default=DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE)
     search: str | None = Field(default=None, min_length=1, max_length=MAX_SEARCH_LENGTH)
     sort_by: StatementSortField = "periodStart"
@@ -236,16 +239,17 @@ class TransactionListParams(CamelModel):
     constrain.
     """
 
-    page: int = Field(default=1, ge=1)
+    page: int = Field(default=1, ge=1, le=MAX_PAGE)
     page_size: int = Field(default=DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE)
     search: str | None = Field(default=None, min_length=1, max_length=MAX_SEARCH_LENGTH)
     statement_id: uuid.UUID | None = None
     match_status: PaymentMatchStatus | None = None
     direction: TransactionDirection | None = None
     # Read by the same rule as every report bound in this API: ISO 8601, and a
-    # missing zone means UTC. Two rules for the same kind of value — refuse
-    # here, assume UTC on the summary next door — would make one date valid
-    # on one screen and an error on the other.
+    # missing zone means the Kyiv clock, so ``2026-03-01`` is the start of that
+    # day in Kyiv. Two rules for the same kind of value — refuse here, assume a
+    # zone on the summary next door — would make one date valid on one screen
+    # and an error on the other.
     booked_from: ReportInstant | None = None
     #: Exclusive, as the end of every window in this API is: two adjacent
     #: periods must not both claim the line booked on their shared boundary.
@@ -301,8 +305,8 @@ class FinanceSummaryParams(CamelModel):
 
     @model_validator(mode="after")
     def _resolve_range(self) -> Self:
-        from_ = self.from_ if self.from_ is not None else DEFAULT_REPORT_WINDOW_FROM
-        to = self.to if self.to is not None else default_report_window_to()
+        from_ = self.from_ if self.from_ is not None else DEFAULT_KYIV_WINDOW_FROM
+        to = self.to if self.to is not None else default_kyiv_window_to()
 
         if from_ >= to:
             message = "from must be earlier than to"

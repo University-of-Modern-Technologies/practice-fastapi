@@ -9,11 +9,14 @@ from __future__ import annotations
 
 import threading
 import uuid
+from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from typing import Any, cast
 
 import jwt
 import pytest
+from fastapi import Request
 from pydantic import ValidationError
 from sqlalchemy import Update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -33,9 +36,10 @@ from app.db.models.rbac import Permission, Role, RolePermission, UserRole
 from app.db.models.user import Session as SessionRow
 from app.db.models.user import User
 from app.modules.auth import service as auth_service_module
+from app.modules.auth.dependencies import get_session_revocations
 from app.modules.auth.schemas import LoginRequest
 from app.modules.auth.service import AuthService, split_refresh_token, to_authenticated_user
-from app.modules.auth.types import AuthConfig, ClientInfo
+from app.modules.auth.types import AuthConfig, ClientInfo, NoopSessionRevocationListener
 
 PASSWORD = "correct-horse"
 PASSWORD_HASH = hash_password(PASSWORD)
@@ -321,12 +325,129 @@ async def test_logout_without_a_token_is_not_an_error() -> None:
     assert session.statements == []
 
 
+class RecordingRevocations:
+    """Collects what the service reports about sessions it ended."""
+
+    def __init__(self) -> None:
+        self.sessions: list[uuid.UUID] = []
+        self.users: list[uuid.UUID] = []
+
+    def sessions_revoked(self, session_ids: Sequence[uuid.UUID]) -> None:
+        self.sessions.extend(session_ids)
+
+    def user_sessions_revoked(self, user_id: uuid.UUID) -> None:
+        self.users.append(user_id)
+
+
 async def test_logout_revokes_the_addressed_session() -> None:
+    row = make_session_row(make_user(), "the-secret")
+    session = FakeSession()
+    session.rows[(SessionRow, row.id)] = row
+
+    await make_service(session).logout(f"{row.id}.the-secret")
+
+    [statement] = session_updates(session)
+    assert "revoked_at" in update_values(statement)
+    # Conditional on the digest just checked, so a rotation in between wins.
+    assert "token_hash" in str(statement.whereclause)
+
+
+# The session id alone is not a secret; only the whole token ends a session.
+async def test_logout_with_a_wrong_secret_revokes_nothing() -> None:
+    row = make_session_row(make_user(), "the-secret")
+    session = FakeSession()
+    session.rows[(SessionRow, row.id)] = row
+    revocations = RecordingRevocations()
+
+    await AuthService(cast("AsyncSession", session), CONFIG, sessions=revocations).logout(
+        f"{row.id}.guessed"
+    )
+
+    assert session_updates(session) == []
+    assert revocations.sessions == []
+
+
+async def test_logout_of_a_missing_session_costs_the_same_digest_check(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    checked: list[str] = []
+
+    async def recording_verify(password: str, password_hash: str) -> bool:
+        del password
+        checked.append(password_hash)
+        return False
+
+    monkeypatch.setattr(auth_service_module, "verify_password_async", recording_verify)
     session = FakeSession()
 
-    await make_service(session).logout(f"{uuid.uuid4()}.secret")
+    await make_service(session).logout(f"{uuid.uuid4()}.any")
 
-    assert len(session.statements) == 1
+    assert checked == [DUMMY_PASSWORD_HASH]
+    assert session.statements == []
+
+
+# A socket opened with the session is closed with it.
+async def test_logout_reports_the_session_it_ended() -> None:
+    row = make_session_row(make_user(), "the-secret")
+    session = FakeSession()
+    session.rows[(SessionRow, row.id)] = row
+    revocations = RecordingRevocations()
+
+    await AuthService(cast("AsyncSession", session), CONFIG, sessions=revocations).logout(
+        f"{row.id}.the-secret"
+    )
+
+    assert revocations.sessions == [row.id]
+
+
+async def test_logout_reports_nothing_when_a_refresh_rotated_the_secret_first() -> None:
+    row = make_session_row(make_user(), "the-secret")
+    session = FakeSession()
+    session.rows[(SessionRow, row.id)] = row
+    session.rowcount = 0
+    revocations = RecordingRevocations()
+
+    await AuthService(cast("AsyncSession", session), CONFIG, sessions=revocations).logout(
+        f"{row.id}.the-secret"
+    )
+
+    assert revocations.sessions == []
+
+
+async def test_an_access_token_reports_when_it_expires() -> None:
+    user = make_user()
+    row = make_session_row(user, "s")
+    session = FakeSession(found_user=user)
+    session.rows[(SessionRow, row.id)] = row
+    session.rows[(User, user.id)] = user
+    expiry = datetime.now(tz=UTC).replace(microsecond=0) + timedelta(minutes=15)
+
+    token = jwt.encode(
+        {"sub": str(user.id), "sessionId": str(row.id), "type": "access", "exp": expiry},
+        CONFIG.access_token_secret,
+        algorithm="HS256",
+    )
+
+    auth = await make_service(session).authenticate(token)
+
+    assert auth.expires_at == expiry
+
+
+async def test_an_access_token_without_an_expiry_is_refused() -> None:
+    user = make_user()
+    row = make_session_row(user, "s")
+    session = FakeSession(found_user=user)
+    session.rows[(SessionRow, row.id)] = row
+    session.rows[(User, user.id)] = user
+
+    token = jwt.encode(
+        {"sub": str(user.id), "sessionId": str(row.id), "type": "access"},
+        CONFIG.access_token_secret,
+        algorithm="HS256",
+    )
+
+    with pytest.raises(UnauthorizedError):
+        await make_service(session).authenticate(token)
 
 
 async def test_authenticate_accepts_a_token_backed_by_a_live_session() -> None:
@@ -562,3 +683,14 @@ def test_the_client_address_is_stored_only_when_it_is_an_address(
 def test_a_long_user_agent_is_cut_to_the_column_width() -> None:
     assert ClientInfo.of(None, "x" * 600).user_agent == "x" * 512
     assert ClientInfo.of(None, "").user_agent is None
+
+
+def test_ended_sessions_are_reported_to_the_gateway_the_app_runs() -> None:
+    listener = RecordingRevocations()
+    with_gateway = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(realtime=listener)))
+    without = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace()))
+
+    assert get_session_revocations(cast("Request", with_gateway)) is listener
+    assert isinstance(
+        get_session_revocations(cast("Request", without)), NoopSessionRevocationListener
+    )

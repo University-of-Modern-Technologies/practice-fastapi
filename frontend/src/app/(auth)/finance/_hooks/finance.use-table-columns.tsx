@@ -1,6 +1,6 @@
 'use client';
 
-import { Typography } from 'antd';
+import { Space, Typography } from 'antd';
 import { useMemo } from 'react';
 import { DateValue, MoneyValue, StatusTag, type DataTableColumns } from '@/components';
 import {
@@ -8,6 +8,7 @@ import {
   TRANSACTION_DIRECTION,
   type BankTransaction,
 } from '../finance.types';
+import { AutoMatchDisabledTag } from '../_components/auto-match-tag';
 
 /**
  * Columns of the payment worklist.
@@ -73,7 +74,10 @@ export const useTransactionTableColumns = (): DataTableColumns<BankTransaction> 
         title: 'Зведення',
         width: 180,
         render: (_status: string, row: BankTransaction) => (
-          <StatusTag dictionary={PAYMENT_MATCH_STATUS} value={row.matchStatus} />
+          <Space size={4} wrap>
+            <StatusTag dictionary={PAYMENT_MATCH_STATUS} value={row.matchStatus} />
+            {row.autoMatchDisabled ? <AutoMatchDisabledTag /> : null}
+          </Space>
         ),
       },
     ],

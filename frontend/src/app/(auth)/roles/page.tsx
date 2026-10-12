@@ -6,7 +6,7 @@ import { EmptyState, PageHeader, PermissionGate, TablePageSkeleton } from '@/com
 import { useHasPermission, useMutationFeedback, useReportError } from '@/shared/hooks';
 import { CreateRoleModal, PermissionMatrix } from './_components';
 import { useReplaceRolePermissions, useRoles } from './roles.queries';
-import type { PermissionGrant, Role } from './roles.types';
+import { grantsOutsideMatrix, type PermissionGrant, type Role } from './roles.types';
 
 interface RoleEditorProps {
   readonly role: Role;
@@ -21,6 +21,9 @@ function RoleEditor({ role, canEdit }: RoleEditorProps) {
   const [draft, setDraft] = useState<readonly PermissionGrant[]>(role.permissions);
   const save = useReplaceRolePermissions(role.id);
   const { reportSuccess, reportFailure } = useMutationFeedback();
+  // The matrix edits only the cells it draws; `draft` still carries the rest,
+  // so a save never drops a grant the screen could not show.
+  const hidden = grantsOutsideMatrix(draft);
 
   const submit = (): void => {
     save.mutate(draft, {
@@ -49,8 +52,19 @@ function RoleEditor({ role, canEdit }: RoleEditorProps) {
           type="warning"
           showIcon
           message="Збереження замінює весь набір дозволів ролі"
-          description="Надсилається саме те, що показано в матриці: знятий дозвіл зникає у ролі, а не лишається від попереднього набору."
+          description="Знятий у матриці дозвіл зникає в ролі, а не лишається від попереднього набору."
         />
+
+        {hidden.length > 0 ? (
+          <Alert
+            type="info"
+            showIcon
+            message={`Ще ${hidden.length} дозв. ролі немає в матриці`}
+            description={`Їх збережено без змін: ${hidden
+              .map((grant) => `${grant.resource}:${grant.action}`)
+              .join(', ')}.`}
+          />
+        ) : null}
 
         <PermissionMatrix value={draft} onChange={setDraft} disabled={!canEdit} />
       </Space>

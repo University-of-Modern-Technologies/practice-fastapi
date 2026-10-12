@@ -180,6 +180,19 @@ describe('Картка дзвінка — запис розмови', () => {
     expect(screen.getByText(/Посилання дійсне до/)).toBeInTheDocument();
   });
 
+  // The address comes from the telephony provider. An `href` with a
+  // `javascript:` scheme would run inside this page with the operator's session.
+  it('не робить посиланням адресу з іншою схемою, ніж http(s)', async () => {
+    serve(call(), { url: 'javascript:alert(1)', expiresAt: '2099-01-01T00:00:00.000Z' });
+    await openCard();
+
+    fireEvent.click(screen.getByRole('button', { name: /Отримати запис/ }));
+
+    expect(await screen.findByText('Адресу запису не можна відкрити')).toBeInTheDocument();
+    expect(screen.queryByText('Відкрити запис')).not.toBeInTheDocument();
+    expect(document.querySelector('a[href^="javascript:"]')).toBeNull();
+  });
+
   // A link past its expiry is a button that fails when pressed. It is replaced
   // by the offer to ask again rather than left on screen looking live.
   it('не лишає на екрані посилання, строк якого вже минув', async () => {

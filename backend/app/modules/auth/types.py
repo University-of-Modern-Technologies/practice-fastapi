@@ -7,10 +7,13 @@ calling without knowing how that was established.
 
 from __future__ import annotations
 
+import contextlib
 import ipaddress
 import uuid
-from dataclasses import dataclass
-from typing import Any
+from collections.abc import Sequence
+from dataclasses import dataclass, field
+from datetime import datetime
+from typing import Any, Protocol, runtime_checkable
 
 from app.core.settings import Settings
 from app.modules.auth.schemas import AuthenticatedUser
@@ -42,6 +45,56 @@ class AuthContext:
 
     user_id: uuid.UUID
     session_id: uuid.UUID
+    #: When the access token this identity was read from stops being valid.
+    #: Not part of the identity itself, so two contexts of the same caller
+    #: compare equal whatever token they came from.
+    expires_at: datetime | None = field(default=None, compare=False)
+
+
+@runtime_checkable
+class SessionRevocationListener(Protocol):
+    """Told about sessions that can no longer authenticate.
+
+    Called once the change that ended them has committed. Whatever holds a
+    connection open on the strength of such a session — the realtime gateway —
+    closes it instead of waiting for the access token to run out.
+    """
+
+    def sessions_revoked(self, session_ids: Sequence[uuid.UUID]) -> None: ...
+
+    def user_sessions_revoked(self, user_id: uuid.UUID) -> None:
+        """Every session of this user ended at once."""
+        ...
+
+
+class NoopSessionRevocationListener:
+    """Default for a service built without anything holding connections open."""
+
+    def sessions_revoked(self, session_ids: Sequence[uuid.UUID]) -> None:
+        """Intentionally empty: nothing is listening."""
+
+    def user_sessions_revoked(self, user_id: uuid.UUID) -> None:
+        """Intentionally empty: nothing is listening."""
+
+
+def notify_sessions_revoked(
+    listener: SessionRevocationListener,
+    *,
+    session_ids: Sequence[uuid.UUID] = (),
+    user_id: uuid.UUID | None = None,
+) -> None:
+    """Delivers a notice without letting the listener fail the caller.
+
+    The change it reports has already committed and must be answered as a
+    success. The listener reports its own failures — the gateway logs every
+    close it attempts — and the access token behind any socket left open runs
+    out on its own.
+    """
+    with contextlib.suppress(Exception):
+        if user_id is not None:
+            listener.user_sessions_revoked(user_id)
+        elif session_ids:
+            listener.sessions_revoked(list(session_ids))
 
 
 @dataclass(frozen=True, slots=True)

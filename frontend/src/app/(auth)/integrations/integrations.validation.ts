@@ -14,11 +14,15 @@ export const PARCEL_LIMITS = {
 
 const AMOUNT_PATTERN = /^\d{1,12}(?:[.,]\d{1,2})?$/;
 
+/**
+ * The order is picked, never typed: the API ships only an order it can find by
+ * its identifier, so a number written by hand would be refused as unknown.
+ */
 export const orderIdSchema = z
-  .string()
+  .string('Оберіть замовлення')
   .trim()
-  .min(1, 'Вкажіть номер замовлення')
-  .max(64, 'Не більше 64 символів');
+  .min(1, 'Оберіть замовлення')
+  .pipe(z.uuid('Оберіть замовлення зі списку'));
 
 export const quoteIdSchema = z
   .string()

@@ -15,15 +15,15 @@ from __future__ import annotations
 import uuid
 from typing import Annotated, Self
 
-from pydantic import AwareDatetime, BeforeValidator, Field, field_validator, model_validator
+from pydantic import BeforeValidator, Field, field_validator, model_validator
 
-from app.core.pagination import DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, SortOrder
+from app.core.pagination import DEFAULT_PAGE_SIZE, MAX_PAGE, MAX_PAGE_SIZE, SortOrder
 from app.core.responses import CamelModel
 from app.core.serializers import UtcDatetime
+from app.core.validation import IsoAwareDatetime
 from app.db.enums import TicketChannel, TicketPriority, TicketStatus
 from app.modules.helpdesk.types import (
     MAX_BODY_LENGTH,
-    MAX_HELPDESK_PAGE,
     MAX_NOTE_LENGTH,
     MAX_SEARCH_LENGTH,
     MAX_SUBJECT_LENGTH,
@@ -188,7 +188,7 @@ class TicketListParams(CamelModel):
     through a browser, and none of them are the client asking for anything.
     """
 
-    page: int = Field(default=1, ge=1, le=MAX_HELPDESK_PAGE)
+    page: int = Field(default=1, ge=1, le=MAX_PAGE)
     page_size: int = Field(default=DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE)
     search: str | None = Field(default=None, min_length=1, max_length=MAX_SEARCH_LENGTH)
     status: TicketStatus | None = None
@@ -200,8 +200,8 @@ class TicketListParams(CamelModel):
     # A zone is required rather than assumed: "2026-08-01T00:00:00" means a
     # different instant in every office that sends it, and silently reading it
     # as UTC would answer a question the caller did not ask.
-    opened_from: AwareDatetime | None = None
-    opened_to: AwareDatetime | None = None
+    opened_from: IsoAwareDatetime | None = None
+    opened_to: IsoAwareDatetime | None = None
     sort_by: TicketSortField = "createdAt"
     sort_order: SortOrder = "desc"
 

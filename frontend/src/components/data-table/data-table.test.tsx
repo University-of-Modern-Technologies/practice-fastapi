@@ -90,6 +90,36 @@ describe('DataTable', () => {
     expect(screen.getByText('41–60 з 137')).toBeInTheDocument();
   });
 
+  // The API pages no further than the hundredth page; a pager that offered
+  // page 233 would offer a 400.
+  it('не пропонує сторінки, далі за яку API не гортає, але рахує всі рядки', () => {
+    renderTable({ page: pageOf([deal('1', 'Кабель')], 4646) });
+
+    expect(screen.getByText('1–20 з 4646')).toBeInTheDocument();
+    expect(screen.getByTitle('100')).toBeInTheDocument();
+    expect(screen.queryByTitle('233')).not.toBeInTheDocument();
+    expect(screen.queryByText(/звузьте фільтр/)).not.toBeInTheDocument();
+  });
+
+  it('на останній доступній сторінці радить звузити фільтр', () => {
+    renderTable({
+      page: pageOf([deal('1', 'Кабель')], 4646),
+      params: { page: 100, pageSize: 20 },
+    });
+
+    expect(screen.getByText('1981–2000 з 4646')).toBeInTheDocument();
+    expect(screen.getByText(/звузьте фільтр/)).toBeInTheDocument();
+  });
+
+  it('не радить звужувати, коли остання сторінка й так вміщує решту', () => {
+    renderTable({
+      page: pageOf([deal('1', 'Кабель')], 1990),
+      params: { page: 100, pageSize: 20 },
+    });
+
+    expect(screen.queryByText(/звузьте фільтр/)).not.toBeInTheDocument();
+  });
+
   // antd speaks `ascend`/`descend`; the API speaks `asc`/`desc`.
   it('перекладає перше сортування колонки в мову API', () => {
     const { onParamsChange } = renderTable();

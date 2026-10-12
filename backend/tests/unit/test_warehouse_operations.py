@@ -16,6 +16,7 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import AppError, VersionConflictError
+from app.db.enums import StockMovementType
 from app.db.models.warehouse import StockLevel
 from app.events.types import DomainEvent
 from app.modules.warehouse.operations import create_stock_operations
@@ -72,6 +73,9 @@ class FakeResult:
 
     def one_or_none(self) -> Any:
         return self._value
+
+    def all(self) -> Any:
+        return [] if self._value is None else self._value
 
     def one(self) -> Any:
         if self._value is None:
@@ -144,8 +148,16 @@ def movement_row() -> Row:
 
 
 def session_for(*answers: Any) -> FakeSession:
-    """The answers a movement consumes: warehouse, level, write, ledger row."""
+    """The answers a movement consumes, in the order it reads them."""
     return FakeSession(list(answers))
+
+
+def reservation_session(*answers: Any, ledger: list[Any] | None = None) -> FakeSession:
+    """An order's reservation: the warehouse and the order's ledger first.
+
+    The level, the write and the ledger row follow, as for every movement.
+    """
+    return FakeSession([True, ledger or [], *answers])
 
 
 def as_session(session: FakeSession) -> AsyncSession:
@@ -171,8 +183,8 @@ def compiled_params(statement: Any) -> dict[str, Any]:
 
 
 async def test_a_reservation_writes_through_the_session_it_is_handed() -> None:
-    session = session_for(
-        True, existing_level(), written_level(on_hand=10, reserved=6), movement_row()
+    session = reservation_session(
+        existing_level(), written_level(on_hand=10, reserved=6), movement_row()
     )
     operations = create_stock_operations()
 
@@ -180,21 +192,21 @@ async def test_a_reservation_writes_through_the_session_it_is_handed() -> None:
 
     assert change.level.quantity_reserved == 6
     assert change.level.quantity_available == 4
-    # Warehouse, level, level write, movement write — plus the audit entry,
-    # which the audit service adds to this very same session.
-    assert len(session.statements) == 4
+    # Warehouse, the order's ledger, level, level write, movement write — plus
+    # the audit entry, which the audit service adds to this very same session.
+    assert len(session.statements) == 5
     assert session.flushes == 1
 
 
 async def test_the_write_is_pinned_to_the_version_that_was_read() -> None:
-    session = session_for(
-        True, existing_level(version=3), written_level(on_hand=10, reserved=6), movement_row()
+    session = reservation_session(
+        existing_level(version=3), written_level(on_hand=10, reserved=6), movement_row()
     )
     operations = create_stock_operations()
 
     await operations.reserve(as_session(session), ACCESS, request(2))
 
-    params = compiled_params(session.statements[2])
+    params = compiled_params(session.statements[3])
     assert params["quantity_on_hand"] == 10
     assert params["quantity_reserved"] == 6
     # The version the guard reasoned about is part of the WHERE clause, so a
@@ -203,23 +215,24 @@ async def test_the_write_is_pinned_to_the_version_that_was_read() -> None:
 
 
 async def test_the_caller_reference_is_carried_onto_the_ledger_row() -> None:
-    session = session_for(
-        True, existing_level(), written_level(on_hand=10, reserved=6), movement_row()
+    session = reservation_session(
+        existing_level(), written_level(on_hand=10, reserved=6), movement_row()
     )
     operations = create_stock_operations()
 
     change = await operations.reserve(as_session(session), ACCESS, request(2))
 
-    params = compiled_params(session.statements[3])
+    params = compiled_params(session.statements[4])
     assert params["reference_type"] == "order"
     assert params["reference_id"] == ORDER_ID
     assert params["actor_id"] == ACTOR_ID
+    assert change.movement is not None
     assert change.movement.type.value == "RESERVATION"
 
 
 async def test_the_event_waits_until_the_caller_says_the_transaction_committed() -> None:
-    session = session_for(
-        True, existing_level(), written_level(on_hand=10, reserved=6), movement_row()
+    session = reservation_session(
+        existing_level(), written_level(on_hand=10, reserved=6), movement_row()
     )
     publisher = RecordingPublisher()
     operations = create_stock_operations(publisher)
@@ -234,7 +247,7 @@ async def test_the_event_waits_until_the_caller_says_the_transaction_committed()
 
 
 async def test_an_oversell_is_refused_before_anything_is_written() -> None:
-    session = session_for(True, existing_level())
+    session = reservation_session(existing_level())
     publisher = RecordingPublisher()
     operations = create_stock_operations(publisher)
 
@@ -242,8 +255,9 @@ async def test_an_oversell_is_refused_before_anything_is_written() -> None:
         await operations.reserve(as_session(session), ACCESS, request(7))
 
     assert (error.value.status_code, error.value.code) == (409, INSUFFICIENT_STOCK)
-    # Only the warehouse and the level were read; nothing was written.
-    assert len(session.statements) == 2
+    # Only the warehouse, the ledger and the level were read; nothing was
+    # written.
+    assert len(session.statements) == 3
     assert publisher.events == []
 
 
@@ -259,21 +273,92 @@ async def test_releasing_returns_promised_units_without_touching_the_shelf() -> 
     assert (params["quantity_on_hand"], params["quantity_reserved"]) == (10, 2)
 
 
-async def test_issuing_against_a_reservation_consumes_both_counters() -> None:
+async def test_issuing_against_a_reservation_releases_it_then_issues() -> None:
     session = session_for(
-        True, existing_level(), written_level(on_hand=6, reserved=0), movement_row()
+        # The release: warehouse, level, write, ledger row.
+        True,
+        existing_level(),
+        written_level(on_hand=10, reserved=0),
+        movement_row(),
+        # The issue: warehouse, level, write, ledger row.
+        True,
+        existing_level(reserved=0, version=4),
+        written_level(on_hand=6, reserved=0, version=5),
+        movement_row(),
+    )
+    publisher = RecordingPublisher()
+    operations = create_stock_operations(publisher)
+
+    change = await operations.issue(as_session(session), ACCESS, request(4, from_reservation=True))
+
+    released = compiled_params(session.statements[2])
+    assert (released["quantity_on_hand"], released["quantity_reserved"]) == (10, 0)
+    assert compiled_params(session.statements[3])["type"] == StockMovementType.RELEASE
+    issued = compiled_params(session.statements[6])
+    assert (issued["quantity_on_hand"], issued["quantity_reserved"]) == (6, 0)
+    assert compiled_params(session.statements[7])["type"] == StockMovementType.ISSUE
+    assert change.level.quantity_on_hand == 6
+    # Both halves are announced, and only once the caller says it committed.
+    assert publisher.events == []
+    change.publish_committed()
+    assert [event.event_type for event in publisher.events] == [
+        "stock.released",
+        "stock.issued",
+    ]
+
+
+async def test_a_repeated_reservation_of_an_order_line_changes_nothing() -> None:
+    session = reservation_session(
+        existing_level(),
+        ledger=[(WAREHOUSE_ID, StockMovementType.RESERVATION, 2)],
+    )
+    publisher = RecordingPublisher()
+    operations = create_stock_operations(publisher)
+
+    change = await operations.reserve(as_session(session), ACCESS, request(2))
+    change.publish_committed()
+
+    assert change.movement is None
+    assert change.level.quantity_reserved == 4
+    # Warehouse, ledger, the level it is held in — and no write.
+    assert len(session.statements) == 3
+    assert session.added == []
+    assert publisher.events == []
+
+
+async def test_an_order_line_reserved_and_released_may_be_reserved_again() -> None:
+    session = reservation_session(
+        existing_level(),
+        written_level(on_hand=10, reserved=6),
+        movement_row(),
+        ledger=[
+            (WAREHOUSE_ID, StockMovementType.RESERVATION, 2),
+            (WAREHOUSE_ID, StockMovementType.RELEASE, 2),
+        ],
     )
     operations = create_stock_operations()
 
-    await operations.issue(as_session(session), ACCESS, request(4, from_reservation=True))
+    change = await operations.reserve(as_session(session), ACCESS, request(2))
 
-    params = compiled_params(session.statements[2])
-    assert (params["quantity_on_hand"], params["quantity_reserved"]) == (6, 0)
+    assert change.movement is not None
+    assert change.level.quantity_reserved == 6
+
+
+async def test_the_order_may_release_its_own_reservation_on_its_session() -> None:
+    session = session_for(
+        True, existing_level(), written_level(on_hand=10, reserved=2), movement_row()
+    )
+    operations = create_stock_operations()
+
+    change = await operations.release(as_session(session), ACCESS, request(2))
+
+    assert change.movement is not None
+    assert change.movement.reference_type == "order"
 
 
 async def test_a_level_that_moved_in_between_is_a_retryable_conflict() -> None:
     # The conditional update matched no row: somebody else wrote first.
-    session = session_for(True, existing_level(), None)
+    session = reservation_session(existing_level(), None)
     operations = create_stock_operations()
 
     with pytest.raises(VersionConflictError) as error:
@@ -318,8 +403,8 @@ async def test_a_pair_that_was_never_stocked_is_created_by_a_receipt() -> None:
 
 
 async def test_the_audit_entry_is_written_on_the_caller_session() -> None:
-    session = session_for(
-        True, existing_level(), written_level(on_hand=10, reserved=6), movement_row()
+    session = reservation_session(
+        existing_level(), written_level(on_hand=10, reserved=6), movement_row()
     )
     operations = create_stock_operations()
 
@@ -340,8 +425,8 @@ async def test_a_broken_listener_cannot_undo_a_committed_movement() -> None:
             message = "the listener is down"
             raise RuntimeError(message)
 
-    session = session_for(
-        True, existing_level(), written_level(on_hand=10, reserved=6), movement_row()
+    session = reservation_session(
+        existing_level(), written_level(on_hand=10, reserved=6), movement_row()
     )
     operations = create_stock_operations(FailingPublisher())
 

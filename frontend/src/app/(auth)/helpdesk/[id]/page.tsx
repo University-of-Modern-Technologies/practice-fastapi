@@ -83,14 +83,15 @@ export default function TicketPage({ params }: { params: Promise<{ id: string }>
   const remove = useDeleteTicket(id);
   const transition = useTransitionTicket(id);
 
-  const { formProps, fields, conflictAlert, submit, isSaving, handleError } = useTicketForm({
-    ticket,
-    // The card stays put after a save: the fresh version arrives through the
-    // cache, so there is nowhere to navigate.
-    onSaved: () => undefined,
-    onReload: refetch,
-    isReloading: isFetching,
-  });
+  const { formProps, fields, conflictAlert, submit, isSaving, isReadOnly, handleError } =
+    useTicketForm({
+      ticket,
+      // The card stays put after a save: the fresh version arrives through the
+      // cache, so there is nowhere to navigate.
+      onSaved: () => undefined,
+      onReload: refetch,
+      isReloading: isFetching,
+    });
 
   if (isLoading) return <FormPageSkeleton />;
 
@@ -167,7 +168,7 @@ export default function TicketPage({ params }: { params: Promise<{ id: string }>
   };
 
   const deleteAction = (
-    <PermissionGate resource="helpdesk" action="delete" fallback={null}>
+    <PermissionGate resource="helpdesk" action="delete" ownerId={ticket.ownerId} fallback={null}>
       <DeleteConfirm
         onConfirm={onDelete}
         isPending={remove.isPending}
@@ -224,6 +225,7 @@ export default function TicketPage({ params }: { params: Promise<{ id: string }>
           <PermissionGate
             resource="helpdesk"
             action="write"
+            ownerId={ticket.ownerId}
             fallback={<Typography.Text type="secondary">Немає прав на зміну стану</Typography.Text>}
           >
             <Space wrap>
@@ -251,6 +253,7 @@ export default function TicketPage({ params }: { params: Promise<{ id: string }>
       <PermissionGate
         resource="helpdesk"
         action="write"
+        ownerId={ticket.ownerId}
         fallback={
           <Card
             title="Дані звернення"
@@ -270,11 +273,19 @@ export default function TicketPage({ params }: { params: Promise<{ id: string }>
           </Card>
         }
       >
+        {isReadOnly ? (
+          <Alert
+            type="info"
+            showIcon
+            className="mb-4"
+            message="Звернення закрито — дані доступні лише для перегляду"
+          />
+        ) : null}
         <Form<TicketFormValues> {...formProps}>
           <FormCard
             title="Дані звернення"
             isSaving={isSaving}
-            onSubmit={submit}
+            {...(isReadOnly ? {} : { onSubmit: submit })}
             extra={deleteAction}
             backHref="/helpdesk"
           >

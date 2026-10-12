@@ -2,7 +2,7 @@
 
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { useCallback, useMemo } from 'react';
-import type { ListQuery } from '@/shared/api';
+import { MAX_PAGE, MAX_PAGE_SIZE, type ListQuery } from '@/shared/api';
 
 export type SortOrder = 'asc' | 'desc';
 
@@ -66,8 +66,10 @@ export const useListParams = <F extends string = never>(
     const sortOrder = current.get('sortOrder');
 
     const result: Record<string, string | number | undefined> = {
-      page: readNumber(current.get('page'), defaultPage),
-      pageSize: readNumber(current.get('pageSize'), defaultPageSize),
+      // Both numbers are bounded by the API: a shared link with `page=500` or
+      // `pageSize=500` opens at the furthest page it serves instead of a 400.
+      page: Math.min(readNumber(current.get('page'), defaultPage), MAX_PAGE),
+      pageSize: Math.min(readNumber(current.get('pageSize'), defaultPageSize), MAX_PAGE_SIZE),
       sortBy: current.get('sortBy') ?? defaultSortBy,
       sortOrder: sortOrder === 'asc' || sortOrder === 'desc' ? sortOrder : defaultSortOrder,
     };

@@ -1,4 +1,5 @@
 import { http, type Page, type QueryValue } from '@/shared/api';
+import { withListLimits } from '@/shared/api/list-limits';
 import { listQuery } from '@/shared/api/query-builder';
 import type { ListParams } from '@/shared/hooks';
 import type { Id } from '@/types/domain';
@@ -49,7 +50,7 @@ const toUpdateBody = (input: UpdateProductInput): Readonly<Record<string, unknow
 export const ProductsService = {
   list: (query: ProductListQuery, signal?: AbortSignal): Promise<Page<Product>> =>
     http.get<Page<Product>>(ROUTES.collection, {
-      params: query as Readonly<Record<string, QueryValue>>,
+      params: withListLimits(query) as Readonly<Record<string, QueryValue>>,
       ...(signal ? { signal } : {}),
     }),
 

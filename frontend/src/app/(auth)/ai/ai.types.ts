@@ -1,5 +1,5 @@
 import type { InquiryCategory } from '@/shared/constants';
-import type { CurrencyCode, Id, IsoDate, MoneyWire } from '@/types/domain';
+import type { CurrencyCode, Id, IsoDate, IsoDateTime, MoneyWire } from '@/types/domain';
 
 /**
  * The exact, explicitly listed fields of a deal the assistant route accepts.
@@ -15,7 +15,8 @@ export interface DealSummaryInput {
   readonly amount?: MoneyWire | undefined;
   readonly currency?: CurrencyCode | undefined;
   readonly probability?: number | undefined;
-  readonly expectedCloseDate?: IsoDate | undefined;
+  /** A day or an instant, as a deal record holds it; the service sends the day. */
+  readonly expectedCloseDate?: IsoDate | IsoDateTime | undefined;
   readonly notes?: string | undefined;
 }
 

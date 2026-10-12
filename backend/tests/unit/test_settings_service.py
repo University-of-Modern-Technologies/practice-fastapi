@@ -11,6 +11,8 @@ import pytest
 from sqlalchemy import Insert
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Session
+from sqlalchemy.util import greenlet_spawn
 
 from app.core.errors import AppError, NotFoundError
 from app.db.models.audit import AuditLog
@@ -489,3 +491,55 @@ async def test_a_write_over_an_existing_row_renders_what_the_statement_returned(
     assert dto.updated_at is not None
     assert dto.updated_by_id == ACTOR_ID
     assert dto.source == "database"
+
+
+class CommittingSession(FakeSession):
+    """The scripted session, with a real transaction whose commit can be awaited."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.sync_session = Session()
+        self.sync_session.begin()
+
+    async def commit(self) -> None:
+        await greenlet_spawn(self.sync_session.commit)
+
+
+# Dropped before the commit, the entry could be refilled with the old
+# row by a concurrent read and served for the whole TTL.
+async def test_a_write_drops_its_entries_only_once_it_commits() -> None:
+    session = CommittingSession()
+    session.execute_queue = [[make_row()]]
+    cache = FakeCache()
+    service = make_service(session, cache)
+
+    await service.upsert(ACCESS, KEY, UpsertSettingRequest(value="Acme"))
+    assert cache.dropped == []
+
+    await session.commit()
+    assert cache.dropped == [setting_value_key(KEY), settings_list_key()]
+
+
+async def test_a_reset_drops_its_entries_only_once_it_commits() -> None:
+    session = CommittingSession()
+    session.execute_queue = [[make_row()]]
+    cache = FakeCache()
+    service = make_service(session, cache)
+
+    await service.remove(ACCESS, KEY)
+    assert cache.dropped == []
+
+    await session.commit()
+    assert cache.dropped == [setting_value_key(KEY), settings_list_key()]
+
+
+async def test_a_write_that_rolls_back_drops_nothing() -> None:
+    session = CommittingSession()
+    session.execute_queue = [[make_row()]]
+    cache = FakeCache()
+    service = make_service(session, cache)
+
+    await service.upsert(ACCESS, KEY, UpsertSettingRequest(value="Acme"))
+    await greenlet_spawn(session.sync_session.rollback)
+
+    assert cache.dropped == []

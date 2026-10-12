@@ -17,7 +17,14 @@ from app.core.errors import UnauthorizedError
 from app.core.settings import Settings, get_settings
 from app.db.session import get_session
 from app.modules.auth.service import AuthService
-from app.modules.auth.types import AuthConfig, AuthContext, ClientInfo, auth_config_from_settings
+from app.modules.auth.types import (
+    AuthConfig,
+    AuthContext,
+    ClientInfo,
+    NoopSessionRevocationListener,
+    SessionRevocationListener,
+    auth_config_from_settings,
+)
 
 #: ``auto_error`` is off because the framework's own rejection would be a 403
 #: with a ``detail`` body — neither the status nor the shape this API promises.
@@ -69,10 +76,31 @@ def get_client_info(request: Request) -> ClientInfo:
 ClientInfoDep = Annotated[ClientInfo, Depends(get_client_info)]
 
 
+_NO_LISTENER = NoopSessionRevocationListener()
+
+
+def get_session_revocations(request: Request) -> SessionRevocationListener:
+    """Whatever must hear about ended sessions: the realtime gateway, if one runs.
+
+    Resolved from the application state, like the event publisher, and a no-op
+    for an application assembled without one — the case in unit tests.
+    """
+    listener = getattr(request.app.state, "realtime", None)
+    if isinstance(listener, SessionRevocationListener):
+        return listener
+    return _NO_LISTENER
+
+
+SessionRevocationsDep = Annotated[SessionRevocationListener, Depends(get_session_revocations)]
+
+
 def get_auth_service(
-    session: SessionDep, config: AuthConfigDep, client: ClientInfoDep
+    session: SessionDep,
+    config: AuthConfigDep,
+    client: ClientInfoDep,
+    sessions: SessionRevocationsDep,
 ) -> AuthService:
-    return AuthService(session, config, client)
+    return AuthService(session, config, client, sessions)
 
 
 AuthServiceDep = Annotated[AuthService, Depends(get_auth_service)]

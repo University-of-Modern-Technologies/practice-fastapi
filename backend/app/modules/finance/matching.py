@@ -39,6 +39,7 @@ __all__ = [
     "MatchSubject",
     "amounts_match",
     "collapse",
+    "currencies_match",
     "matches_counterparty",
     "outcome_for",
     "references_order",
@@ -83,6 +84,7 @@ class MatchSubject:
     """
 
     amount: Decimal
+    currency: str
     booked_at: datetime
     reference: str
     counterparty_name: str
@@ -126,6 +128,15 @@ def collapse(value: str) -> str:
     the rule.
     """
     return _FOLDED_WHITESPACE.sub("", value.lower())
+
+
+def currencies_match(currency: str, order_currency: str) -> bool:
+    """Whether the payment is in the order's currency.
+
+    Amounts in two currencies cannot settle each other however close the
+    numbers are — a payment of 1800 USD is not an order of 1800 EUR.
+    """
+    return currency == order_currency
 
 
 def amounts_match(amount: Decimal, total: Decimal) -> bool:
@@ -185,6 +196,7 @@ def _is_candidate(subject: MatchSubject, candidate: MatchCandidate) -> bool:
             references_order(subject.reference, candidate.order_number)
             or matches_counterparty(subject.counterparty_name, candidate)
         )
+        and currencies_match(subject.currency, candidate.currency)
         and amounts_match(subject.amount, candidate.total)
         and within_window(subject.booked_at, candidate.placed_at)
     )

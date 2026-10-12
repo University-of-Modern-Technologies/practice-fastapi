@@ -381,6 +381,11 @@
             "title": "Amount",
             "type": "string"
           },
+          "autoMatchDisabled": {
+            "description": "true, якщо зведення зняли вручну: автозведення цей рядок пропускає, доки його не зведуть вручну знову.",
+            "title": "Automatchdisabled",
+            "type": "boolean"
+          },
           "bookedAt": {
             "format": "date-time",
             "title": "Bookedat",
@@ -502,6 +507,7 @@
           "matchedOrderId",
           "matchedAt",
           "matchedById",
+          "autoMatchDisabled",
           "version",
           "createdAt",
           "updatedAt",
@@ -516,6 +522,11 @@
           "amount": {
             "title": "Amount",
             "type": "string"
+          },
+          "autoMatchDisabled": {
+            "description": "true, якщо зведення зняли вручну: автозведення цей рядок пропускає, доки його не зведуть вручну знову.",
+            "title": "Automatchdisabled",
+            "type": "boolean"
           },
           "bookedAt": {
             "format": "date-time",
@@ -631,6 +642,7 @@
           "matchedOrderId",
           "matchedAt",
           "matchedById",
+          "autoMatchDisabled",
           "version",
           "createdAt",
           "updatedAt"
@@ -1240,10 +1252,16 @@
             "title": "Category"
           },
           "currency": {
-            "default": "USD",
-            "pattern": "^[A-Za-z]{3}$",
-            "title": "Currency",
-            "type": "string"
+            "anyOf": [
+              {
+                "pattern": "^[A-Za-z]{3}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Currency"
           },
           "description": {
             "anyOf": [
@@ -1645,7 +1663,7 @@
           "expectedCloseDate": {
             "anyOf": [
               {
-                "format": "date-time",
+                "format": "date",
                 "type": "string"
               },
               {
@@ -3101,6 +3119,19 @@
           "version": {
             "title": "Version",
             "type": "integer"
+          },
+          "warehouseId": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Склад, у якому замовлення тримає резерв; записується при підтвердженні, до того null.",
+            "title": "Warehouseid"
           }
         },
         "required": [
@@ -3109,6 +3140,7 @@
           "ownerId",
           "contactId",
           "dealId",
+          "warehouseId",
           "status",
           "currency",
           "subtotal",
@@ -4684,6 +4716,7 @@
             "type": "string"
           },
           "quantity": {
+            "description": "Додатна для всіх рухів, крім ADJUSTMENT: коригування зберігає знак дельти.",
             "title": "Quantity",
             "type": "integer"
           },
@@ -7169,6 +7202,7 @@
             "required": false,
             "schema": {
               "default": 1,
+              "maximum": 100,
               "minimum": 1,
               "title": "Page",
               "type": "integer"
@@ -7471,6 +7505,7 @@
             "required": false,
             "schema": {
               "default": 1,
+              "maximum": 100,
               "minimum": 1,
               "title": "Page",
               "type": "integer"
@@ -7852,7 +7887,7 @@
             "required": false,
             "schema": {
               "default": 1,
-              "maximum": 1000000,
+              "maximum": 100,
               "minimum": 1,
               "title": "Page",
               "type": "integer"
@@ -8691,7 +8726,7 @@
             "required": false,
             "schema": {
               "default": 1,
-              "maximum": 1000000,
+              "maximum": 100,
               "minimum": 1,
               "title": "Page",
               "type": "integer"
@@ -9198,7 +9233,7 @@
             "required": false,
             "schema": {
               "default": 1,
-              "maximum": 1000000,
+              "maximum": 100,
               "minimum": 1,
               "title": "Page",
               "type": "integer"
@@ -9546,6 +9581,16 @@
             },
             "description": "The requested resource was not found"
           },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The request is well-formed but cannot be processed"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -9839,6 +9884,16 @@
             },
             "description": "The operation conflicts with the current state of the resource"
           },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The request is well-formed but cannot be processed"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -10047,6 +10102,7 @@
             "required": false,
             "schema": {
               "default": 1,
+              "maximum": 100,
               "minimum": 1,
               "title": "Page",
               "type": "integer"
@@ -10374,6 +10430,7 @@
             "required": false,
             "schema": {
               "default": 1,
+              "maximum": 100,
               "minimum": 1,
               "title": "Page",
               "type": "integer"
@@ -10944,7 +11001,7 @@
             "required": false,
             "schema": {
               "default": 1,
-              "maximum": 1000000,
+              "maximum": 100,
               "minimum": 1,
               "title": "Page",
               "type": "integer"
@@ -11769,6 +11826,26 @@
             },
             "description": "Not enough permissions for this operation"
           },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The requested resource was not found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The operation conflicts with the current state of the resource"
+          },
           "422": {
             "content": {
               "application/json": {
@@ -11884,6 +11961,26 @@
               }
             },
             "description": "Not enough permissions for this operation"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The requested resource was not found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The operation conflicts with the current state of the resource"
           },
           "422": {
             "content": {
@@ -12152,6 +12249,7 @@
             "required": false,
             "schema": {
               "default": 1,
+              "maximum": 100,
               "minimum": 1,
               "title": "Page",
               "type": "integer"
@@ -12455,6 +12553,16 @@
               }
             },
             "description": "The operation conflicts with the current state of the resource"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The request is well-formed but cannot be processed"
           },
           "500": {
             "content": {
@@ -13329,6 +13437,7 @@
             "required": false,
             "schema": {
               "default": 1,
+              "maximum": 100,
               "minimum": 1,
               "title": "Page",
               "type": "integer"
@@ -13580,6 +13689,16 @@
               }
             },
             "description": "The operation conflicts with the current state of the resource"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The request is well-formed but cannot be processed"
           },
           "500": {
             "content": {
@@ -13873,6 +13992,16 @@
               }
             },
             "description": "The operation conflicts with the current state of the resource"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The request is well-formed but cannot be processed"
           },
           "500": {
             "content": {
@@ -14551,6 +14680,7 @@
             "required": false,
             "schema": {
               "default": 1,
+              "maximum": 100,
               "minimum": 1,
               "title": "Page",
               "type": "integer"
@@ -15207,6 +15337,7 @@
             "required": false,
             "schema": {
               "default": 1,
+              "maximum": 100,
               "minimum": 1,
               "title": "Page",
               "type": "integer"
@@ -15417,6 +15548,7 @@
             "required": false,
             "schema": {
               "default": 1,
+              "maximum": 100,
               "minimum": 1,
               "title": "Page",
               "type": "integer"
@@ -16137,6 +16269,7 @@
             "required": false,
             "schema": {
               "default": 1,
+              "maximum": 100,
               "minimum": 1,
               "title": "Page",
               "type": "integer"

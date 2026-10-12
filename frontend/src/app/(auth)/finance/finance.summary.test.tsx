@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { DateTime } from '@/lib/date-time';
 import { ApiError } from '@/shared/api';
 import type * as ApiModule from '@/shared/api';
 import { grants, renderWithProviders, screen, testUser, waitFor } from '@/test/render';
@@ -85,12 +86,11 @@ describe('Фінанси — підсумок за період', () => {
     expect(http.get).toHaveBeenCalledWith(
       '/finance/summary',
       expect.objectContaining({
-        // From the fixed start to the end of today, the shared reporting window.
+        // From the fixed start to the end of today, the shared reporting
+        // window — both ends at Kyiv midnight, since that is the day on screen.
         params: {
-          from: '2026-01-01T00:00:00.000Z',
-          to: new Date(
-            Date.parse(new Date().toISOString().slice(0, 10)) + 86_400_000,
-          ).toISOString(),
+          from: '2025-12-31T22:00:00.000Z',
+          to: DateTime.nextDayStart(DateTime.today()),
         },
       }),
     );

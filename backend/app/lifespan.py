@@ -7,7 +7,6 @@ tearing it down in the reverse order on the way out.
 
 from __future__ import annotations
 
-import asyncio
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from typing import Any
@@ -37,6 +36,8 @@ def build_lifespan(container: Container) -> Callable[[FastAPI], Any]:
         app.state.publisher = container.publisher
         app.state.realtime = container.gateway
         app.state.orders_stock = container.orders_stock
+        app.state.resolve_organization_currency = container.resolve_organization_currency
+        app.state.find_order_for_shipment = container.find_order_for_shipment
         # Both carry state that has to survive a request: the delivery client
         # holds the circuit breaker, the provider holds its connection pool.
         app.state.delivery_client = container.delivery_client
@@ -54,12 +55,11 @@ def build_lifespan(container: Container) -> Callable[[FastAPI], Any]:
         try:
             yield
         finally:
-            # Readiness starts failing before anything is torn down, giving the
-            # load balancer time to stop routing new requests here.
+            # The server already turned readiness 503, waited out the drain
+            # delay and let in-flight requests finish (`app.core.server`); by
+            # now nothing is being served. Marked again for the runs that stop
+            # some other way — a test client leaving its context, say.
             service_lifecycle.begin_draining()
-            grace_seconds = settings.shutdown_grace_period_ms / 1000
-            if grace_seconds > 0 and not settings.is_test:
-                await asyncio.sleep(grace_seconds)
 
             await container.gateway.close()
             await container.publisher.drain()

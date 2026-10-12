@@ -1,4 +1,5 @@
 import { ApiError, http, listQuery, type Page, type QueryValue } from '@/shared/api';
+import { withListLimits } from '@/shared/api/list-limits';
 import type { ListParams } from '@/shared/hooks';
 import type { Id } from '@/types/domain';
 import {
@@ -36,8 +37,8 @@ export const toCallListQuery = (params: ListParams<CallFilter>): CallListQuery =
     .text('contactId')
     .text('dealId')
     .text('ownerId')
-    .text('startedFrom')
-    .text('startedTo')
+    .dayStart('startedFrom')
+    .dayEnd('startedTo')
     .boolean('hasContact')
     .sort(isCallSortField)
     .build<CallListQuery>();
@@ -88,7 +89,7 @@ const toUpdateBody = (input: UpdateCallInput): Readonly<Record<string, unknown>>
 export const CallsService = {
   list: (query: CallListQuery, signal?: AbortSignal): Promise<Page<Call>> =>
     http.get<Page<Call>>(ROUTES.collection, {
-      params: query as Readonly<Record<string, QueryValue>>,
+      params: withListLimits(query) as Readonly<Record<string, QueryValue>>,
       ...(signal ? { signal } : {}),
     }),
 

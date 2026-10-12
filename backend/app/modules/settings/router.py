@@ -17,7 +17,7 @@ from app.core.responses import Envelope
 from app.db.enums import PermissionScope
 from app.modules.auth.dependencies import CurrentAuth, SessionDep
 from app.modules.auth.dependencies import SettingsDep as AppSettingsDep
-from app.modules.rbac.dependencies import CacheDep, require_permission
+from app.modules.rbac.dependencies import CacheDep, ensure_scope_all, require_permission
 from app.modules.settings.schemas import (
     KEY_PATTERN,
     MAX_KEY_LENGTH,
@@ -42,7 +42,11 @@ SettingsServiceDep = Annotated[SettingsService, Depends(get_settings_service)]
 
 
 def _require_access(action: str) -> Callable[..., Awaitable[SettingsAccess]]:
-    """Builds the dependency that admits a caller and describes them."""
+    """Builds the dependency that admits a caller and describes them.
+
+    The grant is demanded at ``ALL``: settings belong to the whole
+    organization, which no narrower grant covers.
+    """
     permission = require_permission(RESOURCE, action)
 
     # The permission is a default rather than an ``Annotated`` member: postponed
@@ -51,10 +55,11 @@ def _require_access(action: str) -> Callable[..., Awaitable[SettingsAccess]]:
     async def dependency(
         request: Request,
         auth: CurrentAuth,
-        _scope: PermissionScope = Depends(permission),
+        scope: PermissionScope = Depends(permission),
     ) -> SettingsAccess:
-        # Settings are organization-wide: there is no owner a narrower grant
-        # could be narrowed to, so holding the permission is the whole check.
+        # Settings are organization-wide: there is no record of the caller's
+        # own that an ``OWN`` grant could be narrowed to.
+        ensure_scope_all(scope)
         ip_address = request.client.host if request.client is not None else None
         return SettingsAccess(actor_id=auth.user_id, ip_address=ip_address)
 

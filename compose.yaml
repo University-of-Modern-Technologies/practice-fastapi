@@ -32,7 +32,7 @@ services:
     environment:
       - TZ=Europe/Kyiv
     ports:
-      - '${HTTP_PORT:-8080}:80'
+      - '127.0.0.1:${HTTP_PORT:-8080}:80'
     depends_on:
       api:
         condition: service_healthy
@@ -61,7 +61,7 @@ services:
       # from this range by default; set TRUSTED_PROXIES in .env if yours differs.
       TRUSTED_PROXIES: ${TRUSTED_PROXIES:-172.16.0.0/12}
     ports:
-      - '${API_PORT:-8000}:8000'
+      - '127.0.0.1:${API_PORT:-8000}:8000'
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -97,7 +97,7 @@ services:
       TZ: Europe/Kyiv
       NEXT_TELEMETRY_DISABLED: '1'
     ports:
-      - '${WEB_PORT:-3000}:3000'
+      - '127.0.0.1:${WEB_PORT:-3000}:3000'
     healthcheck:
       test:
         [

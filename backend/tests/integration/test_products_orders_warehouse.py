@@ -25,7 +25,7 @@ from app.modules.warehouse.service import WarehouseService
 from app.modules.warehouse.types import WarehouseAccess
 from tests.integration.conftest import create_order, create_product, create_user, create_warehouse
 
-ORDER_REFERENCE = "order"
+TEST_REFERENCE = "integration-test"
 
 
 async def test_a_deactivated_product_is_refused_by_new_orders_but_not_by_warehouse(
@@ -77,7 +77,7 @@ async def test_a_deactivated_product_is_refused_by_new_orders_but_not_by_warehou
             warehouse_id=warehouse.id,
             product_id=product.id,
             quantity=1,
-            reference_type=ORDER_REFERENCE,
+            reference_type=TEST_REFERENCE,
             reference_id=order.id,
         ),
     )

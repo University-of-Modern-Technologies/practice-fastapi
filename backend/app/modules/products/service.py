@@ -13,6 +13,7 @@ follows from them:
 from __future__ import annotations
 
 import uuid
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
@@ -38,6 +39,7 @@ from app.modules.products.schemas import (
     UpdateProductRequest,
 )
 from app.modules.products.types import (
+    CURRENCY_NOT_SUPPORTED,
     INVALID_PRODUCT_PRICE,
     PRODUCT_CONCURRENT_MODIFICATION,
     PRODUCT_CREATED,
@@ -62,6 +64,23 @@ SORT_COLUMNS: dict[ProductSortField, InstrumentedAttribute[Any]] = {
 }
 
 LIKE_ESCAPE = "\\"
+
+#: Reads the organisation's single currency on the product's own session.
+OrganizationCurrencyResolver = Callable[[AsyncSession], Awaitable[str]]
+
+#: Without a resolver the catalogue is kept in USD.
+FALLBACK_ORGANIZATION_CURRENCY = "USD"
+
+
+def assert_organization_currency(currency: str, expected: str) -> None:
+    """A catalogue in two currencies would price orders in money the books do not keep."""
+    if currency != expected:
+        raise AppError(
+            "Only the organisation currency is accepted",
+            422,
+            CURRENCY_NOT_SUPPORTED,
+            {"currency": currency, "expected": expected},
+        )
 
 
 def to_product_out(product: Product) -> ProductOut:
@@ -153,8 +172,11 @@ class ProductsService:
         self,
         session: AsyncSession,
         publisher: DomainEventPublisher | None = None,
+        resolve_organization_currency: OrganizationCurrencyResolver | None = None,
     ) -> None:
         self._session = session
+        # Optional: without it the catalogue is kept in USD.
+        self._resolve_currency = resolve_organization_currency
         # The same session the caller is on, so a change and its trail entry
         # commit or roll back together.
         self._audit = AuditService(session)
@@ -169,6 +191,9 @@ class ProductsService:
 
     async def create(self, access: ProductAccess, data: CreateProductRequest) -> ProductOut:
         unit_price = parse_price(data.unit_price)
+        expected = await self._organization_currency()
+        currency = data.currency if data.currency is not None else expected
+        assert_organization_currency(currency, expected)
         await self._require_sku_available(data.sku)
 
         product = Product(
@@ -178,7 +203,7 @@ class ProductsService:
             description=data.description,
             category=data.category,
             unit_price=unit_price,
-            currency=data.currency,
+            currency=currency,
             is_active=data.is_active,
         )
         self._session.add(product)
@@ -206,6 +231,8 @@ class ProductsService:
             raise VersionConflictError(
                 "Product was modified by another request", PRODUCT_CONCURRENT_MODIFICATION
             )
+        if data.currency is not None:
+            assert_organization_currency(data.currency, await self._organization_currency())
 
         before = to_product_out(product)
         fields = data.model_fields_set
@@ -279,6 +306,11 @@ class ProductsService:
             )
         )
         self._announce(PRODUCT_DELETED, product.id, access, {"id": str(product_id)})
+
+    async def _organization_currency(self) -> str:
+        if self._resolve_currency is None:
+            return FALLBACK_ORGANIZATION_CURRENCY
+        return await self._resolve_currency(self._session)
 
     async def _require_active(self, product_id: uuid.UUID, *, for_update: bool = False) -> Product:
         statement = select(Product).where(Product.id == product_id, Product.deleted_at.is_(None))

@@ -1,4 +1,5 @@
 import { http, type Page } from '@/shared/api';
+import { clampPage, clampPageSize, clampSearch } from '@/shared/api/list-limits';
 import type { Id } from '@/types/domain';
 import type {
   Contact,
@@ -20,9 +21,9 @@ export const ContactsService = {
   list: (query: ContactListQuery = {}): Promise<Page<Contact>> =>
     http.get<Page<Contact>>(ROUTES.collection, {
       params: {
-        page: query.page,
-        pageSize: query.pageSize,
-        search: query.search,
+        page: clampPage(query.page),
+        pageSize: clampPageSize(query.pageSize),
+        search: clampSearch(query.search),
         ownerId: query.ownerId,
         sortBy: query.sortBy,
         sortOrder: query.sortOrder,

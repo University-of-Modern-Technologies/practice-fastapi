@@ -46,7 +46,12 @@ function ContactCard({ contact }: { readonly contact: Contact }) {
         backHref="/contacts"
         extra={
           <>
-            <PermissionGate resource="contacts" action="delete" fallback={null}>
+            <PermissionGate
+              resource="contacts"
+              action="delete"
+              ownerId={contact.ownerId}
+              fallback={null}
+            >
               <DeleteConfirm
                 title="Видалити контакт?"
                 description="Контакт зникне зі списків і звітів."
@@ -57,7 +62,12 @@ function ContactCard({ contact }: { readonly contact: Contact }) {
               </DeleteConfirm>
             </PermissionGate>
 
-            <PermissionGate resource="contacts" action="write" fallback={null}>
+            <PermissionGate
+              resource="contacts"
+              action="write"
+              ownerId={contact.ownerId}
+              fallback={null}
+            >
               <Button type="primary" loading={isSaving} onClick={submit}>
                 Зберегти
               </Button>

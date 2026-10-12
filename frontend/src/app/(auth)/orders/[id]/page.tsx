@@ -18,7 +18,7 @@ import {
   StatusTag,
 } from '@/components';
 import { ORDER_STATUS, ORDER_STATUS_TRANSITIONS, isOrderEditable } from '@/shared/constants';
-import { useHasPermission, useMutationFeedback } from '@/shared/hooks';
+import { useCanActOn, useMutationFeedback } from '@/shared/hooks';
 import { AddItemModal, OrderItemsTable, OrderTotals, StatusTransitionModal } from '../_components';
 import { useOrderForm } from '../_hooks';
 import {
@@ -30,6 +30,7 @@ import {
 } from '../orders.queries';
 import {
   ORDER_ERROR_MESSAGES,
+  isOrderDeletable,
   isOrderVersionConflict,
   type Order,
   type OrderItemView,
@@ -74,11 +75,13 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
   const { id } = use(params);
   const router = useRouter();
   const { reportSuccess, reportFailureWith } = useMutationFeedback();
-  const canWrite = useHasPermission('orders', 'write');
   const [isAdding, setIsAdding] = useState(false);
   const [isMoving, setIsMoving] = useState(false);
 
   const { data: order, isLoading, isError, isFetching, refetch } = useOrder(id);
+  // An `OWN` grant covers only the caller's own orders; the API refuses the
+  // rest, so lines and transitions are not offered on somebody else's.
+  const canWrite = useCanActOn('orders', 'write', order?.ownerId);
   const remove = useDeleteOrder(id);
   const duplicate = useDuplicateOrder(id);
   const updateItem = useUpdateOrderItem(id);
@@ -137,15 +140,17 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
   };
 
   const duplicateAction = (
-    <PermissionGate resource="orders" action="write" fallback={null}>
+    <PermissionGate resource="orders" action="write" ownerId={order.ownerId} fallback={null}>
       <Button icon={<CopyPlus size={16} />} loading={duplicate.isPending} onClick={onDuplicate}>
         Повторити
       </Button>
     </PermissionGate>
   );
 
-  const deleteAction = (
-    <PermissionGate resource="orders" action="delete" fallback={null}>
+  // Only a draft or a cancelled order may be deleted; for the rest the button
+  // is not offered, and its 409 stays a safety net for a status that moved.
+  const deleteAction = isOrderDeletable(order.status) ? (
+    <PermissionGate resource="orders" action="delete" ownerId={order.ownerId} fallback={null}>
       <DeleteConfirm
         onConfirm={onDelete}
         isPending={remove.isPending}
@@ -157,7 +162,7 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
         </Button>
       </DeleteConfirm>
     </PermissionGate>
-  );
+  ) : null;
 
   const addButton = (
     <Button icon={<Plus size={16} />} onClick={() => setIsAdding(true)}>
@@ -198,6 +203,7 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
       <PermissionGate
         resource="orders"
         action="write"
+        ownerId={order.ownerId}
         fallback={
           <Card
             title="Дані замовлення"

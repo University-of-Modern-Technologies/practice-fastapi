@@ -2,9 +2,11 @@
 
 Anything that changes what a user may do — their roles, or their being disabled
 — tells authorization to forget them, so a revoked privilege takes effect on the
-next request rather than when a cache entry happens to expire. Every change is
-also written to the audit trail on the same session, so the change and its
-entry commit or roll back together.
+next request rather than when a cache entry happens to expire. The cache is
+dropped once the change has committed: dropped any earlier, a concurrent request
+could read the old rows and cache them again. Every change is also written to
+the audit trail on the same session, so the change and its entry commit or roll
+back together.
 """
 
 from __future__ import annotations
@@ -29,6 +31,12 @@ from app.db.models.rbac import Role, UserRole
 from app.db.models.user import Session as SessionRow
 from app.db.models.user import User
 from app.modules.audit import AuditEvent, AuditService
+from app.modules.auth.types import (
+    NoopSessionRevocationListener,
+    SessionRevocationListener,
+    notify_sessions_revoked,
+)
+from app.modules.rbac.commit import after_commit
 from app.modules.rbac.types import (
     Actor,
     NoopUserPermissionsInvalidator,
@@ -138,6 +146,7 @@ class UsersService:
         session: AsyncSession,
         permissions: UserPermissionsInvalidator | None = None,
         audit: AuditService | None = None,
+        sessions: SessionRevocationListener | None = None,
     ) -> None:
         self._session = session
         self._permissions: UserPermissionsInvalidator = (
@@ -146,6 +155,11 @@ class UsersService:
         # The trail is written on this same session, so a change and its entry
         # commit, or roll back, as one.
         self._audit = audit if audit is not None else AuditService(session)
+        # Told about sessions a change ended, once it has committed, so a socket
+        # opened with one of them is closed now rather than when its token runs out.
+        self._sessions: SessionRevocationListener = (
+            sessions if sessions is not None else NoopSessionRevocationListener()
+        )
 
     async def list_users(
         self, page: int, page_size: int, owner_id: uuid.UUID | None = None
@@ -199,6 +213,7 @@ class UsersService:
                 metadata={"userId": user_id},
             ),
         )
+        await self._end_sessions_after_commit(session_ids=[row.id])
 
     async def create(self, actor: Actor, data: CreateUserRequest) -> UserOut:
         await self._require_email_available(str(data.email))
@@ -227,7 +242,7 @@ class UsersService:
                 changes={"after": _snapshot(created)},
             ),
         )
-        await self._permissions.invalidate_user_permissions(user.id)
+        await self._forget_permissions_after_commit(user.id)
         return created
 
     async def update(self, actor: Actor, user_id: uuid.UUID, data: UpdateUserRequest) -> UserOut:
@@ -268,7 +283,9 @@ class UsersService:
                 metadata={"changedFields": sorted(to_camel(name) for name in fields)},
             ),
         )
-        await self._permissions.invalidate_user_permissions(user_id)
+        await self._forget_permissions_after_commit(user_id)
+        if "password" in fields:
+            await self._end_sessions_after_commit(user_id=user_id)
         return updated
 
     async def disable(self, actor: Actor, user_id: uuid.UUID) -> UserOut:
@@ -302,8 +319,25 @@ class UsersService:
                 changes={"before": before, "after": _snapshot(disabled)},
             ),
         )
-        await self._permissions.invalidate_user_permissions(user_id)
+        await self._forget_permissions_after_commit(user_id)
+        await self._end_sessions_after_commit(user_id=user_id)
         return disabled
+
+    async def _forget_permissions_after_commit(self, user_id: uuid.UUID) -> None:
+        async def forget() -> None:
+            await self._permissions.invalidate_user_permissions(user_id)
+
+        await after_commit(self._session, forget)
+
+    async def _end_sessions_after_commit(
+        self, *, session_ids: Sequence[uuid.UUID] = (), user_id: uuid.UUID | None = None
+    ) -> None:
+        ended_ids = list(session_ids)
+
+        async def notify() -> None:
+            notify_sessions_revoked(self._sessions, session_ids=ended_ids, user_id=user_id)
+
+        await after_commit(self._session, notify)
 
     async def _flush(self) -> None:
         """Surfaces a constraint violation as the conflict it represents."""

@@ -61,7 +61,9 @@ from app.modules.orders.schemas import (
     UpdateOrderRequest,
 )
 from app.modules.orders.stock import (
+    FALLBACK_ORDER_DEFAULTS,
     ORDER_STOCK_REFERENCE_TYPE,
+    OrderDefaults,
     OrdersStockPort,
     OrderStockEffect,
     OrderStockInput,
@@ -74,12 +76,14 @@ from app.modules.orders.transition import (
 )
 from app.modules.orders.types import (
     CONTACT_NOT_FOUND,
+    CURRENCY_NOT_SUPPORTED,
     DEAL_NOT_FOUND,
     ORDER_CONCURRENT_MODIFICATION,
     ORDER_CURRENCY_MISMATCH,
     ORDER_ENTITY_TYPE,
     ORDER_ITEM_DUPLICATE,
     ORDER_ITEM_NOT_FOUND,
+    ORDER_NOT_DELETABLE,
     ORDER_NOT_FOUND,
     ORDER_NUMBER_UNAVAILABLE,
     ORDER_OWNER_NOT_FOUND,
@@ -89,10 +93,11 @@ from app.modules.orders.types import (
     OrderAccess,
 )
 
-DEFAULT_CURRENCY = "USD"
-
 #: Bounded so a pathological collision streak fails fast instead of looping.
 ORDER_NUMBER_ATTEMPTS = 5
+
+#: Only an order that never promised stock, or has given its promise back, may go.
+DELETABLE_STATUSES = (OrderStatus.DRAFT, OrderStatus.CANCELLED)
 
 _ITEMS = selectinload(Order.items)
 
@@ -126,15 +131,51 @@ type Publishers = list[Callable[[], None]]
 type OrderPage = tuple[list[OrderOut], int]
 
 
-def generate_order_number() -> str:
+def generate_order_number(prefix: str = FALLBACK_ORDER_DEFAULTS.number_prefix) -> str:
     """Human-readable and collision-resistant.
 
-    The date prefix keeps the sequence browsable while the random suffix keeps
-    concurrent writers apart; a collision is still possible and is retried.
+    The organisation's prefix and the date keep the sequence browsable while
+    the random suffix keeps concurrent writers apart; a collision is still
+    possible and is retried.
     """
     day = datetime.now(tz=UTC).strftime("%Y%m%d")
     suffix = "".join(secrets.choice("0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ") for _ in range(6))
-    return f"ORD-{day}-{suffix}"
+    return f"{prefix}-{day}-{suffix}"
+
+
+def assert_organization_currency(currency: str, defaults: OrderDefaults) -> None:
+    """The organisation keeps its books in one currency.
+
+    An order in any other would be summed with the rest as if it were the same
+    money.
+    """
+    if currency != defaults.currency:
+        raise AppError(
+            "Only the organisation currency is accepted",
+            422,
+            CURRENCY_NOT_SUPPORTED,
+            {"currency": currency, "expected": defaults.currency},
+        )
+
+
+def assert_order_deletable(status: OrderStatus) -> None:
+    """A confirmed or paid order holds a reservation only its cancellation frees."""
+    if status not in DELETABLE_STATUSES:
+        raise ConflictError(
+            f"Only a draft or a cancelled order can be deleted (current status: {status.value})",
+            ORDER_NOT_DELETABLE,
+            {"status": status.value},
+        )
+
+
+def by_product[Line: OrderItemOut](lines: Sequence[Line]) -> list[Line]:
+    """Lines in product order.
+
+    Every transaction that moves stock for several lines takes the stock-level
+    locks in this one order, so two confirmations sharing products wait for each
+    other instead of deadlocking.
+    """
+    return sorted(lines, key=lambda line: str(line.product_id))
 
 
 def to_item_out(item: OrderItem) -> OrderItemOut:
@@ -161,6 +202,7 @@ def to_order_out(order: Order) -> OrderOut:
         owner_id=order.owner_id,
         contact_id=order.contact_id,
         deal_id=order.deal_id,
+        warehouse_id=order.warehouse_id,
         status=order.status,
         currency=order.currency,
         subtotal=order.subtotal,
@@ -296,7 +338,9 @@ class OrdersService:
     async def create(self, access: OrderAccess, data: CreateOrderRequest) -> OrderOut:
         owner_id = data.owner_id if data.owner_id is not None else access.actor_id
         _ensure_owner_access(access, owner_id)
-        currency = data.currency if data.currency is not None else DEFAULT_CURRENCY
+        defaults = await self._defaults()
+        currency = data.currency if data.currency is not None else defaults.currency
+        assert_organization_currency(currency, defaults)
 
         # The caller's own account is already known to be active; anybody else
         # named as the owner has to be checked.
@@ -311,7 +355,8 @@ class OrdersService:
             data.tax_total if data.tax_total is not None else ZERO_MONEY,
         )
 
-        order_id = await self._insert_order(data, owner_id, currency, totals, lines)
+        # Past the guard above the order's currency is the organisation's.
+        order_id = await self._insert_order(data, owner_id, defaults, totals, lines)
         created = to_order_out(await self._require_order(access, order_id))
 
         await self._record(access, "order.created", order_id, {"after": _dump(created)})
@@ -325,12 +370,13 @@ class OrdersService:
         a new order that happens to start from the same lines. It goes through
         the very same path as a plain ``create``, so it gets a fresh number, a
         version of its own, and lines re-priced from the catalogue as it stands
-        now rather than at whatever price the source paid.
+        now rather than at whatever price the source paid. Nor is the currency
+        copied: the copy is made in the organisation's currency, the only one a
+        new order may carry.
         """
         source = await self._require_order(access, order_id)
         data = CreateOrderRequest(
             owner_id=source.owner_id,
-            currency=source.currency,
             items=[
                 OrderItemRequest(product_id=item.product_id, quantity=item.quantity)
                 for item in source.items
@@ -347,6 +393,8 @@ class OrdersService:
     ) -> OrderOut:
         order = await self._require_order(access, order_id)
         _assert_version(order.version, data.version)
+        if data.currency is not None:
+            assert_organization_currency(data.currency, await self._defaults())
         fields = data.model_fields_set
         owner_id = data.owner_id if data.owner_id is not None else order.owner_id
         _ensure_owner_access(access, owner_id)
@@ -479,18 +527,26 @@ class OrdersService:
         assert_order_has_items(order.status, len(order.items), data.status)
 
         effect = stock_effect_for_transition(order.status, data.status)
+        warehouse_id = (
+            await self._stock_warehouse_for(order, effect) if effect is not None else None
+        )
         before = to_order_out(order)
         values: dict[str, Any] = {"status": data.status}
         if data.status == OrderStatus.CONFIRMED:
-            # Confirmation is the moment the order is actually placed.
+            # Confirmation is the moment the order is actually placed, and the
+            # warehouse it reserves in becomes part of the order.
             values["placed_at"] = datetime.now(tz=UTC)
+        if effect == "reserve" and warehouse_id is not None:
+            values["warehouse_id"] = warehouse_id
 
         # The order write goes first so that a stale version is rejected before
         # any stock is touched; the stock then moves on the same session, so a
         # reservation that cannot be met rolls the status change back with it.
         updated = await self._apply_update(access, order, values)
         publishers = (
-            await self._apply_stock_effect(access, before, effect) if effect is not None else []
+            await self._apply_stock_effect(access, before, effect, warehouse_id)
+            if effect is not None and warehouse_id is not None
+            else []
         )
 
         after = to_order_out(updated)
@@ -498,9 +554,10 @@ class OrdersService:
         await self._record(access, "order.status_transitioned", order_id, payload)
 
         # The stock events belong to the warehouse module, which decides what
-        # they say; the order only decides when they are safe to publish.
+        # they say; the order only decides when they are safe to publish —
+        # after the commit, like every other event this service announces.
         for publish in publishers:
-            publish()
+            publish_after_commit(self._session, publish)
         self._announce(
             access,
             "order.status_transitioned",
@@ -513,6 +570,7 @@ class OrdersService:
         """Soft-deletes the order; the lines and their history stay readable."""
         order = await self._require_order(access, order_id)
         _assert_version(order.version, version)
+        assert_order_deletable(order.status)
         deleted_at = datetime.now(tz=UTC)
         before = to_order_out(order)
         await self._apply_update(access, order, {"deleted_at": deleted_at}, reload=False)
@@ -548,6 +606,35 @@ class OrdersService:
             # missing: a narrower scope must not become a way to probe for ids.
             raise NotFoundError("Order not found", ORDER_NOT_FOUND)
         return order
+
+    async def _defaults(self) -> OrderDefaults:
+        """The organisation settings, read on the order's own session."""
+        if self._stock is None:
+            return FALLBACK_ORDER_DEFAULTS
+        return await self._stock.resolve_order_defaults(self._session)
+
+    async def _stock_warehouse_for(
+        self, order: Order, effect: OrderStockEffect
+    ) -> uuid.UUID | None:
+        """The warehouse a stock effect goes to.
+
+        A confirmation asks the resolver and the answer is written onto the
+        order; cancellation and fulfilment follow the order to the warehouse it
+        reserved in, whatever the setting says now. An order confirmed before
+        the order kept its warehouse has none recorded, and only for it is the
+        resolver asked again. ``None`` means the composition has no stock side.
+        """
+        if self._stock is None:
+            return None
+        warehouse_id = None if effect == "reserve" else order.warehouse_id
+        if warehouse_id is None:
+            warehouse_id = await self._stock.resolve_warehouse_id(self._session)
+        if warehouse_id is None:
+            raise ConflictError(
+                "No warehouse is configured to hold stock for orders",
+                WAREHOUSE_NOT_CONFIGURED,
+            )
+        return warehouse_id
 
     async def _require_owner(self, owner_id: uuid.UUID) -> None:
         """Refuses to hand an order to an account that cannot hold it.
@@ -630,7 +717,7 @@ class OrdersService:
         self,
         data: CreateOrderRequest,
         owner_id: uuid.UUID,
-        currency: str,
+        defaults: OrderDefaults,
         totals: OrderTotals,
         lines: Sequence[_OrderLine],
     ) -> uuid.UUID:
@@ -647,12 +734,12 @@ class OrdersService:
                     self._session.add(
                         Order(
                             id=order_id,
-                            order_number=generate_order_number(),
+                            order_number=generate_order_number(defaults.number_prefix),
                             owner_id=owner_id,
                             contact_id=data.contact_id,
                             deal_id=data.deal_id,
                             status=OrderStatus.DRAFT,
-                            currency=currency,
+                            currency=defaults.currency,
                             notes=data.notes,
                             **_totals(totals),
                         )
@@ -753,23 +840,21 @@ class OrdersService:
             )
 
     async def _apply_stock_effect(
-        self, access: OrderAccess, order: OrderOut, effect: OrderStockEffect
+        self,
+        access: OrderAccess,
+        order: OrderOut,
+        effect: OrderStockEffect,
+        warehouse_id: uuid.UUID,
     ) -> Publishers:
         """Moves stock for every line, on the session carrying the status change.
 
-        Nothing is published here: the returned callbacks are invoked by the
-        caller once the operation has succeeded. The lines are walked one after
-        another rather than concurrently, because they share a single session
-        and a database transaction serves one statement at a time.
+        Nothing is published here: the returned callbacks are handed to the
+        session's commit by the caller. The lines are walked one after another
+        rather than concurrently, because they share a single session and a
+        database transaction serves one statement at a time.
         """
         if self._stock is None:
             return []
-        warehouse_id = await self._stock.resolve_warehouse_id(self._session)
-        if warehouse_id is None:
-            raise ConflictError(
-                "No warehouse is configured to hold stock for orders",
-                WAREHOUSE_NOT_CONFIGURED,
-            )
 
         operations = self._stock.operations
         operation = {
@@ -779,7 +864,7 @@ class OrdersService:
         }[effect]
 
         publishers: Publishers = []
-        for line in order.items:
+        for line in by_product(order.items):
             data = OrderStockInput(
                 warehouse_id=warehouse_id,
                 product_id=line.product_id,

@@ -1,8 +1,9 @@
 'use client';
 
-import { Table } from 'antd';
+import { Table, Typography } from 'antd';
 import type { SorterResult } from 'antd/es/table/interface';
 import { useMemo } from 'react';
+import { MAX_PAGE } from '@/shared/api';
 import { EmptyState } from '../empty-state';
 import type { DataTableColumns, DataTableProps } from './data-table.types';
 import { useColumnSizing } from './data-table.use-column-sizing';
@@ -60,6 +61,12 @@ export function DataTable<T extends { readonly id: string }, F extends string = 
 
   const components = useMemo(() => ({ header: { cell: headerCell } }), [headerCell]);
 
+  const total = page?.total ?? 0;
+  // The API pages no further than `MAX_PAGE`, so the pager is not allowed to
+  // offer a page it would refuse. The summary still counts every row.
+  const reachable = Math.min(total, MAX_PAGE * params.pageSize);
+  const isPastReach = params.page >= MAX_PAGE && total > reachable;
+
   return (
     <div className="flex flex-col gap-3">
       {filters}
@@ -85,10 +92,10 @@ export function DataTable<T extends { readonly id: string }, F extends string = 
         pagination={{
           current: params.page,
           pageSize: params.pageSize,
-          total: page?.total ?? 0,
+          total: reachable,
           showSizeChanger: true,
           pageSizeOptions: PAGE_SIZE_OPTIONS,
-          showTotal: (total, [from, to]) => `${from}–${to} з ${total}`,
+          showTotal: (_reachable, [from, to]) => `${from}–${to} з ${total}`,
         }}
         onChange={(pagination, _filters, sorter) => {
           const single = (Array.isArray(sorter) ? sorter[0] : sorter) as
@@ -114,6 +121,12 @@ export function DataTable<T extends { readonly id: string }, F extends string = 
             }
           : {})}
       />
+
+      {isPastReach ? (
+        <Typography.Text type="secondary">
+          Це остання доступна сторінка. Щоб побачити решту записів, звузьте фільтр.
+        </Typography.Text>
+      ) : null}
     </div>
   );
 }

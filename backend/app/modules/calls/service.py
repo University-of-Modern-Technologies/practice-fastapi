@@ -119,14 +119,23 @@ def _snapshot(call: CallOut) -> dict[str, Any]:
     return call.model_dump(by_alias=True, mode="json")
 
 
+#: SQLSTATE of a unique violation.
+_UNIQUE_VIOLATION = "23505"
+
+
 def _is_external_id_conflict(error: IntegrityError) -> bool:
     """Whether the insert lost a race on the provider's identifier.
 
-    ``external_id`` is the only unique column a call carries, so any other
-    integrity violation belongs elsewhere — a foreign key that vanished, a
+    ``external_id`` is the only unique column a call carries besides its own
+    random key, so a unique violation means precisely "already imported". Any
+    other integrity violation belongs elsewhere — a foreign key that vanished, a
     check that failed — and is raised rather than quietly counted as a skip.
+
+    It is decided by the SQLSTATE, never by the message: the check that keeps
+    the identifier non-blank is itself named after ``external_id``, so matching
+    on the text would count a malformed record as a harmless duplicate.
     """
-    return "external_id" in str(error.orig).lower()
+    return getattr(error.orig, "sqlstate", None) == _UNIQUE_VIOLATION
 
 
 class _CallPage(PagedQuery[Call, CallListParams, CallOut]):
@@ -233,6 +242,12 @@ class CallsService:
         down with it. One savepoint per row means the collision rolls back
         exactly that row, is counted as skipped, and its neighbours are kept.
 
+        Every other failure stops the run, and each filed call is committed on
+        its own before the next is tried, exactly as the other backend does.
+        Its event goes out with that commit rather than at the end of the
+        loop, so a record that fails half way through the batch costs only
+        itself: what was already filed stays filed and stays announced.
+
         Imported calls arrive owned by nobody. The provider knows telephone
         numbers, not which colleague the conversation belongs to, and guessing
         an owner from whoever happened to press "sync" would put a record into
@@ -246,21 +261,23 @@ class CallsService:
         unique = self._deduplicate(batch)
         known = await self._existing_external_ids(unique)
 
-        staged: list[Call] = []
+        created = 0
         for item in unique.values():
             if item.external_id in known:
                 continue
             row = await self._insert(item)
-            if row is not None:
-                staged.append(row)
+            if row is None:
+                continue
+            call = to_call_out(row)
+            changes = {"after": _snapshot(call)}
+            await self._record(access, CALL_CREATED, call.id, changes)
+            # Announced before the commit only in the sense of being queued: it
+            # is delivered by the commit itself, the moment this call is on file.
+            self._announce(CALL_CREATED, call.id, access, changes)
+            await self._session.commit()
+            created += 1
 
-        for row in staged:
-            created = to_call_out(row)
-            changes = {"after": _snapshot(created)}
-            await self._record(access, CALL_CREATED, created.id, changes)
-            self._announce(CALL_CREATED, created.id, access, changes)
-
-        return SyncCallsOut(fetched=fetched, created=len(staged), skipped=fetched - len(staged))
+        return SyncCallsOut(fetched=fetched, created=created, skipped=fetched - created)
 
     async def update(
         self, access: CallAccess, call_id: uuid.UUID, data: UpdateCallRequest

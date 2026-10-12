@@ -1,4 +1,10 @@
 import { http, type Page } from '@/shared/api';
+import {
+  WAREHOUSE_SEARCH_MAX_LENGTH,
+  clampPage,
+  clampPageSize,
+  clampSearch,
+} from '@/shared/api/list-limits';
 import type { Id } from '@/types/domain';
 import type {
   CreateWarehouseInput,
@@ -16,9 +22,9 @@ export const WarehouseService = {
   list: (query: WarehouseListQuery): Promise<Page<Warehouse>> =>
     http.get<Page<Warehouse>>(ROUTES.list, {
       params: {
-        page: query.page,
-        pageSize: query.pageSize,
-        search: query.search,
+        page: clampPage(query.page),
+        pageSize: clampPageSize(query.pageSize),
+        search: clampSearch(query.search, WAREHOUSE_SEARCH_MAX_LENGTH),
         isActive: query.isActive,
       },
     }),

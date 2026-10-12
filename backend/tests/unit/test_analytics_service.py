@@ -498,8 +498,11 @@ class TestStockHealth:
 
 
 class TestWave8Regressions:
-    async def test_cuts_the_sales_buckets_on_the_utc_calendar(self) -> None:
-        """Truncation names its zone instead of using the session's."""
+    async def test_cuts_the_sales_buckets_on_the_kyiv_calendar(self) -> None:
+        """Truncation names its zone instead of using the session's.
+
+        And the zone is Kyiv's, where the day boundaries of every report lie.
+        """
         session = FakeSession([])
 
         await build(session).sales_summary(SalesSummaryQuery(FROM, TO, AnalyticsPeriod.DAY))
@@ -507,7 +510,10 @@ class TestWave8Regressions:
         sql = session.sql(0)
         assert "timezone(%(timezone_1)s, date_trunc(" in sql
         assert "timezone(%(timezone_2)s, coalesce(orders.placed_at, orders.created_at))" in sql
-        assert set(session.params(0).values()) >= {"UTC", "day"}
+        values = list(session.params(0).values())
+        assert values.count("Europe/Kyiv") == 2
+        assert "UTC" not in values
+        assert "day" in values
 
     async def test_breaks_a_revenue_tie_in_the_top_products_by_the_product_id(self) -> None:
         """The cut to ``limit`` happens in the query, so the tie-break does too."""

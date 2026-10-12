@@ -32,7 +32,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import ColumnElement, Update, func, select, update
+from sqlalchemy import ColumnElement, Update, exists, func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import InstrumentedAttribute
@@ -79,6 +79,8 @@ from app.modules.finance.schemas import (
     TransactionListParams,
 )
 from app.modules.finance.types import (
+    CURRENCY_MISMATCH,
+    ORDER_ALREADY_MATCHED,
     STATEMENT_DUPLICATE_EXTERNAL_ID,
     STATEMENT_ENTITY_TYPE,
     STATEMENT_IMPORTED,
@@ -88,6 +90,7 @@ from app.modules.finance.types import (
     TRANSACTION_ENTITY_TYPE,
     TRANSACTION_MATCHED,
     TRANSACTION_NOT_FOUND,
+    TRANSACTION_NOT_INCOMING,
     TRANSACTION_NOT_MATCHED,
     TRANSACTION_ORDER_NOT_FOUND,
     TRANSACTION_UNMATCHED,
@@ -180,6 +183,7 @@ def to_transaction_out(transaction: BankTransaction) -> BankTransactionOut:
         matched_order_id=transaction.matched_order_id,
         matched_at=transaction.matched_at,
         matched_by_id=transaction.matched_by_id,
+        auto_match_disabled=transaction.auto_match_disabled,
         version=transaction.version,
         created_at=transaction.created_at,
         updated_at=transaction.updated_at,
@@ -194,6 +198,30 @@ def _snapshot(value: BankTransactionOut | BankStatementOut) -> dict[str, Any]:
 def _is_external_id_conflict(error: IntegrityError) -> bool:
     """Whether the insert lost a race on the bank's own identifier."""
     return "external_id" in str(error.orig).lower()
+
+
+def _is_order_already_matched(error: IntegrityError) -> bool:
+    """Whether the write lost a race for an order another payment settled.
+
+    Matched on the unique constraint's name, ``bank_transactions_matched_
+    order_id_key``, rather than on the column: the check constraint pairing a
+    status with an order also fails on that column, and that one is a bug.
+    """
+    return "matched_order_id_key" in str(error.orig).lower()
+
+
+def _order_already_matched(order_id: uuid.UUID) -> ConflictError:
+    """An order is settled by at most one payment.
+
+    Raised both when the check before the write finds the order taken and when
+    the unique constraint on ``matched_order_id`` catches a concurrent request
+    the check could not see — the same refusal either way.
+    """
+    return ConflictError(
+        "The order is already settled by another payment",
+        ORDER_ALREADY_MATCHED,
+        {"orderId": str(order_id)},
+    )
 
 
 def _share(count: int, total: int) -> float:
@@ -339,13 +367,13 @@ class FinanceService:
         either already answered or were never in question.
         """
         del access
-        transaction = await self._require_transaction(transaction_id)
+        transaction = to_transaction_out(await self._require_transaction(transaction_id))
         candidates: list[MatchCandidate] = []
         if transaction.match_status is PaymentMatchStatus.SUGGESTED:
             candidates = await self._candidates_for(transaction)
 
         return BankTransactionDetailOut(
-            **to_transaction_out(transaction).model_dump(),
+            **transaction.model_dump(),
             candidates=[
                 MatchCandidateOut(
                     order_id=candidate.order_id,
@@ -516,8 +544,27 @@ class FinanceService:
             raise ConflictError(
                 "Transaction is already matched to an order", TRANSACTION_ALREADY_MATCHED
             )
+        # Only money coming in can settle an order. A person may overrule the
+        # rule's heuristics, but a payment we made is not a payment we got.
+        if existing.direction is not TransactionDirection.CREDIT:
+            raise ConflictError(
+                "Only an incoming payment can be matched to an order", TRANSACTION_NOT_INCOMING
+            )
 
         order = await self._require_order(data.order_id)
+        # This transaction is not matched (checked above), so a payment that
+        # already settles the order is necessarily another one.
+        if await self._settling_payment(order.id) is not None:
+            raise _order_already_matched(order.id)
+        # Amounts in two currencies cannot settle each other, however close the
+        # numbers happen to be, so the currency is compared first.
+        if existing.currency != order.currency:
+            raise AppError(
+                "The transaction currency does not match the order currency",
+                422,
+                CURRENCY_MISMATCH,
+                {"currency": existing.currency, "orderCurrency": order.currency},
+            )
         if not amounts_match(existing.amount, order.total):
             # 422 with both figures, as the endpoint's description promises:
             # nothing about the request is in conflict with the record — the
@@ -534,11 +581,18 @@ class FinanceService:
             )
 
         before = to_transaction_out(existing)
-        after = await self._write(
-            transaction_id,
-            data.version,
-            self._matched_values(order.id, access.actor_id),
-        )
+        try:
+            after = await self._write(
+                transaction_id,
+                data.version,
+                self._matched_values(order.id, access.actor_id),
+            )
+        except IntegrityError as error:
+            # Another request settled the order between the check above and
+            # this write; the unique constraint is what saw it.
+            if not _is_order_already_matched(error):
+                raise
+            raise _order_already_matched(order.id) from error
         await self._report(access, TRANSACTION_MATCHED, transaction_id, before, after)
         return after
 
@@ -574,8 +628,21 @@ class FinanceService:
         while calling itself the whole of it.
 
         Nothing already decided is touched: a line somebody matched by hand is
-        an answer, a line somebody ignored is a decision, and a batch job that
-        overrode either is a batch job people stop pressing.
+        an answer, a line somebody ignored is a decision, a line somebody took
+        a match back from is a decision too, and a batch job that overrode any
+        of them is a batch job people stop pressing.
+
+        One line that moves under the batch does not abandon the rest of it.
+        A line a concurrent request edited, or whose order another payment
+        settled first, is examined but filed under none of the outcomes and
+        left for the next run — the tally counts what was written, not what
+        was concluded. Each write sits in a savepoint of its own, so a refused
+        one rolls back exactly itself.
+
+        The batch is one transaction, the request's. Its announcements are
+        queued as each match is written and delivered once that transaction
+        has committed — never before, so nothing is announced that a later
+        failure could still undo.
         """
         pending = (
             (
@@ -583,6 +650,7 @@ class FinanceService:
                     select(BankTransaction)
                     .where(
                         BankTransaction.match_status.in_(_RECONCILABLE_STATUSES),
+                        BankTransaction.auto_match_disabled.is_(False),
                     )
                     .order_by(BankTransaction.booked_at.asc(), BankTransaction.id.asc())
                     .limit(RECONCILE_BATCH_SIZE)
@@ -591,16 +659,21 @@ class FinanceService:
             .scalars()
             .all()
         )
+        # Plain snapshots rather than the loaded rows: a savepoint that rolls
+        # back may expire what the session holds, and nothing in the loop has
+        # to reach back into the database to read a line it already read.
+        lines = [to_transaction_out(transaction) for transaction in pending]
 
         tally: dict[PaymentMatchStatus, int] = dict.fromkeys(_RECONCILABLE_STATUSES, 0)
         tally[PaymentMatchStatus.MATCHED] = 0
         tally[PaymentMatchStatus.IGNORED] = 0
-        for transaction in pending:
-            outcome = await self._reconcile_one(access, transaction)
-            tally[outcome] = tally.get(outcome, 0) + 1
+        for line in lines:
+            outcome = await self._reconcile_one(access, line)
+            if outcome is not None:
+                tally[outcome] = tally.get(outcome, 0) + 1
 
         return ReconcileOut(
-            examined=len(pending),
+            examined=len(lines),
             matched=tally[PaymentMatchStatus.MATCHED],
             suggested=tally[PaymentMatchStatus.SUGGESTED],
             unmatched=tally[PaymentMatchStatus.UNMATCHED],
@@ -608,51 +681,84 @@ class FinanceService:
         )
 
     async def _reconcile_one(
-        self, access: FinanceAccess, transaction: BankTransaction
-    ) -> PaymentMatchStatus:
-        """Runs the rule over one line and files whatever it concluded."""
-        if transaction.direction is not TransactionDirection.CREDIT:
+        self, access: FinanceAccess, line: BankTransactionOut
+    ) -> PaymentMatchStatus | None:
+        """Runs the rule over one line and files whatever it concluded.
+
+        Returns what was filed, or ``None`` when the line moved under the batch
+        and nothing was written.
+        """
+        if line.direction is not TransactionDirection.CREDIT:
             # Money going out is filed rather than judged, and filing it is
             # silent for the same reason the two undecided states are: nothing
             # was concluded about an order.
-            if transaction.match_status is not PaymentMatchStatus.IGNORED:
-                await self._write(
-                    transaction.id,
-                    transaction.version,
-                    {"match_status": PaymentMatchStatus.IGNORED},
-                )
-            return PaymentMatchStatus.IGNORED
+            if line.match_status is PaymentMatchStatus.IGNORED:
+                return PaymentMatchStatus.IGNORED
+            written = await self._write_or_skip(
+                line.id, line.version, {"match_status": PaymentMatchStatus.IGNORED}
+            )
+            return PaymentMatchStatus.IGNORED if written is not None else None
 
-        candidates = await self._candidates_for(transaction)
+        candidates = await self._candidates_for(line)
         outcome = outcome_for(candidates)
 
         if outcome is PaymentMatchStatus.MATCHED:
-            before = to_transaction_out(transaction)
-            after = await self._write(
-                transaction.id,
-                transaction.version,
+            after = await self._write_or_skip(
+                line.id,
+                line.version,
                 self._matched_values(candidates[0].order_id, access.actor_id),
             )
-            await self._report(access, TRANSACTION_MATCHED, transaction.id, before, after)
+            if after is None:
+                return None
+            await self._report(access, TRANSACTION_MATCHED, line.id, line, after)
             return outcome
 
-        if outcome is not transaction.match_status:
+        if outcome is not line.match_status:
             # A change between "nothing fits" and "several might" is not an
             # event: nothing was decided, and a stream that announced every
             # re-run of the rule would drown the two announcements that matter.
-            await self._write(transaction.id, transaction.version, {"match_status": outcome})
+            written = await self._write_or_skip(line.id, line.version, {"match_status": outcome})
+            if written is None:
+                return None
         return outcome
+
+    async def _write_or_skip(
+        self, transaction_id: uuid.UUID, version: int, values: dict[str, Any]
+    ) -> BankTransactionOut | None:
+        """A guarded write the batch may lose without failing.
+
+        ``None`` when the line moved under the batch — its version changed — or
+        when the order it was about to settle has been settled by another
+        payment, which the unique constraint on ``matched_order_id`` reports.
+        Either is "not this run" rather than a fault. The savepoint keeps a
+        refused write from poisoning the transaction the rest of the batch is
+        written in.
+        """
+        try:
+            async with self._session.begin_nested():
+                return await self._write(transaction_id, version, values)
+        except VersionConflictError:
+            return None
+        except IntegrityError as error:
+            if not _is_order_already_matched(error):
+                raise
+            return None
 
     # --- the rule, against the order book ----------------------------------
 
-    async def _candidates_for(self, transaction: BankTransaction) -> list[MatchCandidate]:
+    async def _candidates_for(self, transaction: BankTransactionOut) -> list[MatchCandidate]:
         """Every order the rule accepts for this payment, oldest first.
 
-        The query narrows by three of the four conditions — state, amount,
-        window — purely so the rule is not handed the whole order book. It
-        cannot decide anything the rule would not: ``select_candidates``
+        The query narrows by three of the four conditions — state, currency
+        and amount, window — purely so the rule is not handed the whole order
+        book. It cannot decide anything the rule would not: ``select_candidates``
         applies all four again to what comes back, and it is the statement of
         record.
+
+        An order some payment already settles is not a candidate at all: an
+        order is settled by at most one payment. The check reads the same
+        transaction the batch writes in, so an order matched earlier in this
+        very run is already out of the running for the lines after it.
         """
         if transaction.direction is not TransactionDirection.CREDIT:
             return []
@@ -675,6 +781,8 @@ class FinanceService:
                 .where(
                     Order.deleted_at.is_(None),
                     Order.status.in_(MATCHABLE_ORDER_STATUSES),
+                    Order.currency == transaction.currency,
+                    ~exists().where(BankTransaction.matched_order_id == Order.id),
                     Order.total >= transaction.amount - MATCH_AMOUNT_TOLERANCE,
                     Order.total <= transaction.amount + MATCH_AMOUNT_TOLERANCE,
                     Order.placed_at <= transaction.booked_at,
@@ -702,6 +810,7 @@ class FinanceService:
         ]
         subject = MatchSubject(
             amount=transaction.amount,
+            currency=transaction.currency,
             booked_at=transaction.booked_at,
             reference=transaction.reference,
             counterparty_name=transaction.counterparty_name,
@@ -729,16 +838,25 @@ class FinanceService:
             "matched_order_id": order_id,
             "matched_at": datetime.now(tz=UTC),
             "matched_by_id": actor_id,
+            # A match is the decision the flag protected; whoever made it, the
+            # rule may look at the line again once it is taken back.
+            "auto_match_disabled": False,
         }
 
     @staticmethod
     def _unmatched_values() -> dict[str, Any]:
-        """The same four columns, cleared together for the same reason."""
+        """The same four columns, cleared together for the same reason.
+
+        And the line is marked: a person took the match back, and the next
+        automatic run must not quietly put it back. Only another manual match
+        clears the mark.
+        """
         return {
             "match_status": PaymentMatchStatus.UNMATCHED,
             "matched_order_id": None,
             "matched_at": None,
             "matched_by_id": None,
+            "auto_match_disabled": True,
         }
 
     async def _write(
@@ -930,6 +1048,13 @@ class FinanceService:
         if order is None:
             raise NotFoundError("Order not found", TRANSACTION_ORDER_NOT_FOUND)
         return order
+
+    async def _settling_payment(self, order_id: uuid.UUID) -> uuid.UUID | None:
+        """The payment that already settles this order, if any."""
+        found: uuid.UUID | None = await self._session.scalar(
+            select(BankTransaction.id).where(BankTransaction.matched_order_id == order_id).limit(1)
+        )
+        return found
 
     @staticmethod
     def _assert_version(actual: int, expected: int) -> None:

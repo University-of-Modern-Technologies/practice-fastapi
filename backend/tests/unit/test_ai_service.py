@@ -327,3 +327,17 @@ async def test_the_fallback_verdict_is_not_cached() -> None:
 def test_a_probability_must_be_a_json_number(value: object) -> None:
     with pytest.raises(ValueError, match="valid integer"):
         SummariseDealRequest.model_validate({**DEAL_BODY, "probability": value})
+
+
+def test_the_expected_close_date_is_the_calendar_day_the_deal_carries() -> None:
+    request = SummariseDealRequest.model_validate({**DEAL_BODY, "expectedCloseDate": "2026-12-31"})
+
+    assert request.expected_close_date == "2026-12-31"
+
+
+@pytest.mark.parametrize(
+    "value", ["2026-02-31", "2026-13-01", "2026-12-31T00:00:00.000Z", 1_798_675_200_000]
+)
+def test_an_expected_close_date_that_is_no_real_day_is_refused(value: object) -> None:
+    with pytest.raises(ValueError):  # noqa: PT011 — any refusal will do
+        SummariseDealRequest.model_validate({**DEAL_BODY, "expectedCloseDate": value})

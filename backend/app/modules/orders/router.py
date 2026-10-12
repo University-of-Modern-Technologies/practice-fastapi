@@ -102,7 +102,7 @@ def create_orders_router() -> APIRouter:
         status_code=status.HTTP_201_CREATED,
         tags=["Orders"],
         summary="Створити замовлення",
-        responses=refusals(401, 403, 404, 409),
+        responses=refusals(401, 403, 404, 409, 422),
     )
     async def create_order(
         request: Request,

@@ -29,6 +29,8 @@ from app.modules.deals.schemas import (
 )
 from app.modules.deals.service import DealsService
 from app.modules.deals.types import (
+    CURRENCY_NOT_SUPPORTED,
+    DEAL_CLOSED,
     DEAL_CREATED,
     DEAL_DELETED,
     DEAL_NOT_FOUND,
@@ -528,3 +530,106 @@ async def test_a_wildcard_in_a_deal_search_is_escaped() -> None:
 
     _, params = where_of(session.statements[1])
     assert "%100\\%%" in params.values()
+
+
+# --- closed deals ----------------------------------------------------------
+
+
+@pytest.mark.parametrize(("stage", "probability"), [(DealStage.WON, 100), (DealStage.LOST, 0)])
+async def test_the_fields_of_a_closed_deal_are_frozen(stage: DealStage, probability: int) -> None:
+    session = FakeSession()
+    session.execute_queue = [[make_deal(stage=stage, probability=probability, closed_at=NOW)]]
+    publisher = RecordingPublisher()
+
+    with pytest.raises(ConflictError) as error:
+        await make_service(session, publisher).update(
+            OWN_ACCESS,
+            DEAL_ID,
+            UpdateDealRequest.model_validate({"version": 1, "amount": "1.00"}),
+        )
+
+    assert error.value.status_code == 409
+    assert error.value.code == DEAL_CLOSED
+    assert error.value.details == {"stage": str(stage)}
+    # Only the read happened: nothing written, recorded or announced.
+    assert len(session.statements) == 1
+    assert audit_actions(session) == []
+    assert publisher.published == []
+
+
+async def test_a_deal_that_has_not_closed_is_still_edited() -> None:
+    session = FakeSession()
+    session.execute_queue = [
+        [make_deal(stage=DealStage.PROPOSAL, probability=50)],
+        [make_deal(stage=DealStage.PROPOSAL, probability=50, title="Renamed", version=2)],
+    ]
+
+    updated = await make_service(session).update(
+        OWN_ACCESS, DEAL_ID, UpdateDealRequest.model_validate({"version": 1, "title": "Renamed"})
+    )
+
+    assert updated.title == "Renamed"
+
+
+# --- the organization currency ---------------------------------------------
+
+
+def currency_service(session: FakeSession, currency: str) -> DealsService:
+    async def resolve() -> str:
+        return currency
+
+    return DealsService(cast("AsyncSession", session), resolve_organization_currency=resolve)
+
+
+async def test_a_new_deal_takes_the_organization_currency_when_none_is_named() -> None:
+    session = FakeSession()
+    data = CreateDealRequest.model_validate({"title": "Opportunity", "amount": "10.00"})
+
+    created = await currency_service(session, "eur").create(OWN_ACCESS, data)
+
+    stored = next(row for row in session.added if isinstance(row, Deal))
+    assert stored.currency == "EUR"
+    assert created.currency == "EUR"
+
+
+async def test_a_new_deal_in_another_currency_is_refused_before_anything_is_written() -> None:
+    session = FakeSession()
+    data = CreateDealRequest.model_validate(
+        {"title": "Opportunity", "amount": "10.00", "currency": "USD"}
+    )
+
+    with pytest.raises(AppError) as error:
+        await currency_service(session, "EUR").create(OWN_ACCESS, data)
+
+    assert error.value.status_code == 422
+    assert error.value.code == CURRENCY_NOT_SUPPORTED
+    assert error.value.details == {"currency": "USD", "expected": "EUR"}
+    assert session.added == []
+    assert session.statements == []
+
+
+async def test_a_deal_cannot_be_moved_into_another_currency() -> None:
+    session = FakeSession()
+    session.execute_queue = [[make_deal()]]
+
+    with pytest.raises(AppError) as error:
+        await currency_service(session, "EUR").update(
+            OWN_ACCESS, DEAL_ID, UpdateDealRequest.model_validate({"version": 1, "currency": "USD"})
+        )
+
+    assert error.value.status_code == 422
+    assert error.value.code == CURRENCY_NOT_SUPPORTED
+    assert session.statements == []
+
+
+async def test_without_a_wired_setting_the_organization_currency_is_usd() -> None:
+    session = FakeSession()
+    data = CreateDealRequest.model_validate(
+        {"title": "Opportunity", "amount": "10.00", "currency": "EUR"}
+    )
+
+    with pytest.raises(AppError) as error:
+        await make_service(session).create(OWN_ACCESS, data)
+
+    assert error.value.code == CURRENCY_NOT_SUPPORTED
+    assert error.value.details == {"currency": "EUR", "expected": "USD"}

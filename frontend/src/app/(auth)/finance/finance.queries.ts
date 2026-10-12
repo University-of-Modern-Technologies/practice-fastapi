@@ -1,21 +1,35 @@
 'use client';
 
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import type { Page } from '@/shared/api';
+import { ApiError, type Page } from '@/shared/api';
 import type { Id } from '@/types/domain';
+import { ordersKeys } from '../orders/orders.queries';
 import { FinanceService } from './finance.service';
-import type {
-  BankStatement,
-  BankTransaction,
-  BankTransactionDetail,
-  FinanceSummary,
-  FinanceSummaryQuery,
-  MatchTransactionInput,
-  ReconcileResult,
-  StatementImportResult,
-  StatementListQuery,
-  TransactionListQuery,
+import {
+  FINANCE_ERROR,
+  type BankStatement,
+  type BankTransaction,
+  type BankTransactionDetail,
+  type FinanceSummary,
+  type FinanceSummaryQuery,
+  type MatchTransactionInput,
+  type ReconcileResult,
+  type StatementImportResult,
+  type StatementListQuery,
+  type TransactionListQuery,
 } from './finance.types';
+
+/**
+ * Refusals that prove the screen is behind the server. "Already matched" and
+ * "not matched" mean the payment moved since the card was read; "order not
+ * found" means the picker offered an order that is gone. Each one is answered
+ * by re-reading what was stale, so the next attempt starts from the truth.
+ */
+const STALE_STATE_CODES: ReadonlySet<string> = new Set([
+  FINANCE_ERROR.alreadyMatched,
+  FINANCE_ERROR.notMatched,
+  FINANCE_ERROR.transactionNotFound,
+]);
 
 /**
  * Hierarchical keys let a write invalidate exactly what it touched.
@@ -125,6 +139,18 @@ const useTransactionWriter = <TInput>(id: Id, run: (input: TInput) => Promise<Ba
       void queryClient.invalidateQueries({ queryKey: financeKeys.transactions() });
       // Matching one payment moves it between the shares the summary reports.
       void queryClient.invalidateQueries({ queryKey: financeKeys.summaries() });
+    },
+    onError: (error: unknown) => {
+      if (!(error instanceof ApiError)) return;
+      if (STALE_STATE_CODES.has(error.code)) {
+        void queryClient.invalidateQueries({ queryKey: financeKeys.transaction(id) });
+        void queryClient.invalidateQueries({ queryKey: financeKeys.transactions() });
+      }
+      // The order picker is fed by the orders list; an order that has gone
+      // must stop being offered.
+      if (error.code === FINANCE_ERROR.orderNotFound) {
+        void queryClient.invalidateQueries({ queryKey: ordersKeys.lists() });
+      }
     },
   });
 };

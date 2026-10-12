@@ -13,10 +13,10 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Path, Query, Response, status
 
 from app.core.openapi import refusals
-from app.core.pagination import DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE
+from app.core.pagination import DEFAULT_PAGE_SIZE, MAX_PAGE, MAX_PAGE_SIZE
 from app.core.responses import Envelope, Page
 from app.db.enums import PermissionScope
-from app.modules.auth.dependencies import CurrentAuth, SessionDep
+from app.modules.auth.dependencies import CurrentAuth, SessionDep, SessionRevocationsDep
 from app.modules.rbac.dependencies import (
     CurrentActor,
     RbacServiceDep,
@@ -34,12 +34,14 @@ DisableScope = Annotated[PermissionScope, Depends(require_permission("users", "d
 
 #: A path segment published under the contract's name; the handler keeps a readable one.
 SessionId = Annotated[uuid.UUID, Path(alias="sessionId")]
-PageNumber = Annotated[int, Query(ge=1)]
+PageNumber = Annotated[int, Query(ge=1, le=MAX_PAGE)]
 PageSize = Annotated[int, Query(ge=1, le=MAX_PAGE_SIZE, alias="pageSize")]
 
 
-def get_users_service(session: SessionDep, rbac: RbacServiceDep) -> UsersService:
-    return UsersService(session, rbac)
+def get_users_service(
+    session: SessionDep, rbac: RbacServiceDep, sessions: SessionRevocationsDep
+) -> UsersService:
+    return UsersService(session, rbac, sessions=sessions)
 
 
 UsersServiceDep = Annotated[UsersService, Depends(get_users_service)]

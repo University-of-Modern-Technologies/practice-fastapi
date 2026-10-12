@@ -42,6 +42,7 @@ from app.modules.helpdesk.schemas import (
 )
 from app.modules.helpdesk.transition import (
     INITIAL_TICKET_STATUS,
+    assert_ticket_editable,
     assert_ticket_status_transition,
     resolved_at_update,
 )
@@ -238,6 +239,7 @@ class HelpdeskService:
         """
         existing = await self._require_active(access, ticket_id)
         self._assert_version(existing.version, data.version)
+        assert_ticket_editable(existing.status)
 
         fields = data.model_fields_set
         owner_id = data.owner_id if data.owner_id is not None else existing.owner_id
