@@ -64,7 +64,8 @@ describe('toTicketListQuery', () => {
       search: 'рахунок',
       status: 'OPEN',
       priority: 'HIGH',
-      openedFrom: '2026-08-01',
+      // Kyiv midnight of the picked day, as the date-time the API validates.
+      openedFrom: '2026-07-31T21:00:00.000Z',
     });
   });
 

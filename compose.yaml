@@ -1,0 +1,241 @@
+name: ${PROJECT_NAME:-practice-crm-python}
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: 10m
+    max-file: '3'
+
+x-backend-env: &backend-env
+  TZ: Europe/Kyiv
+  APP_ENV: production
+  POSTGRES_HOST: postgres
+  POSTGRES_PORT: 5432
+  POSTGRES_DB: ${POSTGRES_DB:-practice_crm}
+  POSTGRES_USER: ${POSTGRES_USER:-practice_crm}
+  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+  REDIS_HOST: redis
+  REDIS_PORT: 6379
+  MONGO_HOST: mongo
+  MONGO_PORT: 27017
+  MONGO_DB: ${MONGO_DB:-practice_events}
+  MONGO_USER: ${MONGO_USER:-practice_crm}
+  MONGO_PASSWORD: ${MONGO_PASSWORD:?Set MONGO_PASSWORD in .env}
+
+services:
+  nginx:
+    container_name: ${PROJECT_NAME:-practice-crm-python}_nginx
+    image: ${PROJECT_NAME:-practice-crm-python}_nginx:latest
+    restart: unless-stopped
+    build:
+      context: ./etc/nginx
+    environment:
+      - TZ=Europe/Kyiv
+    ports:
+      - '127.0.0.1:${HTTP_PORT:-8080}:80'
+    depends_on:
+      api:
+        condition: service_healthy
+      web:
+        condition: service_healthy
+    logging: *logging
+    networks:
+      - ntw
+
+  api:
+    container_name: ${PROJECT_NAME:-practice-crm-python}_api
+    image: ${PROJECT_NAME:-practice-crm-python}_api:latest
+    restart: unless-stopped
+    build:
+      context: ./backend
+      target: runtime
+    env_file:
+      - ./backend/.env
+    environment:
+      <<: *backend-env
+      HOST: 0.0.0.0
+      PORT: 8000
+      CORS_ORIGINS: http://localhost:${HTTP_PORT:-8080}
+      # nginx reaches the API over the stack's network, and only a peer in it
+      # is believed about the client address. Docker allocates that network
+      # from this range by default; set TRUSTED_PROXIES in .env if yours differs.
+      TRUSTED_PROXIES: ${TRUSTED_PROXIES:-172.16.0.0/12}
+    ports:
+      - '127.0.0.1:${API_PORT:-8000}:8000'
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      mongo:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          'CMD',
+          'python',
+          '-c',
+          "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/api/health/ready', timeout=2).status == 200 else 1)",
+        ]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 180s
+    stop_grace_period: 20s
+    logging: *logging
+    networks:
+      - ntw
+
+  web:
+    container_name: ${PROJECT_NAME:-practice-crm-python}_web
+    image: ${PROJECT_NAME:-practice-crm-python}_web:latest
+    restart: unless-stopped
+    build:
+      context: ./frontend
+      target: runtime
+    environment:
+      TZ: Europe/Kyiv
+      NEXT_TELEMETRY_DISABLED: '1'
+    ports:
+      - '127.0.0.1:${WEB_PORT:-3000}:3000'
+    healthcheck:
+      test:
+        [
+          'CMD',
+          'node',
+          '-e',
+          "fetch('http://127.0.0.1:3000/login').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))",
+        ]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 60s
+    logging: *logging
+    networks:
+      - ntw
+
+  migrate:
+    container_name: ${PROJECT_NAME:-practice-crm-python}_migrate
+    image: ${PROJECT_NAME:-practice-crm-python}_migrate:latest
+    build:
+      context: ./backend
+      target: runtime
+    env_file:
+      - ./backend/.env
+    environment:
+      <<: *backend-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: ['sh', '-c', 'alembic upgrade head && python -m scripts.seed']
+    restart: 'no'
+    logging: *logging
+    networks:
+      - ntw
+
+  postgres:
+    container_name: ${PROJECT_NAME:-practice-crm-python}_postgres
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      TZ: Europe/Kyiv
+      POSTGRES_DB: ${POSTGRES_DB:-practice_crm}
+      POSTGRES_USER: ${POSTGRES_USER:-practice_crm}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - '127.0.0.1:${POSTGRES_PORT:-5432}:5432'
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U "$$POSTGRES_USER" -d "$$POSTGRES_DB"']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    logging: *logging
+    networks:
+      - ntw
+
+  redis:
+    container_name: ${PROJECT_NAME:-practice-crm-python}_redis
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ['redis-server', '--appendonly', 'yes']
+    environment:
+      - TZ=Europe/Kyiv
+    volumes:
+      - redis_data:/data
+    ports:
+      - '127.0.0.1:${REDIS_PORT:-6379}:6379'
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    logging: *logging
+    networks:
+      - ntw
+
+  mongo:
+    container_name: ${PROJECT_NAME:-practice-crm-python}_mongo
+    image: mongo:7.0
+    restart: unless-stopped
+    command: ['mongod', '--wiredTigerCacheSizeGB', '0.25']
+    environment:
+      TZ: Europe/Kyiv
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_USER:-practice_crm}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_PASSWORD:?Set MONGO_PASSWORD in .env}
+      MONGO_INITDB_DATABASE: ${MONGO_DB:-practice_events}
+    volumes:
+      - mongo_data:/data/db
+      # The image declares this volume too; naming it stops every start from leaving an anonymous one.
+      - mongo_config:/data/configdb
+    ports:
+      - '127.0.0.1:${MONGO_PORT:-27017}:27017'
+    healthcheck:
+      test: ['CMD', 'mongosh', '--quiet', '--eval', "db.adminCommand('ping').ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    logging: *logging
+    networks:
+      - ntw
+
+  portainer:
+    container_name: ${PROJECT_NAME:-practice-crm-python}_portainer
+    image: portainer/portainer-ce:lts
+    profiles: ['tools']
+    restart: unless-stopped
+    command: ['--admin-password-file', '/run/portainer/admin-password']
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Long syntax, so a missing file fails the start rather than Docker
+      # creating a directory in its place; `setup` and `docker:portainer` write it.
+      - type: bind
+        source: ./.portainer-password
+        target: /run/portainer/admin-password
+        read_only: true
+        bind:
+          create_host_path: false
+      - portainer_data:/data
+    ports:
+      - '127.0.0.1:${PORTAINER_PORT:-9000}:9000'
+    logging: *logging
+    networks:
+      - ntw
+
+networks:
+  ntw:
+    name: ${PROJECT_NAME:-practice-crm-python}
+
+volumes:
+  postgres_data:
+    name: ${PROJECT_NAME:-practice-crm-python}_postgres_data
+  redis_data:
+    name: ${PROJECT_NAME:-practice-crm-python}_redis_data
+  mongo_data:
+    name: ${PROJECT_NAME:-practice-crm-python}_mongo_data
+  mongo_config:
+    name: ${PROJECT_NAME:-practice-crm-python}_mongo_config
+  portainer_data:
+    name: ${PROJECT_NAME:-practice-crm-python}_portainer_data

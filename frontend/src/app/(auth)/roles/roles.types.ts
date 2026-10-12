@@ -28,9 +28,13 @@ export interface RoleFormValues {
 }
 
 /**
- * The permissions the API knows about. A pair outside this list is answered
+ * The permissions the API knows about — the catalogue both backends seed
+ * (`prisma/seed.ts`, `scripts/seed.py`). A pair outside this list is answered
  * with 400 `UNKNOWN_PERMISSION`, so the matrix offers a cell only where a real
  * permission exists rather than every resource-action combination.
+ *
+ * A module added to the API without a line here is not lost — the role editor
+ * keeps grants it cannot draw — but nobody can grant it from this screen.
  */
 export const PERMISSION_CATALOGUE: readonly (readonly [resource: string, action: string])[] = [
   ['users', 'read'],
@@ -58,6 +62,14 @@ export const PERMISSION_CATALOGUE: readonly (readonly [resource: string, action:
   ['integrations', 'read'],
   ['integrations', 'write'],
   ['ai', 'use'],
+  ['helpdesk', 'read'],
+  ['helpdesk', 'write'],
+  ['helpdesk', 'delete'],
+  ['calls', 'read'],
+  ['calls', 'write'],
+  ['calls', 'delete'],
+  ['finance', 'read'],
+  ['finance', 'write'],
 ];
 
 export const PERMISSION_RESOURCE_LABEL: Readonly<Record<string, string>> = {
@@ -72,6 +84,9 @@ export const PERMISSION_RESOURCE_LABEL: Readonly<Record<string, string>> = {
   analytics: 'Аналітика',
   integrations: 'Інтеграції',
   ai: 'AI-помічник',
+  helpdesk: 'Звернення',
+  calls: 'Дзвінки',
+  finance: 'Фінанси',
 };
 
 export const PERMISSION_ACTION_LABEL: Readonly<Record<string, string>> = {
@@ -101,3 +116,13 @@ const CATALOGUE_KEYS = new Set(
 
 export const isKnownPermission = (resource: string, action: string): boolean =>
   CATALOGUE_KEYS.has(permissionKey(resource, action));
+
+/**
+ * Grants of a role the matrix has no cell for — a permission the API added
+ * after this build. They are kept as they are on save: the PUT replaces the
+ * whole set, and leaving them out would revoke what nobody chose to revoke.
+ */
+export const grantsOutsideMatrix = (
+  grants: readonly PermissionGrant[],
+): readonly PermissionGrant[] =>
+  grants.filter((grant) => !isKnownPermission(grant.resource, grant.action));

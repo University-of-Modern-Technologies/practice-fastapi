@@ -6,10 +6,14 @@ import {
   type UseMutationResult,
   type UseQueryResult,
 } from '@tanstack/react-query';
+import { orderLabel, useOrders } from '@/app/(auth)/orders/orders.queries';
+import type { Order } from '@/app/(auth)/orders/orders.types';
+import { ORDER_STATUS } from '@/shared/constants';
 import {
   IntegrationsService,
   isModuleUnavailable,
   isShipmentMissing,
+  mergeShippableOrders,
 } from './integrations.service';
 import type {
   CreateShipmentInput,
@@ -71,3 +75,40 @@ export const useShipment = (id: string): UseQueryResult<Shipment> =>
     retry: (failureCount, error) =>
       !isShipmentMissing(error) && !isModuleUnavailable(error) && failureCount < MAX_ATTEMPTS,
   });
+
+/** One page is what a picker shows; the term narrows it on the server. */
+const SHIPPABLE_PAGE_SIZE = 20;
+
+const shippableQuery = (status: 'CONFIRMED' | 'PAID', search: string) =>
+  ({
+    page: 1,
+    pageSize: SHIPPABLE_PAGE_SIZE,
+    status,
+    sortBy: 'createdAt',
+    sortOrder: 'desc',
+    ...(search ? { search } : {}),
+  }) as const;
+
+/**
+ * Feeds the order picker of both delivery forms with the orders a parcel may
+ * be sent for — confirmed and paid ones — and nothing else, so the operator is
+ * never offered a draft the API would refuse.
+ */
+export const useShippableOrderOptions = (
+  search: string,
+): { items: readonly Order[]; isFetching: boolean } => {
+  const confirmed = useOrders(shippableQuery('CONFIRMED', search));
+  const paid = useOrders(shippableQuery('PAID', search));
+
+  return {
+    items: mergeShippableOrders(
+      [confirmed.data?.items ?? [], paid.data?.items ?? []],
+      SHIPPABLE_PAGE_SIZE,
+    ),
+    isFetching: confirmed.isFetching || paid.isFetching,
+  };
+};
+
+/** The status is part of the label: it is what made the order eligible. */
+export const shippableOrderLabel = (order: Order): string =>
+  `${orderLabel(order)} · ${ORDER_STATUS[order.status].label}`;

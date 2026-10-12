@@ -1,3 +1,5 @@
+import { DateTime } from '@/lib/date-time';
+import { MAX_PAGE, MAX_PAGE_SIZE } from './list-limits';
 import type { ListParams } from '@/shared/hooks';
 
 type SortOrder = 'asc' | 'desc';
@@ -12,8 +14,9 @@ type ListQueryValue = string | number | boolean | SortOrder;
  * out-of-range number or a sort column it never agreed to would otherwise
  * reach the request and turn a hand-edited link into a 400.
  *
- * `page` and `pageSize` are copied straight through — `useListParams` already
- * guarantees they are positive integers before a caller ever sees them.
+ * `useListParams` already guarantees a positive integer `page` inside the
+ * API's ceiling; both `page` and `pageSize` are held to it here as well, since
+ * a caller may build a query without going through the query string.
  */
 class ListQueryBuilder<F extends string> {
   private readonly params: ListParams<F>;
@@ -21,8 +24,8 @@ class ListQueryBuilder<F extends string> {
 
   constructor(params: ListParams<F>) {
     this.params = params;
-    this.result.page = params.page;
-    this.result.pageSize = params.pageSize;
+    this.result.page = Math.min(params.page, MAX_PAGE);
+    this.result.pageSize = Math.min(params.pageSize, MAX_PAGE_SIZE);
   }
 
   /**
@@ -34,6 +37,25 @@ class ListQueryBuilder<F extends string> {
     const raw = this.params[key];
     if (typeof raw !== 'string' || raw === '') return this;
     this.result[key] = options.maxLength === undefined ? raw : raw.slice(0, options.maxLength);
+    return this;
+  }
+
+  /**
+   * A calendar day from the query string → the instant that day starts in the
+   * display zone, for an endpoint that filters by date-time. The link keeps the
+   * readable day; the request gets what the API validates. Anything that is
+   * not a real day is dropped rather than turned into a 400.
+   */
+  dayStart(key: F): this {
+    const instant = DateTime.dayStart(this.params[key]);
+    if (instant !== undefined) this.result[key] = instant;
+    return this;
+  }
+
+  /** The upper end of the same pair: the last millisecond of the day, bounds being inclusive. */
+  dayEnd(key: F): this {
+    const instant = DateTime.dayEnd(this.params[key]);
+    if (instant !== undefined) this.result[key] = instant;
     return this;
   }
 

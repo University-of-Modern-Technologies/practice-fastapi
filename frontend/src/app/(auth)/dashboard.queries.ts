@@ -2,7 +2,7 @@
 
 import { useQuery } from '@tanstack/react-query';
 import { ApiError } from '@/shared/api';
-import { DEFAULT_REPORT_RANGE_LABEL, defaultReportRange } from '@/shared/constants';
+import { DEFAULT_REPORT_RANGE_LABEL, defaultReportRange, toReportWindow } from '@/shared/constants';
 import { DashboardService } from './dashboard.service';
 import type {
   DashboardRangeQuery,
@@ -53,10 +53,7 @@ const ANALYTICS_OPTIONS = { retry: false, staleTime: 60_000 } as const;
 // Both bounds, always: the dates are part of the request and therefore of the
 // cache key on both sides, so tomorrow's overview is a new question, not
 // yesterday's cached answer.
-const rangeQuery = (): DashboardRangeQuery => {
-  const range = defaultReportRange();
-  return { from: `${range.from}T00:00:00.000Z`, to: `${range.to}T23:59:59.999Z` };
-};
+const rangeQuery = (): DashboardRangeQuery => toReportWindow(defaultReportRange());
 
 export const useSalesSummary = (enabled: boolean): AnalyticsBlock<SalesSummaryReport> => {
   const query = rangeQuery();

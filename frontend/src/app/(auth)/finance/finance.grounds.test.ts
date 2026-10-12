@@ -17,6 +17,7 @@ const transaction = (overrides: Partial<BankTransaction> = {}): BankTransaction 
   matchedOrderId: null,
   matchedAt: null,
   matchedById: null,
+  autoMatchDisabled: false,
   version: 1,
   createdAt: '2026-01-05T10:05:00.000Z',
   updatedAt: '2026-01-05T10:05:00.000Z',

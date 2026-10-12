@@ -1,7 +1,7 @@
 'use client';
 
 import { Col, Form, Input, Row, Select, type FormInstance } from 'antd';
-import { useCallback, useMemo, useState, type ReactNode } from 'react';
+import { useCallback, useMemo, type ReactNode } from 'react';
 import { ConflictAlert, ReferenceSelect, applyServerErrors, zodRule } from '@/components';
 import {
   contactLabel,
@@ -10,14 +10,9 @@ import {
 } from '@/app/(auth)/contacts/contacts.queries';
 import { dealLabel, useDealOptions, useResolvedDeal } from '@/app/(auth)/deals/deals.queries';
 import { useResolvedUser, useUserOptions, userLabel } from '@/app/(auth)/users/users.queries';
-import { DEFAULT_CURRENCY, Money } from '@/lib/money';
+import { Money } from '@/lib/money';
 import { isOrderEditable } from '@/shared/constants';
-import {
-  useHasPermission,
-  useMutationFeedback,
-  useUnsavedChanges,
-  useVersionConflict,
-} from '@/shared/hooks';
+import { useHasPermission, useMutationFeedback, useRecordForm } from '@/shared/hooks';
 import { useCreateOrder, useUpdateOrder } from '../orders.queries';
 import {
   ORDER_ERROR_MESSAGES,
@@ -29,7 +24,6 @@ import {
 } from '../orders.types';
 import {
   orderAmountSchema,
-  orderCurrencySchema,
   orderNotesSchema,
   orderReferenceSchema,
   type OrderFormValues,
@@ -41,8 +35,9 @@ interface UseOrderFormOptions {
   /** Lines staged on the create route; ignored once the order exists. */
   readonly items?: readonly CreateOrderItemInput[] | undefined;
   readonly onSaved: (order: Order) => void;
-  /** Re-reads the record after a lost race, so the next save carries the current version. */
-  readonly onReload?: (() => unknown) | undefined;
+  /** Re-reads the record after a lost race; the form then shows it with its version. */
+  readonly onReload?:
+    (() => Promise<{ readonly data?: Order | undefined; readonly isError?: boolean }>) | undefined;
   readonly isReloading?: boolean | undefined;
 }
 
@@ -68,9 +63,9 @@ interface UseOrderFormResult {
 const asText = (value: string | undefined): string => (value ?? '').trim();
 
 /** An empty amount means «unchanged zero», not a request to send an empty string. */
-const toAmount = (value: string | undefined, currency: string): string | undefined => {
+const toAmount = (value: string | undefined): string | undefined => {
   const trimmed = asText(value);
-  return trimmed === '' ? undefined : Money.fromInput(trimmed, currency).toWire();
+  return trimmed === '' ? undefined : Money.fromInput(trimmed).toWire();
 };
 
 /** Shown instead of a picker the caller's role is not allowed to fill. */
@@ -86,6 +81,22 @@ const toReference = (value: string | undefined): string | null => {
 };
 
 /**
+ * An order as the form shows it. Every field is named, absent ones included,
+ * so a re-read clears a value the other person removed instead of keeping ours.
+ */
+const toOrderValues = (order: Order): Partial<OrderFormValues> => ({
+  currency: order.currency,
+  // The stored amounts are normalised through Money, so the fields show the
+  // same scale the API keeps.
+  discountTotal: Money.parse(order.discountTotal, order.currency).toWire(),
+  taxTotal: Money.parse(order.taxTotal, order.currency).toWire(),
+  ownerId: order.ownerId,
+  contactId: order.contactId ?? undefined,
+  dealId: order.dealId ?? undefined,
+  notes: order.notes ?? undefined,
+});
+
+/**
  * The one form behind both order routes. Create and edit differ in what may be
  * sent, not in what is shown: monetary fields reshape the order itself, so the
  * API accepts them only while it is still a draft, and a terminal order accepts
@@ -99,9 +110,16 @@ export const useOrderForm = ({
   isReloading = false,
 }: UseOrderFormOptions): UseOrderFormResult => {
   const [form] = Form.useForm<OrderFormValues>();
-  const [isDirty, setIsDirty] = useState(false);
   const { reportSuccess, reportFailureWith } = useMutationFeedback();
-  const { hasConflict, handleError: handleConflict, clearConflict } = useVersionConflict();
+  // `base` is the copy on screen: its values are in the fields and its version
+  // is the one a save sends, even after a fresher copy reached the cache —
+  // which happens on every line added or removed below the form.
+  const { base, markDirty, adopt, hasConflict, handleConflict, reload } = useRecordForm({
+    form,
+    record: order,
+    toValues: toOrderValues,
+    onReload,
+  });
 
   const create = useCreateOrder();
   const update = useUpdateOrder(order?.id ?? '');
@@ -112,8 +130,6 @@ export const useOrderForm = ({
   const canReadUsers = useHasPermission('users', 'read');
   const canReadContacts = useHasPermission('contacts', 'read');
   const canReadDeals = useHasPermission('deals', 'read');
-
-  useUnsavedChanges(isDirty);
 
   // Money follows the draft-only rule; the descriptive fields stay editable
   // until the order reaches a terminal status.
@@ -127,22 +143,10 @@ export const useOrderForm = ({
       : 'Порожнє поле — відповідальним стане поточний користувач'
     : NO_ACCESS.users;
 
+  // Read once, at mount; every later copy reaches the fields through the hook.
   const initialValues = useMemo<Partial<OrderFormValues>>(
-    () =>
-      order
-        ? {
-            currency: order.currency,
-            // The stored amounts are normalised through Money, so the fields
-            // show the same scale the API keeps.
-            discountTotal: Money.parse(order.discountTotal, order.currency).toWire(),
-            taxTotal: Money.parse(order.taxTotal, order.currency).toWire(),
-            ownerId: order.ownerId,
-            ...(order.contactId === null ? {} : { contactId: order.contactId }),
-            ...(order.dealId === null ? {} : { dealId: order.dealId }),
-            ...(order.notes === null ? {} : { notes: order.notes }),
-          }
-        : { currency: DEFAULT_CURRENCY },
-    [order],
+    () => (base ? toOrderValues(base) : {}),
+    [base],
   );
 
   const handleError = useCallback(
@@ -158,25 +162,25 @@ export const useOrderForm = ({
 
   const handleSaved = useCallback(
     (saved: Order, text: string) => {
-      setIsDirty(false);
-      clearConflict();
+      adopt(saved);
       reportSuccess(text);
       onSaved(saved);
     },
-    [clearConflict, onSaved, reportSuccess],
+    [adopt, onSaved, reportSuccess],
   );
 
   const submit = useCallback(() => {
     void form
       .validateFields()
       .then((values) => {
-        const currency = values.currency.trim().toUpperCase();
+        // No currency on either route: the organisation keeps its books in one,
+        // and the API fills it in on create. It is shown, not edited.
         const notes = asText(values.notes);
 
-        if (order) {
+        if (base) {
           const input: UpdateOrderInput = {
-            // The version read with the record; a stale one answers 409.
-            version: order.version,
+            // The version of the copy the user edited; a stale one answers 409.
+            version: base.version,
             contactId: toReference(values.contactId),
             dealId: toReference(values.dealId),
             notes: notes === '' ? null : notes,
@@ -185,9 +189,8 @@ export const useOrderForm = ({
             // value is unchanged, so it is left out rather than echoed back.
             ...(canEditMoney
               ? {
-                  currency,
-                  discountTotal: toAmount(values.discountTotal, currency) ?? '0.00',
-                  taxTotal: toAmount(values.taxTotal, currency) ?? '0.00',
+                  discountTotal: toAmount(values.discountTotal) ?? '0.00',
+                  taxTotal: toAmount(values.taxTotal) ?? '0.00',
                 }
               : {}),
           };
@@ -199,14 +202,13 @@ export const useOrderForm = ({
           return;
         }
 
-        const discountTotal = toAmount(values.discountTotal, currency);
-        const taxTotal = toAmount(values.taxTotal, currency);
+        const discountTotal = toAmount(values.discountTotal);
+        const taxTotal = toAmount(values.taxTotal);
         const ownerId = asText(values.ownerId);
         const contactId = asText(values.contactId);
         const dealId = asText(values.dealId);
 
         const input: CreateOrderInput = {
-          currency,
           ...(ownerId === '' ? {} : { ownerId }),
           ...(contactId === '' ? {} : { contactId }),
           ...(dealId === '' ? {} : { dealId }),
@@ -224,11 +226,7 @@ export const useOrderForm = ({
       // A form that failed its own rules has already marked the offending
       // fields; there is nothing further to report.
       .catch(() => undefined);
-  }, [canEditMoney, create, form, handleError, handleSaved, items, order, update]);
-
-  const reload = useCallback(() => {
-    void Promise.resolve(onReload?.()).finally(() => clearConflict());
-  }, [clearConflict, onReload]);
+  }, [base, canEditMoney, create, form, handleError, handleSaved, items, update]);
 
   const fields = (
     <>
@@ -302,10 +300,9 @@ export const useOrderForm = ({
           <Form.Item
             name="currency"
             label="Валюта"
-            rules={[zodRule(orderCurrencySchema)]}
-            extra={canEditMoney ? undefined : 'Змінюється лише у чернетці'}
+            extra={order ? undefined : 'Валюта організації, задається в налаштуваннях'}
           >
-            <Input maxLength={3} disabled={!canEditMoney} placeholder={DEFAULT_CURRENCY} />
+            <Input disabled placeholder="Валюта організації" />
           </Form.Item>
         </Col>
 
@@ -350,7 +347,7 @@ export const useOrderForm = ({
       initialValues,
       layout: 'vertical',
       requiredMark: false,
-      onValuesChange: () => setIsDirty(true),
+      onValuesChange: markDirty,
       onFinish: submit,
     },
     fields,

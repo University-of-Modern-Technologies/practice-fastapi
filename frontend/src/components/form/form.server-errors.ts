@@ -2,24 +2,47 @@ import type { FormInstance } from 'antd';
 import { ApiError } from '@/shared/api';
 import type { ValidationDetails } from '@/types/domain';
 
-/** `"body.firstName: Too short"` → `['firstName', 'Too short']`. */
-const splitMessage = (message: string): readonly [string, string] | null => {
+/** A field path as a validator writes it: `email`, `items.0.quantity`. No spaces. */
+const PATH_PATTERN = /^[A-Za-z_$][\w$]*(?:\.[\w$]+)*$/;
+
+/** A path rooted at the request part rather than inside it. */
+const LOCATION_PREFIX = /^(?:body|query|params)\./;
+
+type FieldPath = readonly (string | number)[];
+
+/**
+ * `"email: value is not a valid email address"` → `[['email'], '…']`,
+ * `"items.0.quantity: …"` → `[['items', 0, 'quantity'], '…']`.
+ *
+ * Only a prefix that reads as a field path counts. A message without one —
+ * `"Too small: expected string to have >=2 characters"` — has a colon too,
+ * and splitting it there would invent a field called "Too small".
+ */
+const splitMessage = (message: string): readonly [FieldPath, string] | null => {
   const separator = message.indexOf(':');
   if (separator === -1) return null;
 
   const path = message.slice(0, separator).trim();
   const text = message.slice(separator + 1).trim();
-  if (!path || !text) return null;
+  if (!text || !PATH_PATTERN.test(path)) return null;
 
-  // The validator reports the location as a dotted path rooted at the section.
-  const field = path.replace(/^(body|query|params)\./, '');
-  return field === path && path.includes('.') ? null : [field, text];
+  const segments = path
+    .replace(LOCATION_PREFIX, '')
+    .split('.')
+    .map((segment) => (/^\d+$/.test(segment) ? Number(segment) : segment));
+  return [segments, text];
 };
+
+const keyOf = (path: FieldPath): string => path.join('.');
 
 /**
  * Puts a rejected value back on the field it came from. The API answers a bad
  * request with a flat list of messages; showing them as one banner leaves the
  * user hunting for which of twelve inputs the server disliked.
+ *
+ * Each message names its field path in front of it (see `ValidationDetails`);
+ * one that names none, or names a field the form does not have, is left,
+ * untouched, to the generic notification.
  *
  * Returns true when at least one message found a home — the caller then skips
  * the generic notification.
@@ -38,13 +61,15 @@ export const applyServerErrors = (form: FormInstance, error: unknown): boolean =
   // Every field the form has mounted, whether or not it currently holds an
   // error — `setFields` on a name that is not among them stores a message no
   // one ever draws.
-  const mounted = new Set(form.getFieldsError().map(({ name }) => name.join('.')));
+  const mounted = new Set(form.getFieldsError().map(({ name }) => keyOf(name)));
 
-  const entries = messages.map(splitMessage);
+  const entries = messages
+    .filter((message): message is string => typeof message === 'string')
+    .map(splitMessage);
   const fields = entries
-    .filter((entry): entry is readonly [string, string] => entry !== null)
-    .filter(([name]) => mounted.has(name))
-    .map(([name, message]) => ({ name, errors: [message] }));
+    .filter((entry): entry is readonly [FieldPath, string] => entry !== null)
+    .filter(([path]) => mounted.has(keyOf(path)))
+    .map(([path, message]) => ({ name: [...path], errors: [message] }));
 
   if (fields.length > 0) form.setFields(fields);
 

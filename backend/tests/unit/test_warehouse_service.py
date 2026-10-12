@@ -1,0 +1,357 @@
+"""The arithmetic of stock, tested as the pure functions it is.
+
+Sufficiency is decided before anything is written, so it can be checked without
+a database: a plan plus the quantities currently on the shelf is all the input
+the rule needs.
+"""
+
+from __future__ import annotations
+
+import uuid
+from dataclasses import dataclass
+from typing import Any, cast
+
+import pytest
+from sqlalchemy.dialects import postgresql
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.errors import AppError
+from app.db.enums import PermissionScope, StockMovementType
+from app.modules.warehouse.schemas import (
+    AdjustStockRequest,
+    IssueStockRequest,
+    ReceiveStockRequest,
+    ReleaseStockRequest,
+    ReserveStockRequest,
+    WarehouseListParams,
+)
+from app.modules.warehouse.service import (
+    MAX_STOCK_QUANTITY,
+    WarehouseService,
+    _WarehousePage,
+    adjust_plan,
+    issue_plan,
+    issue_plans,
+    next_quantities,
+    receive_plan,
+    release_plan,
+    reserve_plan,
+)
+from app.modules.warehouse.types import (
+    INSUFFICIENT_RESERVATION,
+    INSUFFICIENT_STOCK,
+    INVALID_STOCK_ADJUSTMENT,
+    STOCK_ADJUSTMENT_NOTE_REQUIRED,
+    STOCK_ORDER_REFERENCE_FORBIDDEN,
+    WarehouseAccess,
+)
+
+WAREHOUSE_ID = uuid.UUID("11111111-1111-4111-8111-111111111111")
+PRODUCT_ID = uuid.UUID("22222222-2222-4222-8222-222222222222")
+ORDER_ID = uuid.UUID("33333333-3333-4333-8333-333333333333")
+
+
+ACCESS = WarehouseAccess(
+    actor_id=uuid.UUID("66666666-6666-4666-8666-666666666666"), scope=PermissionScope.ALL
+)
+
+
+def target() -> dict[str, str]:
+    return {"warehouseId": str(WAREHOUSE_ID), "productId": str(PRODUCT_ID)}
+
+
+def order_reservation(quantity: int = 2) -> dict[str, Any]:
+    return {
+        **target(),
+        "quantity": quantity,
+        "referenceType": "order",
+        "referenceId": str(ORDER_ID),
+    }
+
+
+def reservation(quantity: int = 2) -> ReserveStockRequest:
+    return ReserveStockRequest.model_validate(
+        {
+            **target(),
+            "quantity": quantity,
+            "referenceType": "order",
+            "referenceId": str(ORDER_ID),
+        }
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class ForeignRequest:
+    """A stock request as another module would shape it.
+
+    Nothing here inherits from the warehouse schemas; it satisfies the port by
+    its fields alone, which is exactly how the orders module reaches this code.
+    """
+
+    warehouse_id: uuid.UUID
+    product_id: uuid.UUID
+    quantity: int
+    reference_type: str
+    reference_id: uuid.UUID
+    from_reservation: bool = False
+
+
+def test_receiving_adds_to_the_shelf_and_leaves_the_reservation_alone() -> None:
+    plan = receive_plan(ReceiveStockRequest.model_validate({**target(), "quantity": 5}))
+
+    assert plan.movement_type is StockMovementType.RECEIPT
+    assert (plan.on_hand_delta, plan.reserved_delta) == (5, 0)
+
+
+def test_reserving_promises_units_without_removing_them() -> None:
+    plan = reserve_plan(reservation(2))
+
+    assert plan.movement_type is StockMovementType.RESERVATION
+    assert (plan.on_hand_delta, plan.reserved_delta) == (0, 2)
+
+
+def test_releasing_gives_promised_units_back_without_touching_the_shelf() -> None:
+    plan = release_plan(reservation(2))
+
+    assert (plan.on_hand_delta, plan.reserved_delta) == (0, -2)
+
+
+def test_a_plain_issue_only_removes_units_from_the_shelf() -> None:
+    plan = issue_plan(IssueStockRequest.model_validate({**target(), "quantity": 4}))
+
+    assert (plan.on_hand_delta, plan.reserved_delta) == (-4, 0)
+
+
+def test_an_issue_against_a_reservation_is_a_release_then_an_issue() -> None:
+    release, issue = issue_plans(
+        IssueStockRequest.model_validate(
+            {
+                **target(),
+                "quantity": 4,
+                "fromReservation": True,
+                "referenceType": "transfer",
+                "referenceId": str(ORDER_ID),
+            }
+        )
+    )
+
+    # Both counters move, and the ledger records each move on its own, so
+    # summing the ledger reproduces the reserved counter too.
+    assert release.movement_type is StockMovementType.RELEASE
+    assert (release.on_hand_delta, release.reserved_delta) == (0, -4)
+    assert issue.movement_type is StockMovementType.ISSUE
+    assert (issue.on_hand_delta, issue.reserved_delta) == (-4, 0)
+    assert release.reference_type == issue.reference_type == "transfer"
+
+
+def test_a_plain_issue_is_a_single_movement() -> None:
+    plans = issue_plans(IssueStockRequest.model_validate({**target(), "quantity": 4}))
+
+    assert [plan.movement_type for plan in plans] == [StockMovementType.ISSUE]
+
+
+def test_a_plan_is_built_from_a_structure_the_module_has_never_seen() -> None:
+    plan = reserve_plan(
+        ForeignRequest(
+            warehouse_id=WAREHOUSE_ID,
+            product_id=PRODUCT_ID,
+            quantity=3,
+            reference_type="order",
+            reference_id=ORDER_ID,
+        )
+    )
+
+    assert (plan.reserved_delta, plan.reference_type, plan.note) == (3, "order", None)
+
+
+def test_an_adjustment_keeps_the_sign_of_its_delta_in_the_ledger() -> None:
+    plan = adjust_plan(
+        AdjustStockRequest.model_validate({**target(), "delta": -3, "note": " breakage "})
+    )
+
+    assert plan.movement_type is StockMovementType.ADJUSTMENT
+    # Summing the ledger reproduces the level only if the correction keeps its sign.
+    assert (plan.quantity, plan.on_hand_delta) == (-3, -3)
+    assert plan.note == "breakage"
+
+
+def test_an_adjustment_of_zero_is_refused_before_any_row_is_read() -> None:
+    request = AdjustStockRequest.model_construct(
+        warehouse_id=WAREHOUSE_ID,
+        product_id=PRODUCT_ID,
+        delta=0,
+        note="recount",
+        reference_type=None,
+        reference_id=None,
+    )
+
+    with pytest.raises(AppError) as error:
+        adjust_plan(request)
+
+    assert (error.value.status_code, error.value.code) == (400, INVALID_STOCK_ADJUSTMENT)
+
+
+def test_an_adjustment_without_a_reason_is_refused() -> None:
+    request = AdjustStockRequest.model_construct(
+        warehouse_id=WAREHOUSE_ID,
+        product_id=PRODUCT_ID,
+        delta=-2,
+        note="   ",
+        reference_type=None,
+        reference_id=None,
+    )
+
+    with pytest.raises(AppError) as error:
+        adjust_plan(request)
+
+    assert (error.value.status_code, error.value.code) == (400, STOCK_ADJUSTMENT_NOTE_REQUIRED)
+
+
+def test_a_reservation_is_measured_against_available_stock_not_the_shelf() -> None:
+    # Ten on the shelf, four already promised: six may still be promised.
+    assert next_quantities(10, 4, reserve_plan(reservation(6))) == (10, 10)
+
+
+def test_reserving_more_than_is_available_is_an_oversell() -> None:
+    with pytest.raises(AppError) as error:
+        next_quantities(10, 4, reserve_plan(reservation(7)))
+
+    assert (error.value.status_code, error.value.code) == (409, INSUFFICIENT_STOCK)
+
+
+def test_issuing_more_than_is_on_the_shelf_is_an_oversell() -> None:
+    plan = issue_plan(IssueStockRequest.model_validate({**target(), "quantity": 11}))
+
+    with pytest.raises(AppError) as error:
+        next_quantities(10, 0, plan)
+
+    assert error.value.code == INSUFFICIENT_STOCK
+
+
+def test_issuing_unreserved_units_may_not_leave_reservations_uncovered() -> None:
+    # Ten on the shelf, all ten promised: issuing outside the reservation would
+    # leave promises that nothing backs.
+    plan = issue_plan(IssueStockRequest.model_validate({**target(), "quantity": 1}))
+
+    with pytest.raises(AppError) as error:
+        next_quantities(10, 10, plan)
+
+    assert error.value.code == INSUFFICIENT_STOCK
+
+
+def test_releasing_more_than_was_reserved_is_a_reservation_failure() -> None:
+    with pytest.raises(AppError) as error:
+        next_quantities(10, 4, release_plan(reservation(5)))
+
+    assert (error.value.status_code, error.value.code) == (409, INSUFFICIENT_RESERVATION)
+
+
+def test_an_issue_against_a_reservation_larger_than_the_hold_is_refused() -> None:
+    release, _issue = issue_plans(
+        IssueStockRequest.model_validate(
+            {
+                **target(),
+                "quantity": 5,
+                "fromReservation": True,
+                "referenceType": "transfer",
+                "referenceId": str(ORDER_ID),
+            }
+        )
+    )
+
+    with pytest.raises(AppError) as error:
+        next_quantities(10, 4, release)
+
+    assert error.value.code == INSUFFICIENT_RESERVATION
+
+
+async def test_a_manual_release_of_stock_an_order_holds_is_refused() -> None:
+    # The guard runs before the session is touched, so no session is needed.
+    service = WarehouseService(cast(AsyncSession, None))
+
+    with pytest.raises(AppError) as error:
+        await service.release(ACCESS, ReleaseStockRequest.model_validate(order_reservation()))
+
+    assert (error.value.status_code, error.value.code) == (409, STOCK_ORDER_REFERENCE_FORBIDDEN)
+    assert error.value.details == {
+        "operation": "release",
+        "referenceType": "order",
+        "referenceId": str(ORDER_ID),
+    }
+
+
+async def test_a_manual_reservation_under_an_order_reference_is_refused() -> None:
+    service = WarehouseService(cast(AsyncSession, None))
+
+    with pytest.raises(AppError) as error:
+        await service.reserve(ACCESS, ReserveStockRequest.model_validate(order_reservation()))
+
+    assert (error.value.status_code, error.value.code) == (409, STOCK_ORDER_REFERENCE_FORBIDDEN)
+    assert error.value.details == {
+        "operation": "reserve",
+        "referenceType": "order",
+        "referenceId": str(ORDER_ID),
+    }
+
+
+async def test_a_manual_issue_under_an_order_reference_is_refused() -> None:
+    service = WarehouseService(cast(AsyncSession, None))
+
+    with pytest.raises(AppError) as error:
+        await service.issue(
+            ACCESS,
+            IssueStockRequest.model_validate({**order_reservation(), "fromReservation": True}),
+        )
+
+    assert (error.value.status_code, error.value.code) == (409, STOCK_ORDER_REFERENCE_FORBIDDEN)
+    assert error.value.details["operation"] == "issue"
+
+
+def test_an_operation_against_a_pair_that_was_never_stocked_starts_at_zero() -> None:
+    assert next_quantities(
+        0, 0, receive_plan(ReceiveStockRequest.model_validate({**target(), "quantity": 5}))
+    ) == (5, 0)
+
+    with pytest.raises(AppError) as error:
+        next_quantities(0, 0, reserve_plan(reservation(1)))
+
+    assert error.value.code == INSUFFICIENT_STOCK
+
+
+def test_neither_counter_can_be_driven_below_zero() -> None:
+    plan = adjust_plan(
+        AdjustStockRequest.model_validate({**target(), "delta": -11, "note": "recount"})
+    )
+
+    with pytest.raises(AppError) as error:
+        next_quantities(10, 0, plan)
+
+    assert error.value.code == INSUFFICIENT_STOCK
+
+
+def test_a_receipt_past_the_integer_column_is_refused_before_any_write() -> None:
+    plan = receive_plan(ReceiveStockRequest.model_validate({**target(), "quantity": 200_000_000}))
+
+    with pytest.raises(AppError) as error:
+        next_quantities(2_000_000_000, 0, plan)
+
+    assert error.value.status_code == 400
+    assert error.value.code == "STOCK_QUANTITY_OUT_OF_RANGE"
+    assert error.value.details == {"field": "quantityOnHand", "max": MAX_STOCK_QUANTITY}
+
+
+def test_a_receipt_that_fills_the_shelf_exactly_to_the_limit_is_accepted() -> None:
+    plan = receive_plan(ReceiveStockRequest.model_validate({**target(), "quantity": 5}))
+
+    assert next_quantities(MAX_STOCK_QUANTITY - 5, 0, plan) == (MAX_STOCK_QUANTITY, 0)
+
+
+def test_a_warehouse_search_is_matched_literally() -> None:
+    page = _WarehousePage(cast(AsyncSession, None))
+    criteria = page._build_filters(WarehouseListParams(search="A_1%"))
+    dialect: Any = postgresql.dialect()  # type: ignore[no-untyped-call]
+
+    compiled = criteria[0].compile(dialect=dialect)
+
+    assert "ESCAPE" in str(compiled)
+    assert set(compiled.params.values()) == {r"%A\_1\%%"}

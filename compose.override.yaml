@@ -1,0 +1,39 @@
+services:
+  api:
+    image: ${PROJECT_NAME:-practice-crm-python}_api_dev:latest
+    build:
+      target: dependencies
+    # The script installs what the lock file added since the volume was filled.
+    # The entry point reloads on change because APP_ENV is development here.
+    command: ['sh', 'scripts/sync-dev-deps.sh', '/app/.venv/bin/python', '-m', 'app.main']
+    volumes:
+      - ./backend:/app
+      - api_venv:/app/.venv
+    environment:
+      APP_ENV: development
+      WATCHFILES_FORCE_POLLING: 'true'
+      PYTHONDONTWRITEBYTECODE: '1'
+      PYTHONUNBUFFERED: '1'
+
+  migrate:
+    image: ${PROJECT_NAME:-practice-crm-python}_migrate_dev:latest
+    build:
+      target: dependencies
+    volumes:
+      - ./backend:/app
+      - api_venv:/app/.venv
+    environment:
+      APP_ENV: development
+      PYTHONDONTWRITEBYTECODE: '1'
+    command:
+      [
+        'sh',
+        'scripts/sync-dev-deps.sh',
+        'sh',
+        '-c',
+        '/app/.venv/bin/alembic upgrade head && /app/.venv/bin/python -m scripts.seed',
+      ]
+
+volumes:
+  api_venv:
+    name: ${PROJECT_NAME:-practice-crm-python}_api_venv

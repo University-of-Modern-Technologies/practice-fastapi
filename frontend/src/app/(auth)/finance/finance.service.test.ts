@@ -73,7 +73,8 @@ describe('toTransactionListQuery', () => {
       pageSize: 20,
       matchStatus: 'UNMATCHED',
       direction: 'CREDIT',
-      bookedFrom: '2026-01-01',
+      // Kyiv midnight of 1 January, as the date-time the API validates.
+      bookedFrom: '2025-12-31T22:00:00.000Z',
     });
   });
 

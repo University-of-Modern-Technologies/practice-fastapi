@@ -16,7 +16,7 @@ import {
 } from '@/components';
 import { ApiError } from '@/shared/api';
 import { useVersionConflict } from '@/shared/hooks';
-import { MatchPanel } from '../../_components';
+import { AutoMatchDisabledTag, MatchPanel } from '../../_components';
 import { useTransaction } from '../../finance.queries';
 import {
   PAYMENT_MATCH_STATUS,
@@ -85,6 +85,7 @@ function TransactionCard({
           <Space wrap>
             <StatusTag dictionary={TRANSACTION_DIRECTION} value={transaction.direction} />
             <StatusTag dictionary={PAYMENT_MATCH_STATUS} value={transaction.matchStatus} />
+            {transaction.autoMatchDisabled ? <AutoMatchDisabledTag /> : null}
           </Space>
         }
       />

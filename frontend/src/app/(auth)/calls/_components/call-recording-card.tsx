@@ -17,6 +17,21 @@ interface CallRecordingCardProps {
 const MAX_TIMER_MS = 2_147_483_647;
 
 /**
+ * The address as a link target, or null when it is not one this page may
+ * offer. It comes from a telephony provider, not from this application, and an
+ * `href` takes whatever scheme it is given — `javascript:` included, which
+ * would run in this page with the operator's session the moment it is clicked.
+ */
+export const playableUrl = (value: string): string | null => {
+  try {
+    const url = new URL(value);
+    return url.protocol === 'https:' || url.protocol === 'http:' ? url.href : null;
+  } catch {
+    return null;
+  }
+};
+
+/**
  * The recording of the conversation, fetched on demand.
  *
  * The address the API hands back expires. That single fact decides the whole
@@ -38,6 +53,7 @@ export function CallRecordingCard({ call }: CallRecordingCardProps) {
   const [isExpired, setIsExpired] = useState(false);
 
   const link = recording.data;
+  const href = link ? playableUrl(link.url) : null;
 
   /**
    * Milliseconds the address still has. Read outside render — the clock moves
@@ -113,9 +129,18 @@ export function CallRecordingCard({ call }: CallRecordingCardProps) {
         />
       ) : null}
 
-      {link && !isExpired ? (
+      {link && !isExpired && href === null ? (
+        <Alert
+          type="error"
+          showIcon
+          message="Адресу запису не можна відкрити"
+          description="Провайдер повернув посилання в непідтримуваному форматі, тому воно не показується як посилання. Спробуйте отримати запис ще раз або зверніться до адміністратора."
+        />
+      ) : null}
+
+      {link && !isExpired && href !== null ? (
         <Space direction="vertical" size="small">
-          <a href={link.url} target="_blank" rel="noreferrer">
+          <a href={href} target="_blank" rel="noopener noreferrer">
             <Space size="small">
               <Download size={16} />
               Відкрити запис

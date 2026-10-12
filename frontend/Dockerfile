@@ -4,19 +4,17 @@ COPY package.json package-lock.json ./
 RUN npm ci
 
 FROM dependencies AS build
-# The API address is read by the browser bundle, so it has to be present while
-# the bundle is produced rather than at container start.
-ARG NEXT_PUBLIC_API_URL=/api/v1
-ARG NEXT_PUBLIC_WS_URL=
-ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
-ENV NEXT_PUBLIC_WS_URL=$NEXT_PUBLIC_WS_URL
 COPY tsconfig.json next.config.mjs postcss.config.mjs ./
 COPY src ./src
+# Rewrites are fixed at build time. Behind nginx `/api` never reaches this
+# server; opened directly on its own port, the client still finds the API.
+ARG API_ORIGIN=http://api:8000
+ENV API_ORIGIN=$API_ORIGIN
 RUN npm run build
 
 FROM node:22-alpine AS runtime
 ENV NODE_ENV=production
-ENV PORT=3100
+ENV PORT=3000
 ENV HOSTNAME=0.0.0.0
 WORKDIR /app
 RUN addgroup --system app && adduser --system --ingroup app app
@@ -25,5 +23,5 @@ RUN addgroup --system app && adduser --system --ingroup app app
 COPY --from=build --chown=app:app /app/.next/standalone ./
 COPY --from=build --chown=app:app /app/.next/static ./.next/static
 USER app
-EXPOSE 3100
+EXPOSE 3000
 CMD ["node", "server.js"]

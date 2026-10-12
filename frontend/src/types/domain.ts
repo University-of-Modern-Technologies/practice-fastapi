@@ -66,8 +66,13 @@ export const ERROR_CODE = {
 export type ErrorCode = (typeof ERROR_CODE)[keyof typeof ERROR_CODE];
 
 /**
- * Shape of `details` on a 400 `VALIDATION_ERROR`. Both backends flatten their
- * validator the same way, which is what lets a message land on its own field.
+ * Shape of `details` on a 400 `VALIDATION_ERROR`. The messages are grouped by
+ * request part, and each one carries the field path inside that part in front
+ * of it — `"email: value is not a valid email address"`, `"items.0.quantity: …"`
+ * — so a message can be put back on its field.
+ *
+ * A message with no path in front (a rule about the whole body, say) is left
+ * by `applyServerErrors` to the generic notification.
  */
 export interface ValidationDetails {
   readonly formErrors?: readonly string[];

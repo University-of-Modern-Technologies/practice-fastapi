@@ -21,11 +21,6 @@ export const dealAmountSchema = z
   .min(1, 'Вкажіть суму')
   .regex(AMOUNT_PATTERN, 'Сума — невідʼємне число, до двох знаків після коми');
 
-export const dealCurrencySchema = z
-  .string()
-  .trim()
-  .regex(/^[A-Za-z]{3}$/, 'Код валюти — три літери, наприклад USD');
-
 export const dealProbabilitySchema = z
   .number({ message: 'Вкажіть ймовірність' })
   .int('Ймовірність — ціле число')
@@ -52,7 +47,11 @@ export interface DealFormValues {
   readonly title: string;
   readonly contactId?: string | undefined;
   readonly amount: string;
-  readonly currency: string;
+  /**
+   * Shown, never sent: the organisation keeps its books in one currency, which
+   * the API fills in on create. Empty on the create route.
+   */
+  readonly currency?: string | undefined;
   readonly probability: number;
   readonly expectedCloseDate?: Dayjs | null | undefined;
 }

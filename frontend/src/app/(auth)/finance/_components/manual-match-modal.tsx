@@ -6,7 +6,8 @@ import { ApiError } from '@/shared/api';
 import { useHasPermission, useMutationFeedback } from '@/shared/hooks';
 import { orderLabel, useOrderOptions, useResolvedOrder } from '../../orders/orders.queries';
 import { useMatchTransaction } from '../finance.queries';
-import { FINANCE_ERROR, type BankTransaction } from '../finance.types';
+import { isVersionConflict } from '../finance.service';
+import { FINANCE_ERROR, FINANCE_ERROR_MESSAGES, type BankTransaction } from '../finance.types';
 
 interface ManualMatchModalProps {
   /** The payment being tied; nothing is shown until the action is started. */
@@ -37,7 +38,8 @@ export function ManualMatchModal({
   onConflict,
 }: ManualMatchModalProps) {
   const [form] = Form.useForm<ManualMatchFormValues>();
-  const { reportSuccess, reportFailure } = useMutationFeedback();
+  const { reportSuccess, reportFailureWith } = useMutationFeedback();
+  const reportFailure = reportFailureWith(FINANCE_ERROR_MESSAGES);
 
   const match = useMatchTransaction(transaction?.id ?? '');
 
@@ -67,15 +69,48 @@ export function ManualMatchModal({
               onMatched();
             },
             onError: (error: unknown) => {
-              if (onConflict(error)) {
+              // Only a lost race is "someone else changed the record". The
+              // domain's own 409s — the payment is already matched — share the
+              // status but not the meaning, and get their own sentence below.
+              if (isVersionConflict(error) && onConflict(error)) {
                 onCancel();
                 return;
               }
               if (error instanceof ApiError) {
+                // The card behind the dialog is stale: the payment was matched
+                // meanwhile. The dialog has nothing left to do, and the card
+                // re-reads itself through the query the mutation invalidated.
+                if (error.code === FINANCE_ERROR.alreadyMatched) {
+                  reportFailure(error);
+                  onCancel();
+                  return;
+                }
+                // Outgoing money is never tied to an order. The card should not
+                // have offered this, so it is stale: nothing to pick here.
+                if (error.code === FINANCE_ERROR.notIncoming) {
+                  reportFailure(error);
+                  onCancel();
+                  return;
+                }
                 // A refusal about the order belongs on the field that names it:
                 // the operator has one picker to change.
                 if (error.code === FINANCE_ERROR.orderNotFound) {
                   form.setFields([{ name: 'orderId', errors: ['Такого замовлення вже немає'] }]);
+                  return;
+                }
+                if (error.code === FINANCE_ERROR.orderAlreadyMatched) {
+                  form.setFields([
+                    { name: 'orderId', errors: ['Це замовлення вже зведено з іншим платежем'] },
+                  ]);
+                  return;
+                }
+                if (error.code === FINANCE_ERROR.currencyMismatch) {
+                  form.setFields([
+                    {
+                      name: 'orderId',
+                      errors: ['Валюта платежу не збігається з валютою цього замовлення'],
+                    },
+                  ]);
                   return;
                 }
                 if (error.code === FINANCE_ERROR.amountMismatch) {
@@ -130,7 +165,7 @@ export function ManualMatchModal({
               label="Замовлення"
               extra={
                 canReadOrders
-                  ? 'Сервер перевірить суму й відмовить, якщо вона не збігається.'
+                  ? 'Сервер перевірить валюту й суму та відмовить, якщо вони не збігаються.'
                   : 'Немає доступу до замовлень'
               }
             >

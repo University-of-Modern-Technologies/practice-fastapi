@@ -1,0 +1,161 @@
+"""HTTP surface of user administration.
+
+Each handler receives the breadth of the caller's grant and decides what it
+means for that operation: for a collection it narrows the query, for a single
+record it constrains which record may be addressed.
+"""
+
+from __future__ import annotations
+
+import uuid
+from typing import Annotated
+
+from fastapi import APIRouter, Depends, Path, Query, Response, status
+
+from app.core.openapi import refusals
+from app.core.pagination import DEFAULT_PAGE_SIZE, MAX_PAGE, MAX_PAGE_SIZE
+from app.core.responses import Envelope, Page
+from app.db.enums import PermissionScope
+from app.modules.auth.dependencies import CurrentAuth, SessionDep, SessionRevocationsDep
+from app.modules.rbac.dependencies import (
+    CurrentActor,
+    RbacServiceDep,
+    ensure_scope_all,
+    ensure_scope_covers,
+    require_permission,
+)
+from app.modules.users.schemas import CreateUserRequest, UpdateUserRequest, UserOut, UserSessionOut
+from app.modules.users.service import UsersService
+
+ReadScope = Annotated[PermissionScope, Depends(require_permission("users", "read"))]
+CreateScope = Annotated[PermissionScope, Depends(require_permission("users", "create"))]
+UpdateScope = Annotated[PermissionScope, Depends(require_permission("users", "update"))]
+DisableScope = Annotated[PermissionScope, Depends(require_permission("users", "disable"))]
+
+#: A path segment published under the contract's name; the handler keeps a readable one.
+SessionId = Annotated[uuid.UUID, Path(alias="sessionId")]
+PageNumber = Annotated[int, Query(ge=1, le=MAX_PAGE)]
+PageSize = Annotated[int, Query(ge=1, le=MAX_PAGE_SIZE, alias="pageSize")]
+
+
+def get_users_service(
+    session: SessionDep, rbac: RbacServiceDep, sessions: SessionRevocationsDep
+) -> UsersService:
+    return UsersService(session, rbac, sessions=sessions)
+
+
+UsersServiceDep = Annotated[UsersService, Depends(get_users_service)]
+
+
+def create_users_router() -> APIRouter:
+    """Builds the router; the prefix is applied by the application factory."""
+    router = APIRouter()
+
+    @router.get(
+        "", tags=["Users"], summary="Переглянути користувачів", responses=refusals(401, 403)
+    )
+    async def list_users(
+        scope: ReadScope,
+        service: UsersServiceDep,
+        page: PageNumber = 1,
+        page_size: PageSize = DEFAULT_PAGE_SIZE,
+    ) -> Envelope[Page[UserOut]]:
+        ensure_scope_all(scope)
+        items, total = await service.list_users(page, page_size)
+        return Envelope(data=Page(items=items, page=page, page_size=page_size, total=total))
+
+    @router.post(
+        "",
+        status_code=status.HTTP_201_CREATED,
+        tags=["Users"],
+        summary="Створити користувача",
+        responses=refusals(401, 403, 404, 409),
+    )
+    async def create_user(
+        payload: CreateUserRequest,
+        scope: CreateScope,
+        actor: CurrentActor,
+        service: UsersServiceDep,
+    ) -> Envelope[UserOut]:
+        ensure_scope_all(scope)
+        return Envelope(data=await service.create(actor, payload))
+
+    @router.get(
+        "/{id}", tags=["Users"], summary="Отримати користувача", responses=refusals(401, 403, 404)
+    )
+    async def get_user(
+        id: uuid.UUID,  # noqa: A002
+        auth: CurrentAuth,
+        scope: ReadScope,
+        service: UsersServiceDep,
+    ) -> Envelope[UserOut]:
+        ensure_scope_covers(scope, auth, id)
+        return Envelope(data=await service.get_by_id(id))
+
+    @router.patch(
+        "/{id}",
+        tags=["Users"],
+        summary="Оновити користувача",
+        responses=refusals(401, 403, 404, 409),
+    )
+    async def update_user(
+        id: uuid.UUID,  # noqa: A002
+        payload: UpdateUserRequest,
+        scope: UpdateScope,
+        actor: CurrentActor,
+        service: UsersServiceDep,
+    ) -> Envelope[UserOut]:
+        ensure_scope_all(scope)
+        return Envelope(data=await service.update(actor, id, payload))
+
+    @router.post(
+        "/{id}/disable",
+        tags=["Users"],
+        summary="Деактивувати користувача",
+        responses=refusals(401, 403, 404, 409),
+    )
+    async def disable_user(
+        id: uuid.UUID,  # noqa: A002
+        scope: DisableScope,
+        actor: CurrentActor,
+        service: UsersServiceDep,
+    ) -> Envelope[UserOut]:
+        ensure_scope_all(scope)
+        return Envelope(data=await service.disable(actor, id))
+
+    @router.get(
+        "/{id}/sessions",
+        tags=["Sessions"],
+        summary="Переглянути сесії користувача",
+        responses=refusals(401, 403, 404),
+    )
+    async def list_user_sessions(
+        id: uuid.UUID,  # noqa: A002
+        auth: CurrentAuth,
+        scope: ReadScope,
+        service: UsersServiceDep,
+    ) -> Envelope[list[UserSessionOut]]:
+        ensure_scope_covers(scope, auth, id)
+        return Envelope(data=await service.list_sessions(id))
+
+    @router.delete(
+        "/{id}/sessions/{sessionId}",
+        tags=["Sessions"],
+        status_code=status.HTTP_204_NO_CONTENT,
+        response_class=Response,
+        summary="Відкликати сесію користувача",
+        responses=refusals(401, 403, 404),
+    )
+    async def revoke_user_session(  # noqa: PLR0913, PLR0917
+        id: uuid.UUID,  # noqa: A002
+        session_id: SessionId,
+        auth: CurrentAuth,
+        scope: UpdateScope,
+        actor: CurrentActor,
+        service: UsersServiceDep,
+    ) -> Response:
+        ensure_scope_covers(scope, auth, id)
+        await service.revoke_session(actor, id, session_id)
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+    return router

@@ -1,3 +1,4 @@
+import { DateTime } from '@/lib/date-time';
 import { ApiError, http } from '@/shared/api';
 import type {
   DealSummary,
@@ -21,18 +22,27 @@ const present = (value: string | undefined | null): value is string =>
  * guarantees that a property added to the deal entity later cannot travel with
  * the request just because it happened to be on the object at runtime.
  */
-export const toDealSummaryBody = (input: DealSummaryInput): Readonly<Record<string, unknown>> => ({
-  id: input.id.trim(),
-  title: input.title.trim(),
-  stage: input.stage.trim(),
-  ...(present(input.amount) ? { amount: input.amount.trim() } : {}),
-  ...(present(input.currency) ? { currency: input.currency.trim().toUpperCase() } : {}),
-  ...(input.probability === undefined || input.probability === null
-    ? {}
-    : { probability: input.probability }),
-  ...(present(input.expectedCloseDate) ? { expectedCloseDate: input.expectedCloseDate } : {}),
-  ...(present(input.notes) ? { notes: input.notes.trim() } : {}),
-});
+export const toDealSummaryBody = (input: DealSummaryInput): Readonly<Record<string, unknown>> => {
+  // The route takes a bare `YYYY-MM-DD`, while a deal record carries the same
+  // day as an instant — sent as read, it is refused with a 400. The day is the
+  // one the card shows next to the deal.
+  const expectedCloseDay = present(input.expectedCloseDate)
+    ? DateTime.toCalendarDate(input.expectedCloseDate.trim())
+    : undefined;
+
+  return {
+    id: input.id.trim(),
+    title: input.title.trim(),
+    stage: input.stage.trim(),
+    ...(present(input.amount) ? { amount: input.amount.trim() } : {}),
+    ...(present(input.currency) ? { currency: input.currency.trim().toUpperCase() } : {}),
+    ...(input.probability === undefined || input.probability === null
+      ? {}
+      : { probability: input.probability }),
+    ...(expectedCloseDay === undefined ? {} : { expectedCloseDate: expectedCloseDay }),
+    ...(present(input.notes) ? { notes: input.notes.trim() } : {}),
+  };
+};
 
 export const toInquiryBody = (
   input: InquiryClassificationInput,

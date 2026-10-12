@@ -7,7 +7,7 @@ import { useCallback, useState, type ReactNode } from 'react';
 // same schema the API mirrors, so a field is described in exactly one place.
 import { applyServerErrors, zodRule } from '@/components';
 import { ApiError } from '@/shared/api';
-import { useMutationFeedback, useUnsavedChanges } from '@/shared/hooks';
+import { useMutationFeedback, useRecordForm } from '@/shared/hooks';
 import { ERROR_CODE } from '@/types/domain';
 import { useCreateContact, useUpdateContact } from '../contacts.queries';
 import type {
@@ -38,6 +38,11 @@ const toCreateInput = (values: ContactFormValues): CreateContactInput => ({
  * screen becomes an explicit `null` — "clear this" — while a field left alone
  * stays out of the body entirely, so two people editing different fields of the
  * same contact do not overwrite each other.
+ *
+ * `initial` has to be the copy the form was filled from, not whatever the cache
+ * holds by the time the user presses save: diffed against a fresher copy, a
+ * field nobody touched reads as "changed back" and quietly reverts the other
+ * person's edit.
  */
 const toUpdateInput = (initial: Contact, values: ContactFormValues): UpdateContactInput => {
   const patch: Record<string, string | null> = {};
@@ -88,14 +93,23 @@ export const useContactForm = ({ contact }: UseContactFormOptions = {}): UseCont
   const { reportSuccess, reportFailure } = useMutationFeedback();
 
   const isEditMode = contact !== undefined;
-  const [hasChanges, setHasChanges] = useState(false);
+  // `base` is the copy the fields were filled from; a refetch while the user
+  // types does not replace it, so the diff below stays against what they saw.
+  const {
+    base,
+    isDirty: hasChanges,
+    markDirty,
+    adopt,
+  } = useRecordForm({
+    form,
+    record: contact,
+    toValues: toFormValues,
+  });
   const [channelError, setChannelError] = useState<string | null>(null);
   const [duplicateError, setDuplicateError] = useState<string | null>(null);
 
   const createContact = useCreateContact();
   const updateContact = useUpdateContact(contact?.id ?? '');
-
-  useUnsavedChanges(hasChanges);
 
   const showChannelError = useCallback(() => {
     setChannelError(CONTACT_CHANNEL_MESSAGE);
@@ -134,21 +148,21 @@ export const useContactForm = ({ contact }: UseContactFormOptions = {}): UseCont
       }
 
       try {
-        if (contact) {
-          const patch = toUpdateInput(contact, values);
+        if (base) {
+          const patch = toUpdateInput(base, values);
           if (Object.keys(patch).length === 0) {
             reportSuccess('Змін немає');
-            setHasChanges(false);
+            adopt(base);
             return;
           }
-          await updateContact.mutateAsync(patch);
-          setHasChanges(false);
+          const saved = await updateContact.mutateAsync(patch);
+          adopt(saved);
           reportSuccess('Контакт збережено');
           return;
         }
 
         const created = await createContact.mutateAsync(toCreateInput(values));
-        setHasChanges(false);
+        adopt(created);
         reportSuccess('Контакт створено');
         router.push(`/contacts/${created.id}`);
       } catch (error) {
@@ -156,7 +170,8 @@ export const useContactForm = ({ contact }: UseContactFormOptions = {}): UseCont
       }
     },
     [
-      contact,
+      adopt,
+      base,
       createContact,
       updateContact,
       router,
@@ -173,8 +188,8 @@ export const useContactForm = ({ contact }: UseContactFormOptions = {}): UseCont
       form={form}
       layout="vertical"
       requiredMark
-      {...(contact ? { initialValues: toFormValues(contact) } : {})}
-      onValuesChange={() => setHasChanges(true)}
+      {...(base ? { initialValues: toFormValues(base) } : {})}
+      onValuesChange={markDirty}
       onFinish={(values) => void save(values)}
     >
       {channelError ? (

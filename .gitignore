@@ -1,11 +1,16 @@
+# Local configuration: real values stay on the machine, .env.example is tracked
+.env
+.env.*
+!.env.example
+.portainer-password
+
+# Tooling
+node_modules/
 .venv/
 __pycache__/
-*.py[cod]
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
-.coverage
-coverage.xml
-htmlcov/
-.env
-.env.local
+
+# Editors and OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

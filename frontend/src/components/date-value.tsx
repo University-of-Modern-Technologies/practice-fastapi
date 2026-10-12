@@ -8,8 +8,11 @@ interface DateValueProps {
 }
 
 export function DateValue({ value, withTime = false }: DateValueProps) {
-  const text = withTime ? DateTime.toDateTime(value) : DateTime.toDate(value);
-  if (!value) return <span className="numeric">{text}</span>;
+  // A calendar date has no time of day: "01.09.2026 00:00" would claim a
+  // midnight nobody entered, so it is shown as the day alone, with no hover.
+  const isDay = DateTime.isCalendarDate(value);
+  const text = withTime && !isDay ? DateTime.toDateTime(value) : DateTime.toDate(value);
+  if (!value || isDay) return <span className="numeric">{text}</span>;
 
   // The full instant is one hover away even in a column that shows only a date.
   return (

@@ -38,6 +38,7 @@ const unmatched: BankTransaction = {
   matchedOrderId: null,
   matchedAt: null,
   matchedById: null,
+  autoMatchDisabled: false,
   version: 1,
   createdAt: '2026-01-21T10:05:00.000Z',
   updatedAt: '2026-01-21T10:05:00.000Z',
@@ -87,6 +88,14 @@ describe('Платежі — розбіжність є робочим стано
 
     await screen.findByText('Не зведено');
     expect(screen.getByPlaceholderText('Призначення або контрагент')).toBeInTheDocument();
+  });
+
+  it('позначає в переліку платіж, з якого людина зняла зведення', async () => {
+    vi.mocked(http.get).mockResolvedValue(pageOf([{ ...unmatched, autoMatchDisabled: true }]));
+    showList(['finance:read']);
+
+    await screen.findByText('Не зведено');
+    expect(screen.getByText('Без автозведення')).toBeInTheDocument();
   });
 
   // Every state is offered, including the two that need nothing done to them:

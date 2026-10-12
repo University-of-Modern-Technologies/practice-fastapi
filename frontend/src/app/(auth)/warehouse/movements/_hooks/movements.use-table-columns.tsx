@@ -17,6 +17,20 @@ interface Options {
 }
 
 /**
+ * The quantity as the ledger means it. Every movement but an adjustment is a
+ * positive amount whose direction the type already names. An adjustment keeps
+ * its sign — a write-off is negative — so it is printed with one either way,
+ * and never folded into an absolute value that would read as a receipt.
+ */
+export const formatMovementQuantity = (
+  movement: Pick<StockMovement, 'type' | 'quantity'>,
+): string => {
+  if (movement.type !== 'ADJUSTMENT' || movement.quantity === 0) return String(movement.quantity);
+  // U+2212, the minus sign: the hyphen is narrower and reads as a dash in a column.
+  return movement.quantity > 0 ? `+${movement.quantity}` : `\u2212${-movement.quantity}`;
+};
+
+/**
  * The ledger is append-only, so there is no action column: a movement cannot be
  * edited or removed, only answered with a compensating adjustment.
  */
@@ -58,7 +72,9 @@ export const useMovementColumns = ({ warehouseLabels }: Options): DataTableColum
         dataIndex: 'quantity',
         width: 110,
         align: 'right',
-        render: (value: number) => <span className="numeric">{value}</span>,
+        render: (_value: number, row: StockMovement) => (
+          <span className="numeric">{formatMovementQuantity(row)}</span>
+        ),
       },
       {
         key: 'reference',

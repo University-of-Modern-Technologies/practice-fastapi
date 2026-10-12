@@ -206,3 +206,42 @@ describe('Картка звернення — чужий запис', () => {
     expect(screen.getByText(/недоступний вашій області доступу/)).toBeInTheDocument();
   });
 });
+
+describe('Картка звернення — закрите звернення', () => {
+  it('показує закрите звернення лише для перегляду, без кнопки збереження', async () => {
+    await openCard('CLOSED');
+
+    expect(
+      screen.getByText('Звернення закрито — дані доступні лише для перегляду'),
+    ).toBeInTheDocument();
+    expect(screen.getByLabelText('Тема')).toBeDisabled();
+    expect(screen.queryByRole('button', { name: 'Зберегти' })).not.toBeInTheDocument();
+  });
+
+  // Resolved is not final: the ticket can be reopened, so it keeps its form.
+  it('розвʼязане звернення й далі дає правити', async () => {
+    await openCard('RESOLVED');
+
+    expect(screen.getByLabelText('Тема')).not.toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Зберегти' })).toBeInTheDocument();
+  });
+
+  it('на гонку з закриттям пояснює причину, а не пропонує зберегти ще раз', async () => {
+    vi.mocked(http.patch).mockReset();
+    vi.mocked(http.patch).mockRejectedValueOnce(
+      apiError(409, 'TICKET_CLOSED', { status: 'CLOSED' }),
+    );
+    await openCard('OPEN');
+
+    vi.mocked(http.get).mockResolvedValue({ ...ticket('CLOSED'), version: 4 });
+    fireEvent.click(screen.getByRole('button', { name: 'Зберегти' }));
+
+    expect(
+      await screen.findByText('Звернення вже закрито — його дані більше не змінюються'),
+    ).toBeInTheDocument();
+    expect(screen.queryByText('Запис змінив інший користувач')).not.toBeInTheDocument();
+    expect(
+      await screen.findByText('Звернення закрито — дані доступні лише для перегляду'),
+    ).toBeInTheDocument();
+  });
+});

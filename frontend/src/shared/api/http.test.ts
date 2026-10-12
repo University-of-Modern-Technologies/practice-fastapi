@@ -142,6 +142,65 @@ describe('http client', () => {
     expect(listener).toHaveBeenCalledWith(null);
   });
 
+  // A restarting API says nothing about the refresh cookie. Treating its 5xx as
+  // "signed out" threw the user to the login page with their edits lost.
+  it('keeps the session when the renewal fails on the server side', async () => {
+    const { getAccessToken, http, onSession, setAccessToken } = await loadHttp();
+    setAccessToken('expired');
+    const listener = vi.fn();
+    onSession(listener);
+
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn()
+        .mockResolvedValueOnce(json(401, { error: { code: 'UNAUTHORIZED' } }))
+        .mockResolvedValueOnce(new Response('<html>502</html>', { status: 502 })),
+    );
+
+    const error = await http.get('/contacts').catch((cause: unknown) => cause);
+
+    expect(error).toMatchObject({ status: 502 });
+    expect(getAccessToken()).toBe('expired');
+    expect(listener).not.toHaveBeenCalled();
+  });
+
+  it('keeps the session when the renewal cannot reach the API at all', async () => {
+    const { getAccessToken, http, onSession, setAccessToken } = await loadHttp();
+    setAccessToken('expired');
+    const listener = vi.fn();
+    onSession(listener);
+
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn()
+        .mockResolvedValueOnce(json(401, { error: { code: 'UNAUTHORIZED' } }))
+        .mockRejectedValueOnce(new TypeError('Failed to fetch')),
+    );
+
+    const error = await http.get('/contacts').catch((cause: unknown) => cause);
+
+    expect(error).toMatchObject({ status: 0, code: 'NETWORK_ERROR' });
+    expect(getAccessToken()).toBe('expired');
+    expect(listener).not.toHaveBeenCalled();
+  });
+
+  it('tells an anonymous cold load from an API that could not answer', async () => {
+    const { restoreSession } = await loadHttp();
+
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn()
+        .mockResolvedValueOnce(json(401, { error: { code: 'REFRESH_TOKEN_REQUIRED' } }))
+        .mockResolvedValueOnce(json(503, { error: { code: 'SERVICE_UNAVAILABLE' } })),
+    );
+
+    await expect(restoreSession()).resolves.toBeNull();
+    await expect(restoreSession()).rejects.toMatchObject({ status: 503 });
+  });
+
   it('reads a downloaded file as a blob and names it from the response header', async () => {
     const { http } = await loadHttp();
     vi.stubGlobal(
@@ -162,8 +221,10 @@ describe('http client', () => {
     });
 
     expect(file.filename).toBe('sales-summary.csv');
-    // jsdom's Blob does not implement `.text()`; size is what is left to assert on.
-    expect(file.blob).toBeInstanceOf(Blob);
+    // `Response.blob()` and jsdom each bring a Blob class of their own, so the
+    // check is by tag rather than instanceof; size is what is left to assert on.
+    expect(Object.prototype.toString.call(file.blob)).toBe('[object Blob]');
+    expect(file.blob.type).toBe('text/csv;charset=utf-8');
     expect(file.blob.size).toBe('a,b\n1,2'.length);
   });
 

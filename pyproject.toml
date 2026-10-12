@@ -1,95 +1,39 @@
 [project]
-name = "practice-crm-python-backend"
+name = "practice-crm"
 version = "1.0.0"
-description = "Навчальна CRM API на FastAPI"
+description = "Навчальна CRM: запуск стека, локальна розробка й обслуговування"
 requires-python = "==3.13.*"
-dependencies = [
-    "fastapi==0.141.1",
-    "uvicorn[standard]==0.52.1",
-    "pydantic==2.13.4",
-    "pydantic-settings==2.15.0",
-    "email-validator==2.3.0",
-    "sqlalchemy[asyncio]==2.0.52",
-    "alembic==1.19.1",
-    "asyncpg==0.31.0",
-    "pyjwt==2.13.0",
-    "bcrypt==5.0.0",
-    "redis==8.1.0",
-    "pymongo==4.17.0",
-    "structlog==26.1.0",
-    "prometheus-client==0.26.0",
-    # Outbound HTTP: the assistant's endpoint provider and the carrier transport.
-    "httpx==0.28.1",
-]
+dependencies = []
 
 [dependency-groups]
-dev = [
-    "pytest==9.1.1",
-    "pytest-asyncio==1.4.0",
-    "pytest-cov==7.1.0",
-    "ruff==0.16.2",
-    "mypy==2.3.0",
-    "faker==40.36.0",
-]
+dev = ["poethepoet==0.48.0", "prek==0.5.3"]
 
 [tool.uv]
-# The application is run from the project root rather than installed, so uv only
-# has to resolve the dependency set.
 package = false
+
+[tool.poe.tasks]
+setup = { cmd = "python scripts/stack.py setup", help = "Create .env files with fresh secrets and check the ports" }
+"local:install" = { cmd = "python scripts/stack.py local:install", help = "Install the backend and web client dependencies on this machine" }
+"local:api" = { cmd = "python scripts/stack.py local:api", help = "docker:db, then the API on this machine with reload; Ctrl+C stops it" }
+"local:web" = { cmd = "python scripts/stack.py local:web", help = "The web client on this machine with hot reload; Ctrl+C stops it" }
+"docker:db" = { cmd = "python scripts/stack.py docker:db", help = "PostgreSQL, Redis and MongoDB in Docker, with migrations and the seed" }
+"docker:api" = { cmd = "python scripts/stack.py docker:api", help = "docker:db plus the API in Docker; the API reloads on save" }
+"docker:all" = { cmd = "python scripts/stack.py docker:all", help = "docker:api plus the web client and nginx: the whole system in Docker" }
+"docker:prod" = { cmd = "python scripts/stack.py docker:prod", help = "Build and run the whole system from production images" }
+"docker:build" = { cmd = "python scripts/stack.py docker:build", help = "Build the production images without starting them" }
+"docker:stop" = { cmd = "python scripts/stack.py docker:stop", help = "Stop everything this stack runs in Docker; data is kept" }
+"docker:clean" = { cmd = "python scripts/stack.py docker:clean", help = "Stop everything and delete the databases" }
+"docker:logs" = { cmd = "python scripts/stack.py docker:logs", help = "Follow the logs; pass a service name to narrow" }
+"docker:ps" = { cmd = "python scripts/stack.py docker:ps", help = "Show the state of each container" }
+"docker:portainer" = { cmd = "python scripts/stack.py docker:portainer", help = "Start Portainer for containers and logs" }
+"db:migrate" = { cmd = "python scripts/stack.py db:migrate", help = "Apply migrations and the seed in Docker" }
+"db:seed:demo" = { cmd = "python scripts/stack.py db:seed:demo", help = "Load the demonstration data set in Docker" }
+test = { cmd = "python scripts/stack.py test", help = "Run the backend and web client unit tests" }
+"test:integration" = { cmd = "python scripts/stack.py test:integration", help = "Run the integration tests against docker:db" }
+check = { cmd = "python scripts/stack.py check", help = "Run the API and web client checks of CI: formatting, lint, types, unit tests, build" }
+"check:api" = { cmd = "python scripts/stack.py check:api", help = "Run the backend checks of CI" }
+"check:web" = { cmd = "python scripts/stack.py check:web", help = "Run the web client checks of CI" }
 
 [tool.ruff]
 line-length = 100
 target-version = "py313"
-src = ["."]
-
-[tool.ruff.lint]
-select = [
-    "E", "W",   # pycodestyle
-    "F",        # pyflakes
-    "I",        # import sorting
-    "N",        # naming
-    "UP",       # pyupgrade
-    "B",        # bugbear
-    "A",        # builtin shadowing
-    "C4",       # comprehensions
-    "DTZ",      # naive datetimes
-    "PT",       # pytest style
-    "RET",      # return simplifications
-    "SIM",      # simplifications
-    "ARG",      # unused arguments
-    "PL",       # pylint subset
-    "RUF",
-]
-ignore = [
-    # FastAPI dependency defaults are function calls by design.
-    "B008",
-]
-
-[tool.ruff.lint.per-file-ignores]
-"tests/*" = ["PLR2004"]
-
-[tool.mypy]
-python_version = "3.13"
-strict = true
-warn_unreachable = true
-plugins = ["pydantic.mypy"]
-files = ["app", "tests", "scripts", "migrations"]
-
-[[tool.mypy.overrides]]
-module = ["uvicorn.*"]
-ignore_missing_imports = true
-
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-# The application is run from the project root rather than installed, so the
-# root has to be on the import path for `app` to resolve.
-pythonpath = ["."]
-asyncio_mode = "auto"
-addopts = "--strict-markers --strict-config"
-markers = [
-    "integration: requires a live PostgreSQL, Redis or MongoDB instance",
-]
-
-[tool.coverage.run]
-source = ["app"]
-branch = true

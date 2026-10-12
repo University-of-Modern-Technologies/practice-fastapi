@@ -29,6 +29,12 @@ export interface Order extends Timestamps, Versioned {
   readonly ownerId: Id;
   readonly contactId: Id | null;
   readonly dealId: Id | null;
+  /**
+   * The warehouse the order's stock is reserved in. Written on confirmation, so
+   * a draft has none; an order confirmed before the field existed may have none
+   * either, and the server then resolves the warehouse itself.
+   */
+  readonly warehouseId: Id | null;
   readonly status: OrderStatus;
   readonly currency: CurrencyCode;
   readonly subtotal: MoneyWire;
@@ -91,7 +97,9 @@ export interface CreateOrderItemInput {
 /**
  * `orderNumber`, `status` and the totals are deliberately absent: the first two
  * are allocated by the server and the totals are derived from the lines, so
- * sending any of them is rejected rather than honoured.
+ * sending any of them is rejected rather than honoured. `currency` may be sent
+ * but is not: the organisation keeps its books in one currency, which the API
+ * fills in, and any other is refused with `CURRENCY_NOT_SUPPORTED`.
  */
 export interface CreateOrderInput {
   readonly ownerId?: Id;
@@ -143,6 +151,8 @@ export const ORDER_ERROR = {
   insufficientStock: 'INSUFFICIENT_STOCK',
   productInactive: 'PRODUCT_INACTIVE',
   numberUnavailable: 'ORDER_NUMBER_UNAVAILABLE',
+  notDeletable: 'ORDER_NOT_DELETABLE',
+  currencyNotSupported: 'CURRENCY_NOT_SUPPORTED',
 } as const;
 
 /**
@@ -153,12 +163,26 @@ export const ORDER_ERROR_MESSAGES: Readonly<Record<string, string>> = {
   [ORDER_ERROR.notEditable]: 'Замовлення вже підтверджено — позиції не змінюються',
   [ORDER_ERROR.noItems]: 'Додайте хоча б одну позицію',
   [ORDER_ERROR.itemDuplicate]: 'Цей товар уже є в замовленні, змініть кількість',
-  [ORDER_ERROR.currencyMismatch]: 'Валюту не можна змінити, поки в замовленні є позиції',
+  [ORDER_ERROR.currencyMismatch]: 'Валюта товару не збігається з валютою замовлення',
   [ORDER_ERROR.invalidTransition]: 'Такий перехід статусу недоступний',
   [ORDER_ERROR.insufficientStock]: 'Недостатньо залишку для підтвердження',
   [ORDER_ERROR.productInactive]: 'Товар вимкнено — його не можна додати до замовлення',
   [ORDER_ERROR.numberUnavailable]: 'Не вдалося виділити номер замовлення, спробуйте ще раз',
+  [ORDER_ERROR.notDeletable]:
+    'Видалити можна лише чернетку або скасоване замовлення — спершу скасуйте його',
+  [ORDER_ERROR.currencyNotSupported]:
+    'Замовлення ведуться лише у валюті організації — іншу валюту не прийнято',
 };
+
+/**
+ * Only an order that never reserved anything, or whose reservation was given
+ * back, may disappear: deleting a confirmed or paid one would strand its stock.
+ * The API refuses the rest with `ORDER_NOT_DELETABLE`.
+ */
+export const ORDER_DELETABLE_STATUSES: readonly OrderStatus[] = ['DRAFT', 'CANCELLED'];
+
+export const isOrderDeletable = (status: OrderStatus): boolean =>
+  ORDER_DELETABLE_STATUSES.includes(status);
 
 /** Every 409 whose code names a rule of the domain rather than a lost race. */
 const ORDER_REFUSALS: ReadonlySet<string> = new Set(Object.keys(ORDER_ERROR_MESSAGES));

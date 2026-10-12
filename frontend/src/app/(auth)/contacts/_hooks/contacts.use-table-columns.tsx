@@ -89,12 +89,22 @@ export const useContactsTableColumns = ({
         render: (_value: unknown, row: Contact) => (
           // Stops the row's own navigation from firing under the buttons.
           <Space size={4} onClick={(event) => event.stopPropagation()}>
-            <PermissionGate resource="contacts" action="write" fallback={null}>
+            <PermissionGate
+              resource="contacts"
+              action="write"
+              ownerId={row.ownerId}
+              fallback={null}
+            >
               <Link href={`/contacts/${row.id}`}>
                 <Button type="text" size="small" icon={<Pencil size={15} />} title="Редагувати" />
               </Link>
             </PermissionGate>
-            <PermissionGate resource="contacts" action="delete" fallback={null}>
+            <PermissionGate
+              resource="contacts"
+              action="delete"
+              ownerId={row.ownerId}
+              fallback={null}
+            >
               <DeleteConfirm
                 title="Видалити контакт?"
                 description={`${row.lastName} ${row.firstName} зникне зі списку.`}

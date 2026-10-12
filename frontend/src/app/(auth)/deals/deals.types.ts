@@ -74,7 +74,11 @@ export interface DealListQuery {
   readonly sortOrder?: 'asc' | 'desc';
 }
 
-/** A new deal always starts at `LEAD`, so the stage is not part of the input. */
+/**
+ * A new deal always starts at `LEAD`, so the stage is not part of the input.
+ * `currency` may be left out, and the form does leave it out: the organisation
+ * keeps its books in one currency, which the API fills in by itself.
+ */
 export interface CreateDealInput {
   readonly ownerId?: Id;
   readonly contactId?: Id;
@@ -112,7 +116,25 @@ export const DEAL_ERROR = {
   conflict: 'DEAL_CONCURRENT_MODIFICATION',
   transition: 'INVALID_DEAL_STAGE_TRANSITION',
   probability: 'INVALID_DEAL_PROBABILITY',
+  closed: 'DEAL_CLOSED',
+  currencyNotSupported: 'CURRENCY_NOT_SUPPORTED',
 } as const;
+
+/**
+ * A refused write names a condition the operator can act on, so each code gets
+ * its own sentence instead of a generic «перевірте дані».
+ */
+export const DEAL_ERROR_MESSAGES: Readonly<Record<string, string>> = {
+  [DEAL_ERROR.closed]: 'Угоду вже закрито — її дані більше не змінюються',
+  [DEAL_ERROR.currencyNotSupported]:
+    'Угоди ведуться лише у валюті організації — іншу валюту не прийнято',
+};
+
+/**
+ * A won or lost deal is settled: its fields are a record of what happened, and
+ * the API refuses to edit them with `DEAL_CLOSED`. Deleting it is still allowed.
+ */
+export const isDealClosed = (stage: DealStage): boolean => stage === 'WON' || stage === 'LOST';
 
 /** `details` of a refused transition: what the record was, and where it may go. */
 export interface DealTransitionDetails {

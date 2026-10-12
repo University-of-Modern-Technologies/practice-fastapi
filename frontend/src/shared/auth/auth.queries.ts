@@ -1,7 +1,7 @@
 'use client';
 
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { setAccessToken, type Session } from '@/shared/api';
+import { restoreSession, setAccessToken, type Session } from '@/shared/api';
 import { useAuthStore } from '@/shared/stores';
 import { AuthService, type LoginInput } from './auth.service';
 
@@ -18,6 +18,21 @@ export const applySession = (session: Session): void => {
 export const clearSession = (): void => {
   setAccessToken(null);
   useAuthStore.getState().clearSession();
+};
+
+/**
+ * Probes the refresh cookie on a cold load, and again when the user asks to
+ * retry. Never leaves the status at `unknown`: an anonymous visit becomes
+ * `anonymous`, an API that could not answer becomes `unreachable`, and a live
+ * session arrives through the `onSession` bridge.
+ */
+export const resumeSession = async (): Promise<void> => {
+  try {
+    const token = await restoreSession();
+    if (!token) clearSession();
+  } catch {
+    useAuthStore.getState().markUnreachable();
+  }
 };
 
 export const useLogin = () => {

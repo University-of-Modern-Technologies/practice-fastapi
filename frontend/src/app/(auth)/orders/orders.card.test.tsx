@@ -38,6 +38,7 @@ const order = (status: OrderStatus): Order => ({
   ownerId: '00000000-0000-0000-0000-000000000001',
   contactId: null,
   dealId: null,
+  warehouseId: status === 'DRAFT' ? null : '44444444-4444-4444-4444-444444444444',
   status,
   currency: 'USD',
   subtotal: '300.00',
@@ -266,5 +267,79 @@ describe('Картка замовлення — повторення', () => {
     await waitFor(() => {
       expect(screen.queryByRole('button', { name: /Повторити/ })).not.toBeInTheDocument();
     });
+  });
+});
+
+describe('Картка замовлення — видалення', () => {
+  const ALL = ['orders:read', 'orders:write', 'orders:delete'];
+
+  const openWithDelete = async (status: OrderStatus): Promise<void> => {
+    showCard(status, ALL);
+    await screen.findByText('Замовлення ORD-1042');
+  };
+
+  it('пропонує видалити чернетку', async () => {
+    await openWithDelete('DRAFT');
+
+    expect(screen.getByRole('button', { name: /Видалити/ })).toBeInTheDocument();
+  });
+
+  it('пропонує видалити скасоване замовлення', async () => {
+    await openWithDelete('CANCELLED');
+
+    expect(screen.getByRole('button', { name: /Видалити/ })).toBeInTheDocument();
+  });
+
+  // A confirmed or paid order holds stock; deleting it would strand the units.
+  it.each<OrderStatus>(['CONFIRMED', 'PAID', 'FULFILLED'])(
+    'не пропонує видалити замовлення у статусі %s',
+    async (status) => {
+      await openWithDelete(status);
+
+      expect(screen.queryByRole('button', { name: /Видалити/ })).not.toBeInTheDocument();
+    },
+  );
+
+  it('на гонку з підтвердженням пояснює, що видалити не можна, а не пропонує перечитати', async () => {
+    vi.mocked(http.delete).mockReset();
+    vi.mocked(http.delete).mockRejectedValueOnce(
+      new ApiError({
+        status: 409,
+        code: 'ORDER_NOT_DELETABLE',
+        message: 'Відмова',
+        details: { status: 'CONFIRMED' },
+      }),
+    );
+    await openWithDelete('DRAFT');
+
+    fireEvent.click(screen.getByRole('button', { name: /Видалити/ }));
+    const confirm = await screen.findAllByRole('button', { name: 'Видалити' });
+    fireEvent.click(confirm.at(-1) as HTMLElement);
+
+    expect(
+      await screen.findByText(
+        'Видалити можна лише чернетку або скасоване замовлення — спершу скасуйте його',
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText('Запис змінив інший користувач')).not.toBeInTheDocument();
+  });
+});
+
+describe('Картка замовлення — валюта організації', () => {
+  it('показує валюту, але не дає її змінити навіть у чернетці', async () => {
+    await openCard('DRAFT');
+
+    expect(screen.getByLabelText('Валюта')).toBeDisabled();
+    expect(screen.getByLabelText('Знижка')).not.toBeDisabled();
+  });
+
+  it('не надсилає валюту під час збереження чернетки', async () => {
+    vi.mocked(http.patch).mockResolvedValueOnce({ ...order('DRAFT'), version: 5 });
+    await openCard('DRAFT');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Зберегти' }));
+
+    await waitFor(() => expect(http.patch).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(http.patch).mock.calls[0]?.[1]).not.toHaveProperty('currency');
   });
 });
