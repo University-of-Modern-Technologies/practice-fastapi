@@ -68,7 +68,8 @@ WriteAccess = Annotated[ProductAccess, Depends(_require_access("write"))]
 DeleteAccess = Annotated[ProductAccess, Depends(_require_access("delete"))]
 
 ListParams = Annotated[ProductListParams, Query()]
-ProductId = Annotated[uuid.UUID, Path()]
+#: Published as `{id}`, the contract's name; the handlers keep a readable one.
+ProductId = Annotated[uuid.UUID, Path(alias="id")]
 #: A delete carries its version in the query string: the request has no body.
 DeleteVersion = Annotated[int, Query(ge=1)]
 
@@ -101,7 +102,7 @@ def create_products_router() -> APIRouter:
     ) -> Envelope[ProductOut]:
         return Envelope(data=await service.create(access, payload))
 
-    @router.get("/{product_id}", summary="Отримати товар", responses=refusals(401, 403, 404))
+    @router.get("/{id}", summary="Отримати товар", responses=refusals(401, 403, 404))
     async def get_product(
         product_id: ProductId,
         _access: ReadAccess,
@@ -109,7 +110,7 @@ def create_products_router() -> APIRouter:
     ) -> Envelope[ProductOut]:
         return Envelope(data=await service.get_by_id(product_id))
 
-    @router.patch("/{product_id}", summary="Оновити товар", responses=refusals(401, 403, 404, 409))
+    @router.patch("/{id}", summary="Оновити товар", responses=refusals(401, 403, 404, 409))
     async def update_product(
         product_id: ProductId,
         payload: UpdateProductRequest,
@@ -119,7 +120,7 @@ def create_products_router() -> APIRouter:
         return Envelope(data=await service.update(access, product_id, payload))
 
     @router.delete(
-        "/{product_id}",
+        "/{id}",
         status_code=status.HTTP_204_NO_CONTENT,
         response_class=Response,
         summary="Видалити товар",

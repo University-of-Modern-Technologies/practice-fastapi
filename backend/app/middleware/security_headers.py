@@ -42,7 +42,7 @@ class SecurityHeadersMiddleware:
 
     def __init__(self, app: ASGIApp, *, csp_exempt_paths: frozenset[str] = frozenset()) -> None:
         self.app = app
-        # The interactive documentation pulls its bundle from a CDN, so the
+        # The interactive documentation boots from an inline script, so the
         # policy above would blank the page. Those two routes are exempted
         # rather than the policy being weakened for the whole application.
         self.csp_exempt_paths = csp_exempt_paths

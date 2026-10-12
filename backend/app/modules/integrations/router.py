@@ -85,11 +85,16 @@ ShipmentIdParam = Annotated[ShipmentId, Path()]
 
 def create_integrations_router() -> APIRouter:
     """Builds the router; the prefix is applied by the application factory."""
-    router = APIRouter(tags=["Integrations"])
+    router = APIRouter()
 
     # Circuit state is an operational detail, so it stays behind the same read
     # permission as the rest of the module rather than being exposed publicly.
-    @router.get("/health", summary="Стан інтеграції з перевізником", responses=refusals(401, 403))
+    @router.get(
+        "/health",
+        tags=["Integrations"],
+        summary="Стан інтеграції з перевізником",
+        responses=refusals(401, 403),
+    )
     async def integration_health(
         _scope: ReadScope,
         service: IntegrationsServiceDep,
@@ -98,6 +103,7 @@ def create_integrations_router() -> APIRouter:
 
     @router.post(
         "/delivery/quotes",
+        tags=["Delivery"],
         summary="Розрахувати вартість доставки",
         responses=refusals(401, 403, 422, 502, 503, 504),
     )
@@ -111,6 +117,7 @@ def create_integrations_router() -> APIRouter:
     @router.post(
         "/delivery/shipments",
         status_code=status.HTTP_201_CREATED,
+        tags=["Delivery"],
         summary="Створити відправлення",
         responses=refusals(401, 403, 422, 502, 503, 504),
     )
@@ -123,6 +130,7 @@ def create_integrations_router() -> APIRouter:
 
     @router.get(
         "/delivery/shipments/{id}",
+        tags=["Delivery"],
         summary="Статус відправлення",
         responses=refusals(401, 403, 404, 422, 502, 503, 504),
     )

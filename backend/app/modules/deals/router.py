@@ -73,9 +73,9 @@ DeleteAccess = Annotated[DealAccess, Depends(get_delete_access)]
 
 def create_deals_router() -> APIRouter:
     """Builds the router; the prefix is applied by the application factory."""
-    router = APIRouter(tags=["Deals"])
+    router = APIRouter()
 
-    @router.get("", summary="Переглянути угоди", responses=refusals(401, 403))
+    @router.get("", tags=["Deals"], summary="Переглянути угоди", responses=refusals(401, 403))
     async def list_deals(
         access: ReadAccess,
         service: DealsServiceDep,
@@ -89,6 +89,7 @@ def create_deals_router() -> APIRouter:
     @router.post(
         "",
         status_code=status.HTTP_201_CREATED,
+        tags=["Deals"],
         summary="Створити угоду",
         responses=refusals(401, 403, 404),
     )
@@ -99,7 +100,9 @@ def create_deals_router() -> APIRouter:
     ) -> Envelope[DealOut]:
         return Envelope(data=await service.create(access, payload))
 
-    @router.get("/{id}", summary="Отримати угоду", responses=refusals(401, 403, 404))
+    @router.get(
+        "/{id}", tags=["Deals"], summary="Отримати угоду", responses=refusals(401, 403, 404)
+    )
     async def get_deal(
         id: uuid.UUID,  # noqa: A002
         access: ReadAccess,
@@ -108,7 +111,10 @@ def create_deals_router() -> APIRouter:
         return Envelope(data=await service.get_by_id(access, id))
 
     @router.patch(
-        "/{id}", summary="Оновити угоду без зміни stage", responses=refusals(401, 403, 404, 409)
+        "/{id}",
+        tags=["Deals"],
+        summary="Оновити угоду без зміни stage",
+        responses=refusals(401, 403, 404, 409),
     )
     async def update_deal(
         id: uuid.UUID,  # noqa: A002
@@ -138,6 +144,7 @@ def create_deals_router() -> APIRouter:
         "/{id}",
         status_code=status.HTTP_204_NO_CONTENT,
         response_class=Response,
+        tags=["Deals"],
         summary="Видалити угоду",
         responses=refusals(401, 403, 404, 409),
     )

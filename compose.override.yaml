@@ -3,8 +3,11 @@ services:
     image: ${PROJECT_NAME:-practice-crm-python}_api_dev:latest
     build:
       target: dependencies
+    # The script installs what the lock file added since the volume was filled.
     command:
       [
+        'sh',
+        'scripts/sync-dev-deps.sh',
         '/app/.venv/bin/uvicorn',
         'app.main:app',
         '--host',
@@ -34,7 +37,13 @@ services:
       APP_ENV: development
       PYTHONDONTWRITEBYTECODE: '1'
     command:
-      ['sh', '-c', '/app/.venv/bin/alembic upgrade head && /app/.venv/bin/python -m scripts.seed']
+      [
+        'sh',
+        'scripts/sync-dev-deps.sh',
+        'sh',
+        '-c',
+        '/app/.venv/bin/alembic upgrade head && /app/.venv/bin/python -m scripts.seed',
+      ]
 
 volumes:
   api_venv:

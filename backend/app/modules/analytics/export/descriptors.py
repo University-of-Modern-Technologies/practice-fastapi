@@ -26,9 +26,14 @@ from app.core.errors import ValidationFailedError
 from app.core.handlers import flatten_validation_errors
 from app.modules.analytics.schemas import (
     DealFunnelParams,
+    DealFunnelStage,
     OwnerPerformanceParams,
+    OwnerPerformanceRow,
+    SalesSummaryBucket,
     SalesSummaryParams,
     StockHealthParams,
+    StockHealthRow,
+    TopProductRow,
     TopProductsParams,
 )
 from app.modules.analytics.service import AnalyticsService
@@ -51,12 +56,16 @@ class AnalyticsExportDescriptor:
 
     `load_rows` closes over the report-specific query model and service call,
     so the router that uses this descriptor never has to know which report it
-    is talking to beyond the path segment that selected it.
+    is talking to beyond the path segment that selected it. The two models are
+    there for the published description: the query the export accepts and the
+    row it emits.
     """
 
     file_stem: str
     columns: tuple[str, ...]
     load_rows: Callable[[AnalyticsService, dict[str, str]], Awaitable[list[dict[str, Any]]]]
+    params_model: type[BaseModel]
+    row_model: type[BaseModel]
 
 
 def _query_errors(exc: ValidationError) -> dict[str, Any]:
@@ -90,6 +99,7 @@ def _define_descriptor(
     file_stem: str,
     binding: _ReportBinding[Any, Any, Any],
     rows_field: str,
+    row_model: type[BaseModel],
     columns: tuple[str, ...],
 ) -> AnalyticsExportDescriptor:
     async def load_rows(
@@ -105,7 +115,13 @@ def _define_descriptor(
         rows = dumped[rows_field]
         return list(rows)
 
-    return AnalyticsExportDescriptor(file_stem=file_stem, columns=columns, load_rows=load_rows)
+    return AnalyticsExportDescriptor(
+        file_stem=file_stem,
+        columns=columns,
+        load_rows=load_rows,
+        params_model=binding.params_model,
+        row_model=row_model,
+    )
 
 
 _sales_summary = _define_descriptor(
@@ -116,6 +132,7 @@ _sales_summary = _define_descriptor(
         run=lambda service, query: service.sales_summary(query),
     ),
     rows_field="series",
+    row_model=SalesSummaryBucket,
     columns=("bucketStart", "orderCount", "revenue"),
 )
 
@@ -127,6 +144,7 @@ _deal_funnel = _define_descriptor(
         run=lambda service, query: service.deal_funnel(query),
     ),
     rows_field="stages",
+    row_model=DealFunnelStage,
     columns=("stage", "count", "amount"),
 )
 
@@ -138,6 +156,7 @@ _top_products = _define_descriptor(
         run=lambda service, query: service.top_products(query),
     ),
     rows_field="items",
+    row_model=TopProductRow,
     columns=("productId", "sku", "name", "quantity", "revenue"),
 )
 
@@ -149,6 +168,7 @@ _owner_performance = _define_descriptor(
         run=lambda service, query: service.owner_performance(query),
     ),
     rows_field="items",
+    row_model=OwnerPerformanceRow,
     columns=(
         "ownerId",
         "name",
@@ -171,6 +191,7 @@ _stock_health = _define_descriptor(
         run=lambda service, query: service.stock_health(query),
     ),
     rows_field="items",
+    row_model=StockHealthRow,
     columns=(
         "productId",
         "sku",

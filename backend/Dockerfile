@@ -6,7 +6,9 @@ ENV UV_COMPILE_BYTECODE=1 \
 COPY pyproject.toml uv.lock ./
 # Only the runtime dependency set is installed; the lock file makes the result
 # byte-for-byte reproducible.
-RUN uv sync --frozen --no-dev --no-install-project
+# The marker tells scripts/sync-dev-deps.sh which lock file the development
+# volume was filled from.
+RUN uv sync --frozen --no-dev --no-install-project && cp uv.lock .venv/.installed-lock
 
 FROM python:3.13-slim-trixie AS runtime
 ENV APP_ENV=production \

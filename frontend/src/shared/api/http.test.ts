@@ -162,8 +162,10 @@ describe('http client', () => {
     });
 
     expect(file.filename).toBe('sales-summary.csv');
-    // jsdom's Blob does not implement `.text()`; size is what is left to assert on.
-    expect(file.blob).toBeInstanceOf(Blob);
+    // `Response.blob()` and jsdom each bring a Blob class of their own, so the
+    // check is by tag rather than instanceof; size is what is left to assert on.
+    expect(Object.prototype.toString.call(file.blob)).toBe('[object Blob]');
+    expect(file.blob.type).toBe('text/csv;charset=utf-8');
     expect(file.blob.size).toBe('a,b\n1,2'.length);
   });
 

@@ -1,0 +1,209 @@
+name: Deploy (simulated)
+
+# What a merge into master sets off: the checks of `ci.yml`, then a simulated
+# deployment. There is no real production behind it. The production images are
+# built on a temporary runner, the system is started from `compose.yaml` alone
+# on empty volumes, checked over HTTP through nginx, and removed again. Green
+# means "this commit would have gone out", red means it would not.
+#
+# No registry and no secrets: images never leave the runner, and the only token
+# is the automatic `GITHUB_TOKEN`, so the workflow works in any fork as is.
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    name: Checks
+    uses: ./.github/workflows/ci.yml
+
+  deploy:
+    name: Simulated deployment
+    needs: checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      ADMIN_EMAIL: admin@crm-training.example
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      # The two `.env` files from the tracked examples, with fresh JWT secrets:
+      # exactly what a first start on a new machine gets.
+      - name: Create the configuration
+        run: python3 scripts/stack.py setup
+
+      - name: Build the production images
+        id: build
+        run: python3 scripts/stack.py docker:build
+
+      # Production mode: `compose.yaml` only, without the development override.
+      # The runner is new, so every volume starts empty and the migrate job
+      # applies the whole schema history and the seed. nginx starts only after
+      # the API and the web client report healthy, and `--wait` returns once it
+      # runs, so a green step means every healthcheck has passed.
+      - name: Start the system
+        id: start
+        run: docker compose -f compose.yaml up -d --wait --wait-timeout 600 nginx
+
+      # A handful of requests a person would make first, all through nginx on
+      # the published port. Every result goes into a table for the summary.
+      - name: Run the smoke checks
+        id: smoke
+        run: |
+          set -u
+          port="$(sed -n 's/^HTTP_PORT=//p' .env)"
+          base="http://localhost:${port:-8080}"
+          password="$(sed -n 's/^SEED_USER_PASSWORD=//p' backend/.env)"
+          report=smoke-report.md
+          body="$(mktemp)"
+          failed=0
+
+          printf '| Check | Expected | Got | Result |\n|---|---|---|---|\n' > "$report"
+
+          # probe <description> <expected status> <curl arguments...>
+          probe() {
+            local description="$1" expected="$2" status
+            shift 2
+            status="$(curl --silent --show-error --max-time 20 --output "$body" \
+              --write-out '%{http_code}' "$@")" || status="no answer"
+            if [ "$status" = "$expected" ]; then
+              echo "| $description | $expected | $status | pass |" >> "$report"
+            else
+              echo "| $description | $expected | $status | **fail** |" >> "$report"
+              echo "::error::$description: expected $expected, got $status"
+              head -c 2000 "$body"; echo
+              failed=1
+            fi
+          }
+
+          # nginx resolves its upstreams on start; give the first request a
+          # few attempts before it counts.
+          for _ in $(seq 1 15); do
+            curl --silent --fail --max-time 5 --output /dev/null "$base/api/health/ready" && break
+            sleep 2
+          done
+
+          probe 'API readiness, /api/health/ready' 200 "$base/api/health/ready"
+          probe 'Web client sign-in page, /login' 200 "$base/login"
+          probe 'Protected list without a token is refused' 401 "$base/api/v1/contacts"
+
+          login="$(jq -n --arg email "$ADMIN_EMAIL" --arg password "$password" \
+            '{email: $email, password: $password}')"
+          probe 'Sign in as the seeded admin' 200 \
+            -H 'Content-Type: application/json' --data "$login" "$base/api/v1/auth/login"
+          token="$(jq -r '.data.accessToken // empty' "$body" 2>/dev/null || true)"
+
+          if [ -n "$token" ]; then
+            probe 'Read the contact list as the admin' 200 \
+              -H "Authorization: Bearer $token" "$base/api/v1/contacts"
+          else
+            echo "| Read the contact list as the admin | 200 | no token | **fail** |" >> "$report"
+            echo "::error::The sign-in answer carried no access token"
+            failed=1
+          fi
+
+          exit "$failed"
+
+      - name: Collect the container logs
+        if: failure()
+        run: |
+          mkdir -p deploy-logs
+          docker compose -f compose.yaml ps --all > deploy-logs/containers.txt 2>&1 || true
+          docker compose -f compose.yaml logs --no-color --timestamps > deploy-logs/compose.log 2>&1 || true
+
+      - name: Upload the container logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: deploy-logs
+          path: deploy-logs/
+          retention-days: 7
+          if-no-files-found: ignore
+
+      # Nothing outlives the run: containers, network and volumes all go.
+      - name: Remove the system
+        if: always()
+        run: docker compose -f compose.yaml --profile tools down --volumes --remove-orphans || true
+
+      - name: Write the summary
+        if: always()
+        env:
+          BUILD: ${{ steps.build.outcome }}
+          START: ${{ steps.start.outcome }}
+          SMOKE: ${{ steps.smoke.outcome }}
+        run: |
+          verdict() {
+            case "$1" in
+              success) echo pass ;;
+              skipped) echo 'not reached' ;;
+              *) echo '**fail**' ;;
+            esac
+          }
+          {
+            cat <<'TEXT'
+          ## Simulated deployment
+
+          This is a simulated deployment: there is no real production behind it.
+          The production images were built on a temporary runner, the system was
+          started from `compose.yaml` on empty volumes, checked over HTTP through
+          nginx, and removed when the job ended.
+
+          TEXT
+            echo '| Stage | Result |'
+            echo '|---|---|'
+            echo "| Build the production images | $(verdict "$BUILD") |"
+            echo "| Start the system and pass every healthcheck | $(verdict "$START") |"
+            echo "| Smoke checks through nginx | $(verdict "$SMOKE") |"
+            echo
+            if [ -f smoke-report.md ]; then
+              echo '### Smoke checks'
+              echo
+              cat smoke-report.md
+              echo
+            fi
+            if [ "$BUILD" = success ] && [ "$START" = success ] && [ "$SMOKE" = success ]; then
+              echo '**Result: passed.** This commit would have gone out.'
+            else
+              cat <<'TEXT'
+          **Result: failed.** This commit would not have gone out. The container
+          logs are attached to the run as the `deploy-logs` artifact.
+          TEXT
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # A release marks the commit that passed the simulated deployment. It needs
+  # write access to the repository contents, which this job alone gets. Where
+  # an organisation keeps the token read-only, the job fails on its own and
+  # leaves the deployment result as it is.
+  release:
+    name: Release
+    needs: deploy
+    if: github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    continue-on-error: true
+    permissions:
+      contents: write
+    steps:
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          tag="deploy-${GITHUB_SHA::12}"
+          if gh release view "$tag" > /dev/null 2>&1; then
+            echo "Release $tag already exists."
+            exit 0
+          fi
+          gh release create "$tag" \
+            --target "$GITHUB_SHA" \
+            --title "Deploy ${GITHUB_SHA::12}" \
+            --notes "Passed the checks and the simulated deployment. There is no real production behind it." \
+            --generate-notes \
+            --latest=false

@@ -22,6 +22,7 @@ from app.factory import create_app
 from app.health.lifecycle import service_lifecycle
 from app.modules.analytics.router import create_analytics_router, get_analytics_service
 from app.modules.analytics.schemas import (
+    AnalyticsExportRows,
     DealFunnelConversion,
     DealFunnelReport,
     DealFunnelStage,
@@ -360,3 +361,20 @@ async def test_stock_health_export_carries_every_quantity_column(
         "20000000-0000-4000-8000-000000000001,SKU-1,Widget,"
         "40000000-0000-4000-8000-000000000001,MAIN,3,1,2\r\n"
     )
+
+
+@pytest.mark.parametrize(
+    "report", ["sales-summary", "deal-funnel", "top-products", "owner-performance", "stock-health"]
+)
+async def test_every_json_export_is_the_published_body(
+    analytics_client: AsyncClient, report: str
+) -> None:
+    response = await analytics_client.get(
+        f"/api/v1/analytics/{report}/export", params={"format": "json"}
+    )
+    body = response.json()
+
+    assert response.status_code == 200
+    assert body["data"]
+    published = AnalyticsExportRows.model_validate(body)
+    assert published.model_dump(mode="json", by_alias=True) == body

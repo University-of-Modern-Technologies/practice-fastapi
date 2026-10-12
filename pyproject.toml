@@ -30,7 +30,7 @@ setup = { cmd = "python scripts/stack.py setup", help = "Create .env files with 
 "db:seed:demo" = { cmd = "python scripts/stack.py db:seed:demo", help = "Load the demonstration data set in Docker" }
 test = { cmd = "python scripts/stack.py test", help = "Run the backend and web client unit tests" }
 "test:integration" = { cmd = "python scripts/stack.py test:integration", help = "Run the integration tests against docker:db" }
-check = { cmd = "python scripts/stack.py check", help = "Run every check CI runs: formatting, lint, types, unit tests, build" }
+check = { cmd = "python scripts/stack.py check", help = "Run the API and web client checks of CI: formatting, lint, types, unit tests, build" }
 "check:api" = { cmd = "python scripts/stack.py check:api", help = "Run the backend checks of CI" }
 "check:web" = { cmd = "python scripts/stack.py check:web", help = "Run the web client checks of CI" }
 

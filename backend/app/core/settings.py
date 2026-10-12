@@ -174,6 +174,10 @@ class Settings(BaseSettings):
     # Absent means the scrape endpoint is not exposed at all.
     metrics_token: str | None = Field(default=None, min_length=16)
 
+    # Serves `/api/docs` and `/api/openapi.json`. Absent means on everywhere
+    # except production; the validator below fills it in from `app_env`.
+    api_docs_enabled: bool = True
+
     # The parts a storage address is assembled from when its full URL is not
     # given. They live in the shared `.env`, next to the containers they name.
     postgres_host: str = Field(default=_DEFAULT_STORAGE_HOST, min_length=1)
@@ -201,7 +205,7 @@ class Settings(BaseSettings):
     @model_validator(mode="before")
     @classmethod
     def _assemble_from_parts(cls, data: Any) -> Any:
-        """Fills in the port and the storage URLs that were not given in full.
+        """Fills in the port, the storage URLs and the docs switch not given.
 
         An explicit URL always wins. When the parts a URL needs are missing the
         field is left unset, so validation names the missing URL instead of a
@@ -213,6 +217,11 @@ class Settings(BaseSettings):
         values: dict[str, Any] = dict(data)
         if _part(values, "port") is None and _part(values, "api_port") is not None:
             values["port"] = values["api_port"]
+
+        # The default depends on another field, so it is decided here rather
+        # than on the field itself. A blank value counts as absent.
+        if _part(values, "api_docs_enabled") is None:
+            values["api_docs_enabled"] = _part(values, "app_env") != "production"
 
         assemblers = (
             ("database_url", _postgres_url),
