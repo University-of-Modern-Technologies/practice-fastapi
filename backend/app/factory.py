@@ -36,13 +36,17 @@ from app.observability import (
 )
 from app.realtime.gateway import RealtimeGateway, create_realtime_router
 
+# Everything the backend serves sits under `/api`, so a single proxy rule in
+# front of it routes the business API, the docs, the probes and the metrics.
 API_PREFIX = "/api/v1"
-DOCS_URL = "/docs"
-OPENAPI_URL = "/openapi.json"
+DOCS_URL = "/api/docs"
+OAUTH2_REDIRECT_URL = f"{DOCS_URL}/oauth2-redirect"
+OPENAPI_URL = "/api/openapi.json"
+HEALTH_PREFIX = "/api/health"
 
 # The interactive docs load their bundle from a CDN, so the content policy is
 # lifted for those two paths only.
-_CSP_EXEMPT_PATHS = frozenset({DOCS_URL, "/docs/oauth2-redirect"})
+_CSP_EXEMPT_PATHS = frozenset({DOCS_URL, OAUTH2_REDIRECT_URL})
 
 
 def _install_openapi(app: FastAPI) -> None:
@@ -118,6 +122,7 @@ def create_app(  # noqa: PLR0913
         description="Навчальна CRM API",
         docs_url=DOCS_URL,
         openapi_url=OPENAPI_URL,
+        swagger_ui_oauth2_redirect_url=OAUTH2_REDIRECT_URL,
         redoc_url=None,
         lifespan=lifespan,
     )
@@ -162,7 +167,7 @@ def create_app(  # noqa: PLR0913
 
     register_exception_handlers(app, settings)
 
-    app.include_router(create_health_router(settings, readiness_checks), prefix="/health")
+    app.include_router(create_health_router(settings, readiness_checks), prefix=HEALTH_PREFIX)
 
     # Metrics expose the internal topology, so the endpoint exists only when a
     # scrape token is configured to guard it.

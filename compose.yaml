@@ -6,6 +6,22 @@ x-logging: &logging
     max-size: 10m
     max-file: '3'
 
+x-backend-env: &backend-env
+  TZ: Europe/Kyiv
+  APP_ENV: production
+  POSTGRES_HOST: postgres
+  POSTGRES_PORT: 5432
+  POSTGRES_DB: ${POSTGRES_DB:-practice_crm}
+  POSTGRES_USER: ${POSTGRES_USER:-practice_crm}
+  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+  REDIS_HOST: redis
+  REDIS_PORT: 6379
+  MONGO_HOST: mongo
+  MONGO_PORT: 27017
+  MONGO_DB: ${MONGO_DB:-practice_events}
+  MONGO_USER: ${MONGO_USER:-practice_crm}
+  MONGO_PASSWORD: ${MONGO_PASSWORD:?Set MONGO_PASSWORD in .env}
+
 services:
   nginx:
     container_name: ${PROJECT_NAME:-practice-crm-python}_nginx
@@ -33,27 +49,15 @@ services:
     build:
       context: ./backend
       target: runtime
+    env_file:
+      - ./backend/.env
     environment:
-      TZ: Europe/Kyiv
-      APP_ENV: production
+      <<: *backend-env
       HOST: 0.0.0.0
       PORT: 8000
-      LOG_LEVEL: ${LOG_LEVEL:-info}
-      CORS_ORIGINS: http://localhost:${HTTP_PORT:-8080},http://localhost:${WEB_PORT:-3100}
-      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-practice_crm}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-practice_crm}
-      REDIS_URL: redis://redis:6379
-      REDIS_KEY_PREFIX: ${REDIS_KEY_PREFIX:-crm:}
-      CACHE_TTL_SECONDS: ${CACHE_TTL_SECONDS:-300}
-      RATE_LIMIT_WINDOW_SECONDS: ${RATE_LIMIT_WINDOW_SECONDS:-60}
-      RATE_LIMIT_MAX_REQUESTS: ${RATE_LIMIT_MAX_REQUESTS:-300}
-      AUTH_RATE_LIMIT_MAX_REQUESTS: ${AUTH_RATE_LIMIT_MAX_REQUESTS:-10}
-      MONGODB_URL: mongodb://${MONGO_USER:-practice_crm}:${MONGO_PASSWORD:?Set MONGO_PASSWORD in .env}@mongo:27017/${MONGO_DB:-practice_events}?authSource=admin
-      EVENT_LOG_RETENTION_DAYS: ${EVENT_LOG_RETENTION_DAYS:-90}
-      JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:?Set JWT_ACCESS_SECRET in .env}
-      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:?Set JWT_REFRESH_SECRET in .env}
-      WS_PATH: ${WS_PATH:-/api/v1/realtime}
+      CORS_ORIGINS: http://localhost:${HTTP_PORT:-8080}
     ports:
-      - '${API_PORT:-3000}:8000'
+      - '${API_PORT:-8000}:8000'
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -67,7 +71,7 @@ services:
           'CMD',
           'python',
           '-c',
-          "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=2).status == 200 else 1)",
+          "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/api/health/ready', timeout=2).status == 200 else 1)",
         ]
       interval: 10s
       timeout: 3s
@@ -85,21 +89,18 @@ services:
     build:
       context: ./frontend
       target: runtime
-      args:
-        NEXT_PUBLIC_API_URL: /api/v1
-        NEXT_PUBLIC_WS_URL: ${WS_PATH:-/api/v1/realtime}
     environment:
       TZ: Europe/Kyiv
       NEXT_TELEMETRY_DISABLED: '1'
     ports:
-      - '${WEB_PORT:-3100}:3100'
+      - '${WEB_PORT:-3000}:3000'
     healthcheck:
       test:
         [
           'CMD',
           'node',
           '-e',
-          "fetch('http://127.0.0.1:3100/login').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))",
+          "fetch('http://127.0.0.1:3000/login').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))",
         ]
       interval: 10s
       timeout: 3s
@@ -115,16 +116,10 @@ services:
     build:
       context: ./backend
       target: runtime
+    env_file:
+      - ./backend/.env
     environment:
-      TZ: Europe/Kyiv
-      APP_ENV: production
-      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-practice_crm}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-practice_crm}
-      SEED_USER_PASSWORD: ${SEED_USER_PASSWORD:?Set SEED_USER_PASSWORD in .env}
-      SEED_ALLOW_PRODUCTION: ${SEED_ALLOW_PRODUCTION:-false}
-      REDIS_URL: redis://redis:6379
-      MONGODB_URL: mongodb://${MONGO_USER:-practice_crm}:${MONGO_PASSWORD:?Set MONGO_PASSWORD in .env}@mongo:27017/${MONGO_DB:-practice_events}?authSource=admin
-      JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:?Set JWT_ACCESS_SECRET in .env}
-      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:?Set JWT_REFRESH_SECRET in .env}
+      <<: *backend-env
     depends_on:
       postgres:
         condition: service_healthy
@@ -178,7 +173,7 @@ services:
 
   mongo:
     container_name: ${PROJECT_NAME:-practice-crm-python}_mongo
-    image: mongo:8
+    image: mongo:7.0
     restart: unless-stopped
     command: ['mongod', '--wiredTigerCacheSizeGB', '0.25']
     environment:

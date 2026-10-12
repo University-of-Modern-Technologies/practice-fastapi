@@ -24,6 +24,7 @@ from app.events.connection import EventStore
 from app.events.model import DOMAIN_EVENT_COLLECTION, RETENTION_INDEX
 from app.events.service import EventStoreService
 from app.events.types import DomainEvent, EntityHistoryQuery, EventSearchQuery
+from tests.integration.conftest import START_HINT
 
 CACHE_TTL_SECONDS = 60
 
@@ -39,7 +40,7 @@ async def cache(
         await client.ping()
     except Exception as error:
         await close_redis_client(client)
-        pytest.skip(f"Redis is not reachable at REDIS_URL: {error!r}")
+        pytest.fail(f"Redis is not reachable: {error!r}\n{START_HINT}", pytrace=False)
 
     service = CacheService(client, settings)
     try:
@@ -62,12 +63,12 @@ async def test_a_value_survives_the_round_trip(
 
 
 async def test_every_key_carries_the_configured_prefix(
-    cache: tuple[CacheService, PrefixedRedis], store_settings: Settings
+    cache: tuple[CacheService, PrefixedRedis], redis_url: str
 ) -> None:
     service, client = cache
     await service.set("scoped", 1, CACHE_TTL_SECONDS)
 
-    raw = Redis.from_url(store_settings.redis_url, decode_responses=True)
+    raw = Redis.from_url(redis_url, decode_responses=True)
     try:
         # Two backends share one Redis, so the namespace is what keeps their
         # keys apart — and it has to be applied by the client, not by callers.
@@ -119,7 +120,8 @@ async def event_log(
     await store.connect()
     if store.collection is None:
         await store.close()
-        pytest.skip(f"MongoDB is not usable at MONGODB_URL: {mongodb_url.rsplit('@', 1)[-1]}")
+        address = mongodb_url.rsplit("@", 1)[-1]
+        pytest.fail(f"MongoDB is not usable at {address}\n{START_HINT}", pytrace=False)
     try:
         yield EventStoreService(store), store
     finally:

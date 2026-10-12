@@ -1,10 +1,11 @@
 """Health endpoints.
 
-* ``GET /health/live``    — process liveness, no I/O, always cheap.
-* ``GET /health/startup`` — has the bootstrap finished? Use as a startup probe.
-* ``GET /health/ready``   — dependency readiness; 200 only when every critical
-                            check passes and the process is not draining.
-* ``GET /health/info``    — non-sensitive build and runtime metadata.
+* ``GET /api/health/live``    — process liveness, no I/O, always cheap.
+* ``GET /api/health/startup`` — has the bootstrap finished? Use as a startup probe.
+* ``GET /api/health/ready``   — dependency readiness; 200 only when every
+                                critical check passes and the process is not
+                                draining.
+* ``GET /api/health/info``    — non-sensitive build and runtime metadata.
 """
 
 from __future__ import annotations
@@ -62,7 +63,7 @@ def _read_version() -> str:
     """Resolves the running version instead of repeating it as a constant.
 
     A hardcoded constant drifts from the packaging metadata the moment one of
-    the two is bumped, and a stale version in ``/health/info`` is worse than no
+    the two is bumped, and a stale version in ``/api/health/info`` is worse than no
     version at all: it makes a deployment look like a build it is not.
     """
     try:

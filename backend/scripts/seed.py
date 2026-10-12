@@ -23,7 +23,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncConnection, create_async_engine
 
 from app.core.security import hash_password
-from app.core.settings import get_settings
+from app.core.settings import ENV_FILES, get_settings
 from app.db.base import Base
 from app.db.enums import DealStage, OrderStatus, PermissionScope
 from app.db.models import (
@@ -189,16 +189,18 @@ GRANTS: Mapping[str, Sequence[tuple[str, PermissionScope]]] = {
 
 
 class SeedSettings(BaseSettings):
-    """The values only this script reads, from the environment or `.env`."""
+    """The values only this script reads, from the environment or the `.env` files."""
 
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+    # The same layered files the application reads, so the script finds them
+    # whatever directory it is started from.
+    model_config = SettingsConfigDict(env_file=ENV_FILES, env_file_encoding="utf-8", extra="ignore")
 
     seed_user_password: str = ""
     seed_allow_production: bool = False
 
 
 def read_seed_password() -> str:
-    """Reads and validates the demo password from the environment or `.env`.
+    """Reads and validates the demo password from the environment or the `.env` files.
 
     The value is read here rather than through application settings: nothing the
     application serves needs it, and a fixture that only this script uses has no

@@ -3,16 +3,20 @@
 A single validated model is the only place the process reads the environment.
 Anything that fails validation aborts the boot instead of surfacing as a runtime
 error deep inside a request.
+
+Values come from three layers, highest priority first: the process environment,
+the backend's own ``.env``, and the repository's shared ``.env`` one level up.
 """
 
 from __future__ import annotations
 
 import json
 from functools import lru_cache
-from typing import Annotated, Literal
-from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+from pathlib import Path
+from typing import Annotated, Any, Literal
+from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
 
-from pydantic import Field, ValidationInfo, field_validator
+from pydantic import Field, ValidationInfo, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 AppEnv = Literal["development", "test", "production"]
@@ -31,12 +35,72 @@ _MIN_SECRET_LENGTH = 32
 _ASYNC_DRIVER = "postgresql+asyncpg"
 _ACCEPTED_DB_SCHEMES = {"postgresql", "postgres", _ASYNC_DRIVER}
 
+#: `app/core/settings.py` → the backend folder.
+BACKEND_ROOT = Path(__file__).resolve().parents[2]
+
+#: The shared file first and the backend's own second, so the latter wins. The
+#: paths are absolute because Alembic, the scripts and the tests each start
+#: from a different working directory. A file that does not exist is skipped.
+ENV_FILES = (BACKEND_ROOT.parent / ".env", BACKEND_ROOT / ".env")
+
+# An IPv4 literal rather than `localhost`: on Windows the name resolves to IPv6
+# first, and every connection to a storage listening on IPv4 only waits two
+# seconds for that attempt to time out.
+_DEFAULT_STORAGE_HOST = "127.0.0.1"
+_DEFAULT_POSTGRES_PORT = 5432
+_DEFAULT_REDIS_PORT = 6379
+_DEFAULT_MONGO_PORT = 27017
+
+
+def _part(values: dict[str, Any], key: str) -> str | None:
+    """A raw setting as text, with a blank value treated as absent."""
+    value = values.get(key)
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _credentials(user: str, password: str) -> str:
+    return f"{quote(user, safe='')}:{quote(password, safe='')}@"
+
+
+def _postgres_url(values: dict[str, Any]) -> str | None:
+    user = _part(values, "postgres_user")
+    password = _part(values, "postgres_password")
+    database = _part(values, "postgres_db")
+    if user is None or password is None or database is None:
+        return None
+    host = _part(values, "postgres_host") or _DEFAULT_STORAGE_HOST
+    port = _part(values, "postgres_port") or _DEFAULT_POSTGRES_PORT
+    return f"postgresql://{_credentials(user, password)}{host}:{port}/{quote(database, safe='')}"
+
+
+def _redis_url(values: dict[str, Any]) -> str:
+    host = _part(values, "redis_host") or _DEFAULT_STORAGE_HOST
+    port = _part(values, "redis_port") or _DEFAULT_REDIS_PORT
+    return f"redis://{host}:{port}"
+
+
+def _mongodb_url(values: dict[str, Any]) -> str | None:
+    database = _part(values, "mongo_db")
+    if database is None:
+        return None
+    host = _part(values, "mongo_host") or _DEFAULT_STORAGE_HOST
+    port = _part(values, "mongo_port") or _DEFAULT_MONGO_PORT
+    address = f"{host}:{port}/{quote(database, safe='')}"
+    user = _part(values, "mongo_user")
+    password = _part(values, "mongo_password")
+    if user is None or password is None:
+        return f"mongodb://{address}"
+    return f"mongodb://{_credentials(user, password)}{address}?authSource=admin"
+
 
 class Settings(BaseSettings):
     """Validated view of the process environment."""
 
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=ENV_FILES,
         env_file_encoding="utf-8",
         case_sensitive=False,
         extra="ignore",
@@ -44,14 +108,16 @@ class Settings(BaseSettings):
 
     app_env: AppEnv = "development"
     host: str = Field(default="0.0.0.0", min_length=1)
+    # `PORT` wins; without it the shared `API_PORT` is used.
     port: int = Field(default=8000, ge=1, le=65_535)
+    api_port: int | None = Field(default=None, ge=1, le=65_535)
     log_level: LogLevel = "info"
     # ``NoDecode`` keeps the raw environment string intact. Without it the
     # settings source JSON-decodes a ``list[str]`` field before any validator
     # runs, so the comma-separated form operators actually write would fail the
     # boot with a JSON parse error. The validator below accepts both spellings.
     cors_origins: Annotated[list[str], NoDecode] = Field(
-        default_factory=lambda: ["http://localhost:3100"]
+        default_factory=lambda: ["http://localhost:3000"]
     )
     json_body_limit_bytes: int = Field(default=1_048_576, ge=1_024, le=67_108_864)
 
@@ -108,6 +174,21 @@ class Settings(BaseSettings):
     # Absent means the scrape endpoint is not exposed at all.
     metrics_token: str | None = Field(default=None, min_length=16)
 
+    # The parts a storage address is assembled from when its full URL is not
+    # given. They live in the shared `.env`, next to the containers they name.
+    postgres_host: str = Field(default=_DEFAULT_STORAGE_HOST, min_length=1)
+    postgres_port: int = Field(default=_DEFAULT_POSTGRES_PORT, ge=1, le=65_535)
+    postgres_user: str | None = None
+    postgres_password: str | None = Field(default=None, repr=False)
+    postgres_db: str | None = None
+    redis_host: str = Field(default=_DEFAULT_STORAGE_HOST, min_length=1)
+    redis_port: int = Field(default=_DEFAULT_REDIS_PORT, ge=1, le=65_535)
+    mongo_host: str = Field(default=_DEFAULT_STORAGE_HOST, min_length=1)
+    mongo_port: int = Field(default=_DEFAULT_MONGO_PORT, ge=1, le=65_535)
+    mongo_user: str | None = None
+    mongo_password: str | None = Field(default=None, repr=False)
+    mongo_db: str | None = None
+
     shutdown_grace_period_ms: int = Field(default=10_000, ge=0, le=300_000)
     shutdown_timeout_ms: int = Field(default=15_000, ge=1, le=300_000)
 
@@ -116,6 +197,37 @@ class Settings(BaseSettings):
     # by Redis). `offline` forces every stand-in at once, ignoring the
     # settings above; `live` is the same as leaving it unset.
     infra_profile: Literal["offline", "live"] | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _assemble_from_parts(cls, data: Any) -> Any:
+        """Fills in the port and the storage URLs that were not given in full.
+
+        An explicit URL always wins. When the parts a URL needs are missing the
+        field is left unset, so validation names the missing URL instead of a
+        connection failing later against a half-built address.
+        """
+        if not isinstance(data, dict):
+            return data
+
+        values: dict[str, Any] = dict(data)
+        if _part(values, "port") is None and _part(values, "api_port") is not None:
+            values["port"] = values["api_port"]
+
+        assemblers = (
+            ("database_url", _postgres_url),
+            ("redis_url", _redis_url),
+            ("mongodb_url", _mongodb_url),
+        )
+        for field, assemble in assemblers:
+            if _part(values, field) is None:
+                assembled = assemble(values)
+                if assembled is None:
+                    # A blank value would be reported as a malformed URL.
+                    values.pop(field, None)
+                else:
+                    values[field] = assembled
+        return values
 
     @field_validator("log_level", mode="before")
     @classmethod

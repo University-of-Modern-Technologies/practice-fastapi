@@ -92,7 +92,7 @@ class EventStore:
 
 
 def create_event_store_readiness_check(store: EventStore) -> ReadinessCheck:
-    """Probe for ``/health/ready``.
+    """Probe for ``/api/health/ready``.
 
     Critical: an instance that cannot reach the store loses the event log
     silently, so it is taken out of rotation rather than left accepting traffic

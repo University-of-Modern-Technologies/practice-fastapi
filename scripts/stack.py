@@ -29,8 +29,8 @@ PORTAINER_PASSWORD_FILE = REPO_ROOT / ".portainer-password"
 STORAGE_SERVICES = ["postgres", "redis", "mongo"]
 PORTS = [
     ("HTTP_PORT", 8080, "application (nginx)"),
-    ("API_PORT", 3000, "API"),
-    ("WEB_PORT", 3100, "web client"),
+    ("API_PORT", 8000, "API"),
+    ("WEB_PORT", 3000, "web client"),
     ("POSTGRES_PORT", 5432, "PostgreSQL"),
     ("REDIS_PORT", 6379, "Redis"),
     ("MONGO_PORT", 27017, "MongoDB"),
@@ -58,12 +58,13 @@ def read_env(path: Path = REPO_ROOT / ".env") -> dict[str, str]:
     return values
 
 
-def run(args: list[str], cwd: Path = REPO_ROOT) -> None:
+def run(args: list[str], cwd: Path = REPO_ROOT, extra_env: dict[str, str] | None = None) -> None:
     executable = shutil.which(args[0])
     if executable is None:
         fail(f"{args[0]} is not installed or not in PATH", 2)
     # A nested `uv run` must pick the backend's own environment, not this one.
     env = {key: value for key, value in os.environ.items() if key != "VIRTUAL_ENV"}
+    env.update(extra_env or {})
     result = subprocess.run([str(executable), *args[1:]], cwd=cwd, env=env, check=False)
     if result.returncode != 0:
         sys.exit(result.returncode)
@@ -87,8 +88,14 @@ def require_docker() -> None:
 
 
 def require_env() -> None:
-    if not (REPO_ROOT / ".env").exists():
-        fail(".env is missing. Run `uv run poe setup` first.")
+    for _, target in ENV_FILES:
+        if not target.exists():
+            name = target.relative_to(REPO_ROOT).as_posix()
+            fail(f"{name} is missing. Run `uv run poe setup` first.")
+
+
+def api_port() -> int:
+    return int(read_env().get("API_PORT") or 8000)
 
 
 def port_is_free(port: int) -> bool:
@@ -121,19 +128,51 @@ def portainer_password() -> str:
 
 
 def print_addresses() -> None:
-    env = read_env()
-    http = env.get("HTTP_PORT", "8080")
+    http = read_env().get("HTTP_PORT", "8080")
+    password = read_env(BACKEND_ROOT / ".env").get(
+        "SEED_USER_PASSWORD", "the SEED_USER_PASSWORD value from backend/.env"
+    )
     print()
     print(paint("32", f"Ready: http://localhost:{http}"))
-    print(f"  API docs:  http://localhost:{http}/docs")
-    print(f"  Health:    http://localhost:{http}/health/ready")
+    print(f"  API docs:  http://localhost:{http}/api/docs")
+    print(f"  Health:    http://localhost:{http}/api/health/ready")
     print()
     print("  Sign in as admin@crm-training.example")
-    print(f"  Password:  {env.get('SEED_USER_PASSWORD', 'the SEED_USER_PASSWORD value from .env')}")
+    print(f"  Password:  {password}")
+
+
+def ensure_installed(path: Path) -> None:
+    if not (path / "node_modules").exists():
+        fail(f"{path.name} dependencies are not installed. Run `uv run poe local:install`.")
+
+
+# Each step starts the one before it and adds its own part: storage, then the
+# API, then the web client and the proxy. The step that is already up is left
+# as is, so starting a larger one over a smaller one costs seconds.
+
+
+def start_storage() -> None:
+    require_env()
+    require_docker()
+    compose("dev", ["up", "-d", "--wait", *STORAGE_SERVICES])
+    # Migrations and the base seed run once and exit; what is applied is skipped.
+    compose("dev", ["run", "--rm", "--build", "migrate"])
+
+
+def start_api() -> None:
+    start_storage()
+    compose("dev", ["up", "-d", "--build", "--wait", "--no-deps", "api"])
+
+
+def start_all() -> None:
+    start_api()
+    compose("dev", ["up", "-d", "--build", "--wait", "--no-deps", "web"])
+    # After the web client, not with it: nginx resolves its upstreams on start.
+    compose("dev", ["up", "-d", "--build", "--wait", "--no-deps", "nginx"])
 
 
 def setup() -> None:
-    existing = read_env()
+    existing = read_env(BACKEND_ROOT / ".env")
     generated = {key: existing.get(key) or secrets.token_urlsafe(32) for key in GENERATED_SECRETS}
     for source, target in ENV_FILES:
         name = target.relative_to(REPO_ROOT).as_posix()
@@ -142,9 +181,8 @@ def setup() -> None:
             continue
         write_env_file(source, target, generated)
         print(paint("32", f"Created {name}"))
-    if not (FRONTEND_ROOT / ".env.local").exists():
-        shutil.copyfile(FRONTEND_ROOT / ".env.example", FRONTEND_ROOT / ".env.local")
     portainer_password()
+    install_hooks()
 
     env = read_env()
     busy = [
@@ -156,66 +194,73 @@ def setup() -> None:
         print(paint("33", "\nThese ports are already taken on this machine:"))
         print("\n".join(busy))
         print(paint("33", "If it is not this stack holding them, put other values into .env."))
-    print("\nNext: uv run poe start")
+    print("\nNext: uv run poe docker:all")
 
 
-def start() -> None:
+def local_install() -> None:
+    run(["uv", "sync"], cwd=BACKEND_ROOT)
+    run(["npm", "ci"], cwd=FRONTEND_ROOT)
+
+
+def local_api() -> None:
+    # One API port for every way of running it, so the web client always finds it.
+    # Two processes on one port do not fail on Windows, they split the traffic.
     require_env()
-    require_docker()
-    compose("dev", ["up", "-d", "--build", "--wait", *sys.argv[2:]])
+    port = api_port()
+    if not port_is_free(port):
+        fail(
+            f"port {port} is already taken, most likely by the api container of this stack.\n"
+            "Stop the containers (uv run poe docker:stop) and run local:api again."
+        )
+    start_storage()
+    run(["uv", "run", "python", "-m", "app.main"], cwd=BACKEND_ROOT)
+
+
+def local_web() -> None:
+    ensure_installed(FRONTEND_ROOT)
+    web_port = read_env().get("WEB_PORT") or "3000"
+    run(
+        ["npx", "next", "dev", "--port", web_port],
+        cwd=FRONTEND_ROOT,
+        extra_env={"API_ORIGIN": f"http://127.0.0.1:{api_port()}"},
+    )
+
+
+def docker_db() -> None:
+    start_storage()
+    print(paint("32", "\nStorage is up and migrated. API on this machine: uv run poe local:api"))
+
+
+def docker_api() -> None:
+    start_api()
+    print(paint("32", f"\nAPI: http://localhost:{api_port()}/api/docs"))
+
+
+def docker_all() -> None:
+    start_all()
     print_addresses()
 
 
-def stop() -> None:
-    compose("dev", ["--profile", "tools", "down", "--remove-orphans"])
-
-
-def prod_start() -> None:
-    # Production images are built once by `build`; starting only builds what is missing.
+def docker_prod() -> None:
+    # Builds what changed and starts it; an image that is up to date takes seconds.
     require_env()
     require_docker()
-    compose("prod", ["up", "-d", "--wait", *sys.argv[2:]])
+    compose("prod", ["up", "-d", "--build", "--wait"])
     print_addresses()
 
 
-def prod_stop() -> None:
-    compose("prod", ["--profile", "tools", "down", "--remove-orphans"])
-
-
-def build() -> None:
+def docker_build() -> None:
     require_env()
     require_docker()
     compose("prod", ["build", *sys.argv[2:]])
 
 
-def test() -> None:
-    run(["uv", "run", "pytest"], cwd=BACKEND_ROOT)
-    run(["npm", "test"], cwd=FRONTEND_ROOT)
+def docker_stop() -> None:
+    # Both modes share the project and its service names, so one `down` stops either.
+    compose("dev", ["--profile", "tools", "down", "--remove-orphans"])
 
 
-def dev() -> None:
-    run(["uv", "run", "python", "-m", "app.main"], cwd=BACKEND_ROOT)
-
-
-def dev_web() -> None:
-    run(["npm", "run", "dev"], cwd=FRONTEND_ROOT)
-
-
-def start_api() -> None:
-    require_env()
-    require_docker()
-    compose("dev", ["up", "-d", "--build", "--wait", "api"])
-    print(paint("32", f"\nAPI: http://localhost:{read_env().get('API_PORT', '3000')}/docs"))
-
-
-def start_infra() -> None:
-    require_env()
-    require_docker()
-    compose("dev", ["up", "-d", "--wait", *STORAGE_SERVICES])
-    print(paint("32", "\nStorage is up. Start the API on this machine: uv run poe dev"))
-
-
-def clean() -> None:
+def docker_clean() -> None:
     if "--yes" not in sys.argv and "-y" not in sys.argv:
         answer = input(paint("33", 'This deletes the databases. Type "yes" to continue: '))
         if answer.strip() != "yes":
@@ -224,12 +269,22 @@ def clean() -> None:
     compose("dev", ["--profile", "tools", "down", "--volumes", "--remove-orphans"])
 
 
-def logs() -> None:
+def docker_logs() -> None:
     compose("dev", ["logs", "-f", "--tail=100", *sys.argv[2:]])
 
 
-def ps() -> None:
+def docker_ps() -> None:
     compose("dev", ["ps"])
+
+
+def docker_portainer() -> None:
+    require_env()
+    require_docker()
+    password = portainer_password()
+    compose("dev", ["--profile", "tools", "up", "-d", "portainer"])
+    print(paint("32", f"\nPortainer: http://localhost:{read_env().get('PORTAINER_PORT', '9000')}"))
+    print("  User:      admin")
+    print(f"  Password:  {password}  (from {PORTAINER_PASSWORD_FILE.name})")
 
 
 def migrate() -> None:
@@ -242,34 +297,78 @@ def seed_demo() -> None:
     compose("dev", ["run", "--rm", "migrate", "/app/.venv/bin/python", "-m", "scripts.demo_seed"])
 
 
-def tools() -> None:
-    require_env()
-    require_docker()
-    password = portainer_password()
-    compose("dev", ["--profile", "tools", "up", "-d", "portainer"])
-    print(paint("32", f"\nPortainer: http://localhost:{read_env().get('PORTAINER_PORT', '9000')}"))
-    print("  User:      admin")
-    print(f"  Password:  {password}  (from {PORTAINER_PASSWORD_FILE.name})")
+def test() -> None:
+    run(["uv", "run", "pytest"], cwd=BACKEND_ROOT)
+    run(["npm", "test"], cwd=FRONTEND_ROOT)
+
+
+def check() -> None:
+    # The same steps the CI jobs run, so a green `check` means a green pipeline.
+    check_api()
+    check_web()
+
+
+def check_api() -> None:
+    run(["uv", "run", "ruff", "format", "--check", "."], cwd=BACKEND_ROOT)
+    run(["uv", "run", "ruff", "check", "."], cwd=BACKEND_ROOT)
+    run(["uv", "run", "mypy"], cwd=BACKEND_ROOT)
+    run(["uv", "run", "pytest"], cwd=BACKEND_ROOT)
+
+
+def check_web() -> None:
+    run(["npm", "run", "ci"], cwd=FRONTEND_ROOT)
+
+
+def test_integration() -> None:
+    # Talks to the storage of `docker:db`; it never starts containers itself.
+    run(["uv", "run", "pytest", "-m", "integration", *sys.argv[2:]], cwd=BACKEND_ROOT)
+
+
+def install_hooks() -> None:
+    # prek comes with this project's dev dependencies; `install` wires it into git.
+    if not (REPO_ROOT / ".git").exists():
+        print(
+            paint(
+                "33",
+                "Not a git repository: after `git init`, run setup again for the pre-commit hook.",
+            )
+        )
+        return
+    prek = shutil.which("prek")
+    if prek is None:
+        print(paint("33", "The pre-commit hook was not installed: prek is missing, run `uv sync`."))
+        return
+    result = subprocess.run(
+        [prek, "install"], cwd=REPO_ROOT, capture_output=True, text=True, check=False
+    )
+    if result.returncode != 0:
+        print(paint("33", f"The pre-commit hook was not installed: {result.stderr.strip()}"))
+    else:
+        print(paint("32", "Installed the pre-commit hook (format and lint of staged files)"))
 
 
 COMMANDS = {
     "setup": setup,
-    "start": start,
-    "stop": stop,
-    "prod:start": prod_start,
-    "prod:stop": prod_stop,
-    "build": build,
-    "test": test,
-    "start:api": start_api,
-    "start:infra": start_infra,
-    "dev": dev,
-    "dev:web": dev_web,
-    "clean": clean,
-    "logs": logs,
-    "ps": ps,
+    "local:install": local_install,
+    "local:api": local_api,
+    "local:web": local_web,
+    "docker:db": docker_db,
+    "docker:api": docker_api,
+    "docker:all": docker_all,
+    "docker:prod": docker_prod,
+    "docker:build": docker_build,
+    "docker:stop": docker_stop,
+    "docker:clean": docker_clean,
+    "docker:logs": docker_logs,
+    "docker:ps": docker_ps,
+    "docker:portainer": docker_portainer,
     "db:migrate": migrate,
     "db:seed:demo": seed_demo,
-    "tools": tools,
+    "test": test,
+    "test:integration": test_integration,
+    "check": check,
+    "check:api": check_api,
+    "check:web": check_web,
 }
 
 

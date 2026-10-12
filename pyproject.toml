@@ -6,29 +6,33 @@ requires-python = "==3.13.*"
 dependencies = []
 
 [dependency-groups]
-dev = ["poethepoet==0.48.0"]
+dev = ["poethepoet==0.48.0", "prek==0.5.3"]
 
 [tool.uv]
 package = false
 
 [tool.poe.tasks]
 setup = { cmd = "python scripts/stack.py setup", help = "Create .env files with fresh secrets and check the ports" }
-start = { cmd = "python scripts/stack.py start", help = "Run the whole stack in Docker; the API reloads on save" }
-stop = { cmd = "python scripts/stack.py stop", help = "Stop the stack; data is kept" }
-"prod:start" = { cmd = "python scripts/stack.py prod:start", help = "Run the stack from production images" }
-"prod:stop" = { cmd = "python scripts/stack.py prod:stop", help = "Stop the production stack; data is kept" }
-build = { cmd = "python scripts/stack.py build", help = "Build the production images" }
-test = { cmd = "python scripts/stack.py test", help = "Run the backend and web client test suites" }
-"start:api" = { cmd = "python scripts/stack.py start:api", help = "Run only the API and its storage in Docker" }
-"start:infra" = { cmd = "python scripts/stack.py start:infra", help = "Run only PostgreSQL, Redis and MongoDB" }
-dev = { cmd = "python scripts/stack.py dev", help = "Run the API on this machine against start:infra" }
-"dev:web" = { cmd = "python scripts/stack.py dev:web", help = "Run the web client on this machine with hot reload" }
-logs = { cmd = "python scripts/stack.py logs", help = "Follow the logs; pass a service name to narrow" }
-ps = { cmd = "python scripts/stack.py ps", help = "Show the state of each service" }
-clean = { cmd = "python scripts/stack.py clean", help = "Stop the stack and delete the databases" }
-tools = { cmd = "python scripts/stack.py tools", help = "Start Portainer for containers and logs" }
+"local:install" = { cmd = "python scripts/stack.py local:install", help = "Install the backend and web client dependencies on this machine" }
+"local:api" = { cmd = "python scripts/stack.py local:api", help = "docker:db, then the API on this machine with reload; Ctrl+C stops it" }
+"local:web" = { cmd = "python scripts/stack.py local:web", help = "The web client on this machine with hot reload; Ctrl+C stops it" }
+"docker:db" = { cmd = "python scripts/stack.py docker:db", help = "PostgreSQL, Redis and MongoDB in Docker, with migrations and the seed" }
+"docker:api" = { cmd = "python scripts/stack.py docker:api", help = "docker:db plus the API in Docker; the API reloads on save" }
+"docker:all" = { cmd = "python scripts/stack.py docker:all", help = "docker:api plus the web client and nginx: the whole system in Docker" }
+"docker:prod" = { cmd = "python scripts/stack.py docker:prod", help = "Build and run the whole system from production images" }
+"docker:build" = { cmd = "python scripts/stack.py docker:build", help = "Build the production images without starting them" }
+"docker:stop" = { cmd = "python scripts/stack.py docker:stop", help = "Stop everything this stack runs in Docker; data is kept" }
+"docker:clean" = { cmd = "python scripts/stack.py docker:clean", help = "Stop everything and delete the databases" }
+"docker:logs" = { cmd = "python scripts/stack.py docker:logs", help = "Follow the logs; pass a service name to narrow" }
+"docker:ps" = { cmd = "python scripts/stack.py docker:ps", help = "Show the state of each container" }
+"docker:portainer" = { cmd = "python scripts/stack.py docker:portainer", help = "Start Portainer for containers and logs" }
 "db:migrate" = { cmd = "python scripts/stack.py db:migrate", help = "Apply migrations and the seed in Docker" }
 "db:seed:demo" = { cmd = "python scripts/stack.py db:seed:demo", help = "Load the demonstration data set in Docker" }
+test = { cmd = "python scripts/stack.py test", help = "Run the backend and web client unit tests" }
+"test:integration" = { cmd = "python scripts/stack.py test:integration", help = "Run the integration tests against docker:db" }
+check = { cmd = "python scripts/stack.py check", help = "Run every check CI runs: formatting, lint, types, unit tests, build" }
+"check:api" = { cmd = "python scripts/stack.py check:api", help = "Run the backend checks of CI" }
+"check:web" = { cmd = "python scripts/stack.py check:web", help = "Run the web client checks of CI" }
 
 [tool.ruff]
 line-length = 100

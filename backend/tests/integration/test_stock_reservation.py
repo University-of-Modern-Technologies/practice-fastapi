@@ -234,8 +234,8 @@ async def committed_level(
             ReceiveStockRequest(warehouse_id=warehouse.id, product_id=product.id, quantity=10),
         )
         await setup.commit()
-        # The rows outlive this fixture on purpose: the whole database is a
-        # scratch one and is dropped when the session ends.
+        # The rows outlive this fixture on purpose: the test database is
+        # emptied when the next run starts.
         return (factory, actor.id, warehouse.id, product.id)
 
 

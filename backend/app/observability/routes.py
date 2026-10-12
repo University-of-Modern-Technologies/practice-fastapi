@@ -16,7 +16,7 @@ from prometheus_client import CollectorRegistry
 
 from app.observability.registry import PROMETHEUS_CONTENT_TYPE, render_metrics
 
-METRICS_PATH: Final = "/metrics"
+METRICS_PATH: Final = "/api/metrics"
 
 #: Shorter tokens are guessable at scrape-endpoint rates; the setting enforces
 #: the same bound, and it is repeated here so a direct caller cannot bypass it.
