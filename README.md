@@ -436,6 +436,12 @@ docker compose down
 | злиття в `master` | `deploy.yml` — ті самі перевірки, потім імітований деплой, Summary і Release |
 | вручну, з вкладки Actions | будь-який із двох |
 
+**Гілки.** У цьому репозиторії дві довгоживучі гілки: `master` — релізи,
+`develop` — зміни між релізами. Pull request іде в `develop` і проходить
+`ci.yml`; реліз зливає `develop` у `master`, і тоді спрацьовує `deploy.yml`. У
+форку достатньо `master` — як працювати там, описано в
+[`CONTRIBUTING.md`](CONTRIBUTING.md).
+
 **Імітований деплой.** На тимчасовій машині GitHub `setup` створює
 конфігурацію з новими секретами, `docker:build` збирає production-образи, і
 система стартує з одного `compose.yaml` на порожніх томах: `migrate` накочує
