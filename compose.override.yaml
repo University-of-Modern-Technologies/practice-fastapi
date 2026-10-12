@@ -1,0 +1,41 @@
+services:
+  api:
+    image: ${PROJECT_NAME:-practice-crm-python}_api_dev:latest
+    build:
+      target: dependencies
+    command:
+      [
+        '/app/.venv/bin/uvicorn',
+        'app.main:app',
+        '--host',
+        '0.0.0.0',
+        '--port',
+        '8000',
+        '--no-access-log',
+        '--reload',
+      ]
+    volumes:
+      - ./backend:/app
+      - api_venv:/app/.venv
+    environment:
+      APP_ENV: development
+      WATCHFILES_FORCE_POLLING: 'true'
+      PYTHONDONTWRITEBYTECODE: '1'
+      PYTHONUNBUFFERED: '1'
+
+  migrate:
+    image: ${PROJECT_NAME:-practice-crm-python}_migrate_dev:latest
+    build:
+      target: dependencies
+    volumes:
+      - ./backend:/app
+      - api_venv:/app/.venv
+    environment:
+      APP_ENV: development
+      PYTHONDONTWRITEBYTECODE: '1'
+    command:
+      ['sh', '-c', '/app/.venv/bin/alembic upgrade head && /app/.venv/bin/python -m scripts.seed']
+
+volumes:
+  api_venv:
+    name: ${PROJECT_NAME:-practice-crm-python}_api_venv

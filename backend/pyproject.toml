@@ -1,0 +1,95 @@
+[project]
+name = "practice-crm-python-backend"
+version = "1.0.0"
+description = "Навчальна CRM API на FastAPI"
+requires-python = "==3.13.*"
+dependencies = [
+    "fastapi==0.141.1",
+    "uvicorn[standard]==0.52.1",
+    "pydantic==2.13.4",
+    "pydantic-settings==2.15.0",
+    "email-validator==2.3.0",
+    "sqlalchemy[asyncio]==2.0.52",
+    "alembic==1.19.1",
+    "asyncpg==0.31.0",
+    "pyjwt==2.13.0",
+    "bcrypt==5.0.0",
+    "redis==8.1.0",
+    "pymongo==4.17.0",
+    "structlog==26.1.0",
+    "prometheus-client==0.26.0",
+    # Outbound HTTP: the assistant's endpoint provider and the carrier transport.
+    "httpx==0.28.1",
+]
+
+[dependency-groups]
+dev = [
+    "pytest==9.1.1",
+    "pytest-asyncio==1.4.0",
+    "pytest-cov==7.1.0",
+    "ruff==0.16.2",
+    "mypy==2.3.0",
+    "faker==40.36.0",
+]
+
+[tool.uv]
+# The application is run from the project root rather than installed, so uv only
+# has to resolve the dependency set.
+package = false
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+src = ["."]
+
+[tool.ruff.lint]
+select = [
+    "E", "W",   # pycodestyle
+    "F",        # pyflakes
+    "I",        # import sorting
+    "N",        # naming
+    "UP",       # pyupgrade
+    "B",        # bugbear
+    "A",        # builtin shadowing
+    "C4",       # comprehensions
+    "DTZ",      # naive datetimes
+    "PT",       # pytest style
+    "RET",      # return simplifications
+    "SIM",      # simplifications
+    "ARG",      # unused arguments
+    "PL",       # pylint subset
+    "RUF",
+]
+ignore = [
+    # FastAPI dependency defaults are function calls by design.
+    "B008",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["PLR2004"]
+
+[tool.mypy]
+python_version = "3.13"
+strict = true
+warn_unreachable = true
+plugins = ["pydantic.mypy"]
+files = ["app", "tests", "scripts", "migrations"]
+
+[[tool.mypy.overrides]]
+module = ["uvicorn.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# The application is run from the project root rather than installed, so the
+# root has to be on the import path for `app` to resolve.
+pythonpath = ["."]
+asyncio_mode = "auto"
+addopts = "--strict-markers --strict-config"
+markers = [
+    "integration: requires a live PostgreSQL, Redis or MongoDB instance",
+]
+
+[tool.coverage.run]
+source = ["app"]
+branch = true
