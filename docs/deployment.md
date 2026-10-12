@@ -30,7 +30,7 @@ flowchart LR
 
 | Файл | Коли запускається | Що робить |
 |---|---|---|
-| `.github/workflows/ci.yml` | кожен pull request і кожен push у його гілку; вручну (**Run workflow**); з `deploy.yml` | перевірки |
+| `.github/workflows/ci.yml` | pull request у `master` чи `develop` і кожен push у його гілку; push у `develop`; вручну (**Run workflow**); з `deploy.yml` | перевірки |
 | `.github/workflows/deploy.yml` | push у `master`, тобто злиття pull request; вручну | перевірки, імітоване розгортання, реліз |
 
 ### 1. Pull request → перевірки
@@ -43,7 +43,7 @@ production-образів (`docker:build`). Завдання `ci-success` зел
 `master`. Що робить кожне завдання і як відтворити його на машині — у
 [`CONTRIBUTING.md`](../CONTRIBUTING.md#7-що-перевіряє-ci).
 
-Новий push у гілку pull request скасовує попередній незакінчений прогін. На
+Новий push у гілку pull request чи в `develop` скасовує попередній незакінчений прогін. На
 `master` кожен коміт отримує власний прогін, і нічого не скасовується.
 
 ### 2. Злиття в `master` → перевірки ще раз

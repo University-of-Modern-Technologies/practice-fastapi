@@ -432,13 +432,14 @@ docker compose down
 
 | Коли | Що запускається |
 |---|---|
-| pull request | `ci.yml` — перевірки: бекенд (`check:api`), клієнт (`check:web`), інтеграційні тести проти справжніх PostgreSQL, Redis і MongoDB, звірка міграцій з моделями, збірка production-образів. Підсумкова перевірка `ci-success` зелена лише тоді, коли зелене все |
+| pull request у `master` чи `develop`, push у `develop` | `ci.yml` — перевірки: бекенд (`check:api`), клієнт (`check:web`), інтеграційні тести проти справжніх PostgreSQL, Redis і MongoDB, звірка міграцій з моделями, збірка production-образів. Підсумкова перевірка `ci-success` зелена лише тоді, коли зелене все |
 | злиття в `master` | `deploy.yml` — ті самі перевірки, потім імітований деплой, Summary і Release |
 | вручну, з вкладки Actions | будь-який із двох |
 
 **Гілки.** У цьому репозиторії дві довгоживучі гілки: `master` — релізи,
 `develop` — зміни між релізами. Pull request іде в `develop` і проходить
-`ci.yml`; реліз зливає `develop` у `master`, і тоді спрацьовує `deploy.yml`. У
+`ci.yml`, як і кожен push у `develop`; реліз зливає `develop` у `master`, і тоді
+спрацьовує `deploy.yml`. У
 форку достатньо `master` — як працювати там, описано в
 [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
