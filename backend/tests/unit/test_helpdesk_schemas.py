@@ -261,3 +261,19 @@ def test_a_query_string_picked_up_on_the_way_through_a_browser_is_ignored() -> N
     params = TicketListParams.model_validate({"utm_source": "newsletter", "_": "1723471425"})
 
     assert params.page == 1
+
+
+@pytest.mark.parametrize("value", ["3", "", True, False, None])
+def test_a_body_version_must_be_a_json_number(value: object) -> None:
+    with pytest.raises(ValidationError):
+        UpdateTicketRequest.model_validate({"version": value, "priority": "HIGH"})
+    with pytest.raises(ValidationError):
+        TransitionTicketRequest.model_validate({"version": value, "toStatus": "OPEN"})
+
+
+def test_a_blank_search_is_refused_and_a_page_has_a_ceiling() -> None:
+    with pytest.raises(ValidationError):
+        TicketListParams.model_validate({"search": "   "})
+    with pytest.raises(ValidationError):
+        TicketListParams.model_validate({"page": 1_000_001})
+    assert TicketListParams.model_validate({"page": "2"}).page == 2

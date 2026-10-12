@@ -27,6 +27,7 @@ __all__ = [
     "ensure_setting_key",
     "is_setting_key",
     "parse_setting_value",
+    "read_stored_setting",
     "read_stored_value",
     "setting_default",
     "setting_definition",
@@ -150,15 +151,22 @@ def parse_setting_value(key: str, value: Any) -> Any:
         ) from error
 
 
-def read_stored_value(key: str, stored: Any) -> Any:
-    """Reads a value that is already in the table.
+def read_stored_setting(key: str, stored: Any) -> tuple[Any, bool]:
+    """Reads a value that is already in the table, and says whether it was used.
 
     A row written before a declaration was tightened must not turn every read
     into a failure, so an unparsable stored value degrades to the declared
-    default instead of raising.
+    default instead of raising — and the flag says which of the two was
+    served, because a default must not be reported as coming from the row.
     """
     definition = setting_definition(key)
     try:
-        return definition.adapter.validate_python(stored)
+        return definition.adapter.validate_python(stored), True
     except ValidationError:
-        return definition.default_value
+        return definition.default_value, False
+
+
+def read_stored_value(key: str, stored: Any) -> Any:
+    """Just the value of ``read_stored_setting``."""
+    value, _ = read_stored_setting(key, stored)
+    return value

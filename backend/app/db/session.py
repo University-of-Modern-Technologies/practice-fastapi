@@ -28,7 +28,9 @@ class Database:
     def __init__(self, settings: Settings) -> None:
         self.engine: AsyncEngine = create_async_engine(
             settings.database_url,
-            echo=settings.app_env == "development",
+            # Statements are logged with their parameters, which carry personal
+            # data and password hashes, so this is opt-in (`LOG_SQL`).
+            echo=settings.logs_sql,
             pool_pre_ping=True,
             # Tests run against a single connection per worker; a large pool
             # would only hold idle connections open against the test database.

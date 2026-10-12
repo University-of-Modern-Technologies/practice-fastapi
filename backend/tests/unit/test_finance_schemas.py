@@ -17,6 +17,7 @@ from decimal import Decimal
 import pytest
 from pydantic import ValidationError
 
+from app.core.reporting import DEFAULT_REPORT_WINDOW_FROM, default_report_window_to
 from app.db.enums import PaymentMatchStatus, TransactionDirection
 from app.modules.finance.schemas import (
     MAX_SUMMARY_DAYS,
@@ -165,11 +166,24 @@ def test_an_unknown_sort_column_is_refused() -> None:
         TransactionListParams(sort_by="counterpartyName")
 
 
-def test_a_booking_bound_without_a_zone_is_refused() -> None:
-    # "2026-01-05T00:00:00" is a different instant in every office that sends
-    # it, and reading it as UTC would answer a question nobody asked.
+def test_a_booking_bound_without_a_zone_is_read_as_utc() -> None:
+    """The ledger's bounds follow the rule every report bound follows.
+
+    Refusing here while the summary next door read the same value as UTC made
+    one date valid on one screen and an error on the other.
+    """
+    params = TransactionListParams.model_validate(
+        {"bookedFrom": "2026-01-05", "bookedTo": "2026-01-06T12:00:00+02:00"}
+    )
+
+    assert params.booked_from == datetime(2026, 1, 5, tzinfo=UTC)
+    assert params.booked_to == datetime(2026, 1, 6, 10, tzinfo=UTC)
+
+
+@pytest.mark.parametrize("junk", ["1", "2026-13-01", "2026-01-05T10:00:00+0200"])
+def test_a_booking_bound_that_is_not_a_date_is_refused(junk: str) -> None:
     with pytest.raises(ValidationError):
-        TransactionListParams(booked_from="2026-01-05T00:00:00")
+        TransactionListParams.model_validate({"bookedTo": junk})
 
 
 def test_an_upside_down_booking_window_is_refused() -> None:
@@ -214,24 +228,47 @@ def test_a_version_below_one_is_refused() -> None:
 # --- the summary window ----------------------------------------------------
 
 
-def test_a_summary_with_no_bounds_invents_none() -> None:
-    """The window used to be filled in here, against the clock.
-
-    The shared fixed month belongs to the service, not to request parsing.
-    Leaving the bounds empty is what lets the service fill each one from that
-    default without hiding which values the caller actually supplied.
-    """
+def test_a_summary_with_no_bounds_takes_the_shared_default() -> None:
+    """Each bound defaults on its own, before anything is checked."""
     params = FinanceSummaryParams()
 
-    assert params.range_from is None
-    assert params.range_to is None
+    assert params.range_from == DEFAULT_REPORT_WINDOW_FROM
+    assert params.range_to == default_report_window_to()
 
 
-def test_one_bound_alone_is_accepted_because_it_contradicts_nothing() -> None:
+def test_one_bound_alone_is_paired_with_the_default() -> None:
     params = FinanceSummaryParams.model_validate({"from": NOW})
 
     assert params.range_from == NOW
-    assert params.range_to is None
+    assert params.range_to == default_report_window_to()
+
+
+@pytest.mark.parametrize("bounds", [{"from": "9999-01-01T00:00:00Z"}, {"to": "2025-12-31"}])
+def test_one_bound_that_runs_backwards_against_the_default_is_refused(
+    bounds: dict[str, str],
+) -> None:
+    """A single bound used to pass unexamined, and a window running
+    backwards against the default was answered with an empty report."""
+    with pytest.raises(ValidationError, match="from must be earlier than to"):
+        FinanceSummaryParams.model_validate(bounds)
+
+
+def test_a_summary_bound_is_truncated_to_the_millisecond() -> None:
+    """The stored resolution, as the analytics reports do it."""
+    params = FinanceSummaryParams.model_validate(
+        {"from": "2026-01-01T00:00:00.123987Z", "to": "2026-02-01T00:00:00Z"}
+    )
+
+    assert params.range_from == datetime(2026, 1, 1, 0, 0, 0, 123_000, tzinfo=UTC)
+
+
+@pytest.mark.parametrize(
+    "junk", ["1", "2026-02-31", "2026-03-01 10:30", "March 1, 2026", "2026-01-01T10:00:00+0200"]
+)
+def test_a_summary_bound_that_is_not_a_date_is_refused(junk: str) -> None:
+    """The parser underneath would read "1" as a Unix timestamp."""
+    with pytest.raises(ValidationError):
+        FinanceSummaryParams.model_validate({"from": junk})
 
 
 def test_a_summary_bound_arrives_under_its_published_name() -> None:

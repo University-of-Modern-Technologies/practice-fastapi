@@ -14,6 +14,7 @@ __all__ = [
     "PRODUCT_DELETED",
     "PRODUCT_ENTITY_TYPE",
     "PRODUCT_NOT_FOUND",
+    "PRODUCT_SKU_RETIRED",
     "PRODUCT_SKU_TAKEN",
     "PRODUCT_UPDATED",
     "ProductAccess",
@@ -24,6 +25,10 @@ __all__ = [
 #: pass unnoticed on one side.
 PRODUCT_NOT_FOUND = "PRODUCT_NOT_FOUND"
 PRODUCT_SKU_TAKEN = "PRODUCT_SKU_TAKEN"
+#: A SKU that belonged to a deleted product. The unique index still covers the
+#: deleted row, so the SKU is never issued again — and saying so beats calling
+#: it "taken" by a product the caller cannot find.
+PRODUCT_SKU_RETIRED = "PRODUCT_SKU_RETIRED"
 #: Optimistic locking is reported per resource, so a client editing several
 #: records in one workflow knows which one to re-read.
 PRODUCT_CONCURRENT_MODIFICATION = "PRODUCT_CONCURRENT_MODIFICATION"

@@ -8,6 +8,8 @@ from datetime import UTC, datetime
 from typing import Any, cast
 
 import pytest
+from sqlalchemy import Insert
+from sqlalchemy.dialects import postgresql
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import AppError, NotFoundError
@@ -22,6 +24,7 @@ NOW = datetime(2026, 8, 12, 15, 23, 45, 123_000, tzinfo=UTC)
 ACTOR_ID = uuid.uuid4()
 ACCESS = SettingsAccess(actor_id=ACTOR_ID, ip_address="203.0.113.7")
 KEY = "organization.name"
+PG_DIALECT = cast("Any", postgresql).dialect()
 
 
 class FakeScalars:
@@ -42,19 +45,51 @@ class FakeResult:
     def scalar_one_or_none(self) -> Any:
         return self._values[0] if self._values else None
 
+    def scalar_one(self) -> Any:
+        assert len(self._values) == 1
+        return self._values[0]
+
 
 class FakeSession:
     """A scripted stand-in: each call pops the next prepared answer."""
 
     def __init__(self) -> None:
         self.execute_queue: list[list[Any]] = []
+        self.scalar_queue: list[Any] = []
         self.added: list[Any] = []
         self.deleted: list[Any] = []
+        self.inserted: list[OrganizationSetting] = []
+        self.upserts: list[Insert] = []
         self.executions = 0
+        self._stored: OrganizationSetting | None = None
 
-    async def execute(self, statement: Any) -> FakeResult:  # noqa: ARG002
+    async def execute(self, statement: Any) -> FakeResult:
         self.executions += 1
-        return FakeResult(self.execute_queue.pop(0) if self.execute_queue else [])
+        if isinstance(statement, Insert):
+            return FakeResult([self._upsert(statement)])
+        rows = self.execute_queue.pop(0) if self.execute_queue else []
+        if rows and isinstance(rows[0], OrganizationSetting):
+            self._stored = rows[0]
+        return FakeResult(rows)
+
+    async def scalar(self, statement: Any) -> Any:  # noqa: ARG002
+        self.executions += 1
+        return self.scalar_queue.pop(0) if self.scalar_queue else None
+
+    def _upsert(self, statement: Insert) -> OrganizationSetting:
+        """Plays the database's part in ``INSERT ... ON CONFLICT DO UPDATE``."""
+        self.upserts.append(statement)
+        params = statement.compile(dialect=PG_DIALECT).params
+        row = self._stored
+        if row is None:
+            row = OrganizationSetting(id=params["id"], key=params["key"], created_at=NOW)
+            self.inserted.append(row)
+            self._stored = row
+        row.value = params["value"]
+        row.description = params["description"]
+        row.updated_by_id = params["updated_by_id"]
+        row.updated_at = NOW
+        return row
 
     def add(self, instance: Any) -> None:
         self.added.append(instance)
@@ -78,7 +113,8 @@ class FakeSession:
 
     @property
     def rows(self) -> list[OrganizationSetting]:
-        return [row for row in self.added if isinstance(row, OrganizationSetting)]
+        added = [row for row in self.added if isinstance(row, OrganizationSetting)]
+        return added + self.inserted
 
 
 class FakeCache:
@@ -361,3 +397,95 @@ def test_a_dto_survives_the_round_trip_through_the_cache() -> None:
     restored = SettingOut.model_validate(dto.model_dump(mode="json", by_alias=True))
 
     assert restored == dto
+
+
+# --- regressions ----------------------------------------------------------
+
+
+async def test_a_write_is_one_atomic_upsert_on_the_key() -> None:
+    session = FakeSession()
+
+    await make_service(session).upsert(ACCESS, KEY, UpsertSettingRequest(value="Acme"))
+
+    [statement] = session.upserts
+    compiled = str(statement.compile(dialect=PG_DIALECT))
+    # Two first writes racing on one key must end as one row, not as a unique
+    # violation for whoever is second.
+    assert "ON CONFLICT (key) DO UPDATE" in compiled
+    assert session.added == session.audit_entries  # no ORM insert of the setting
+
+
+def test_a_stored_value_that_no_longer_fits_is_reported_as_the_default() -> None:
+    dto = to_setting_out(KEY, make_row(value={"legacy": True}))
+
+    assert dto.value == "Training CRM"
+    assert dto.source == "default"
+
+
+@pytest.mark.parametrize("description", [None, "", "   "])
+async def test_a_blank_description_stores_the_declared_one(description: str | None) -> None:
+    session = FakeSession()
+
+    dto = await make_service(session).upsert(
+        ACCESS,
+        KEY,
+        UpsertSettingRequest.model_validate({"value": "Acme", "description": description}),
+    )
+
+    assert dto.description == "Display name of the organization."
+
+
+def test_a_description_is_trimmed_before_it_is_measured() -> None:
+    request = UpsertSettingRequest.model_validate({"value": 1, "description": f"  {'x' * 255}  "})
+
+    assert request.description == "x" * 255
+
+
+async def test_a_default_warehouse_code_must_name_an_active_warehouse() -> None:
+    session = FakeSession()
+    session.scalar_queue = [None]  # no active warehouse has that code
+
+    with pytest.raises(AppError) as error:
+        await make_service(session).upsert(
+            ACCESS, "warehouse.defaultCode", UpsertSettingRequest(value="nowhere")
+        )
+
+    assert error.value.status_code == 400
+    assert error.value.code == "INVALID_SETTING_VALUE"
+    assert session.upserts == []
+
+
+async def test_a_default_warehouse_code_naming_an_active_warehouse_is_stored() -> None:
+    session = FakeSession()
+    session.scalar_queue = [uuid.uuid4()]
+
+    dto = await make_service(session).upsert(
+        ACCESS, "warehouse.defaultCode", UpsertSettingRequest(value="central")
+    )
+
+    assert dto.value == "CENTRAL"
+
+
+async def test_a_write_over_an_existing_row_renders_what_the_statement_returned() -> None:
+    """The row is never read back lazily after the write.
+
+    ``updated_at`` is refreshed by the database, so after a plain flush the
+    session holds it expired, and reading it on an async session fails rather
+    than loading. Every column the DTO renders therefore has to come back in
+    the statement's own RETURNING, written over the copy the session already
+    holds from the read before it.
+    """
+    session = FakeSession()
+    session.execute_queue = [[make_row(value="Old")]]
+
+    dto = await make_service(session).upsert(ACCESS, KEY, UpsertSettingRequest(value="New"))
+
+    [statement] = session.upserts
+    returning = str(statement.compile(dialect=PG_DIALECT)).split("RETURNING", 1)[1]
+    for column in OrganizationSetting.__table__.columns:
+        assert f"organization_settings.{column.name}" in returning
+    assert statement.get_execution_options().get("populate_existing") is True
+    assert dto.value == "New"
+    assert dto.updated_at is not None
+    assert dto.updated_by_id == ACTOR_ID
+    assert dto.source == "database"

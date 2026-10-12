@@ -8,6 +8,7 @@ independent of whether a cache backend is wired in at all.
 
 from __future__ import annotations
 
+import uuid
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any, NamedTuple, Protocol
@@ -15,6 +16,7 @@ from typing import Any, NamedTuple, Protocol
 from app.db.enums import PermissionScope
 
 __all__ = [
+    "Actor",
     "CachePort",
     "CachedUserPermissions",
     "NoopCache",
@@ -35,6 +37,19 @@ RBAC_NAMESPACE = "rbac"
 USER_PERMISSIONS_NAMESPACE = "user-permissions"
 
 DEFAULT_PERMISSIONS_TTL_SECONDS = 300
+
+#: Audit vocabulary of role administration.
+ROLE_ENTITY_TYPE = "role"
+ROLE_CREATED = "role.created"
+ROLE_PERMISSIONS_REPLACED = "role.permissions_replaced"
+
+
+@dataclass(frozen=True, slots=True)
+class Actor:
+    """Who is changing users or roles, as the audit trail records it."""
+
+    actor_id: uuid.UUID
+    ip_address: str | None = None
 
 
 class PermissionKeyParts(NamedTuple):

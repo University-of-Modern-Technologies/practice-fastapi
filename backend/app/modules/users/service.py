@@ -2,18 +2,20 @@
 
 Anything that changes what a user may do — their roles, or their being disabled
 — tells authorization to forget them, so a revoked privilege takes effect on the
-next request rather than when a cache entry happens to expire.
+next request rather than when a cache entry happens to expire. Every change is
+also written to the audit trail on the same session, so the change and its
+entry commit or roll back together.
 """
 
 from __future__ import annotations
 
 import uuid
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import ColumnElement, delete, select, update
+from sqlalchemy import ColumnElement, delete, func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -21,11 +23,17 @@ from sqlalchemy.orm import selectinload
 from app.core.errors import ConflictError, NotFoundError
 from app.core.filters import FilterBuilder
 from app.core.paged_query import PagedQuery
-from app.core.security import hash_password
+from app.core.security import hash_password_async
+from app.core.serializers import to_camel
 from app.db.models.rbac import Role, UserRole
 from app.db.models.user import Session as SessionRow
 from app.db.models.user import User
-from app.modules.rbac.types import NoopUserPermissionsInvalidator, UserPermissionsInvalidator
+from app.modules.audit import AuditEvent, AuditService
+from app.modules.rbac.types import (
+    Actor,
+    NoopUserPermissionsInvalidator,
+    UserPermissionsInvalidator,
+)
 from app.modules.users.schemas import (
     CreateUserRequest,
     UpdateUserRequest,
@@ -34,10 +42,19 @@ from app.modules.users.schemas import (
     UserSessionOut,
 )
 from app.modules.users.types import (
+    ADMIN_ROLE_NAME,
+    CANNOT_DISABLE_SELF,
     EMAIL_ALREADY_EXISTS,
+    LAST_ACTIVE_ADMIN,
+    SESSION_ENTITY_TYPE,
     SESSION_NOT_FOUND,
+    SESSION_REVOKED,
+    USER_CREATED,
+    USER_DISABLED,
+    USER_ENTITY_TYPE,
     USER_NOT_FOUND,
     USER_OR_ROLE_NOT_FOUND,
+    USER_UPDATED,
 )
 
 _ROLES = selectinload(User.user_roles).selectinload(UserRole.role)
@@ -70,6 +87,15 @@ def to_session_out(row: SessionRow) -> UserSessionOut:
         created_at=row.created_at,
         updated_at=row.updated_at,
     )
+
+
+def _snapshot(model: UserOut | UserSessionOut) -> dict[str, Any]:
+    """The record as the audit trail stores it: the same form the client reads."""
+    return model.model_dump(by_alias=True, mode="json")
+
+
+def _holds_admin_role(user: User) -> bool:
+    return any(user_role.role.name == ADMIN_ROLE_NAME for user_role in user.user_roles)
 
 
 @dataclass(frozen=True, slots=True)
@@ -111,11 +137,15 @@ class UsersService:
         self,
         session: AsyncSession,
         permissions: UserPermissionsInvalidator | None = None,
+        audit: AuditService | None = None,
     ) -> None:
         self._session = session
         self._permissions: UserPermissionsInvalidator = (
             permissions if permissions is not None else NoopUserPermissionsInvalidator()
         )
+        # The trail is written on this same session, so a change and its entry
+        # commit, or roll back, as one.
+        self._audit = audit if audit is not None else AuditService(session)
 
     async def list_users(
         self, page: int, page_size: int, owner_id: uuid.UUID | None = None
@@ -140,43 +170,70 @@ class UsersService:
         )
         return [to_session_out(row) for row in result.scalars().all()]
 
-    async def revoke_session(self, user_id: uuid.UUID, session_id: uuid.UUID) -> None:
+    async def revoke_session(self, actor: Actor, user_id: uuid.UUID, session_id: uuid.UUID) -> None:
         """Ends one session.
 
         Revoking an already revoked session succeeds: the caller asked for a
-        state, and that state holds.
+        state, and that state holds. Nothing changed, so nothing is audited.
         """
         await self._require_user_exists(user_id)
 
         row = await self._session.get(SessionRow, session_id)
         if row is None or row.user_id != user_id:
             raise NotFoundError("Session not found", SESSION_NOT_FOUND)
-        if row.revoked_at is None:
-            row.revoked_at = datetime.now(tz=UTC)
-            await self._flush()
+        if row.revoked_at is not None:
+            return
 
-    async def create(self, data: CreateUserRequest) -> UserOut:
+        before = _snapshot(to_session_out(row))
+        row.revoked_at = datetime.now(tz=UTC)
+        await self._flush()
+        # The update timestamp is produced by the database.
+        await self._session.refresh(row)
+        await self._record(
+            actor,
+            AuditEvent(
+                action=SESSION_REVOKED,
+                entity_type=SESSION_ENTITY_TYPE,
+                entity_id=session_id,
+                changes={"before": before, "after": _snapshot(to_session_out(row))},
+                metadata={"userId": user_id},
+            ),
+        )
+
+    async def create(self, actor: Actor, data: CreateUserRequest) -> UserOut:
         await self._require_email_available(str(data.email))
-        await self._require_roles_exist(data.role_ids)
+        role_ids = list(dict.fromkeys(data.role_ids))
+        await self._require_roles_exist(role_ids)
 
         user = User(
             id=uuid.uuid4(),
             email=str(data.email),
             name=data.name,
-            password_hash=hash_password(data.password),
+            password_hash=await hash_password_async(data.password),
         )
         self._session.add(user)
         await self._flush()
 
-        self._assign_roles(user.id, data.role_ids)
+        self._assign_roles(user.id, role_ids)
         await self._flush()
 
+        created = await self.get_by_id(user.id)
+        await self._record(
+            actor,
+            AuditEvent(
+                action=USER_CREATED,
+                entity_type=USER_ENTITY_TYPE,
+                entity_id=user.id,
+                changes={"after": _snapshot(created)},
+            ),
+        )
         await self._permissions.invalidate_user_permissions(user.id)
-        return await self.get_by_id(user.id)
+        return created
 
-    async def update(self, user_id: uuid.UUID, data: UpdateUserRequest) -> UserOut:
+    async def update(self, actor: Actor, user_id: uuid.UUID, data: UpdateUserRequest) -> UserOut:
         user = await self._require_user(user_id)
-        fields = data.model_fields_set
+        before = _snapshot(to_user_out(user))
+        fields = {name for name in data.model_fields_set if getattr(data, name) is not None}
 
         if "email" in fields and data.email is not None:
             await self._require_email_available(str(data.email), exclude_id=user_id)
@@ -184,33 +241,69 @@ class UsersService:
         if "name" in fields and data.name is not None:
             user.name = data.name
         if "password" in fields and data.password is not None:
-            user.password_hash = hash_password(data.password)
+            user.password_hash = await hash_password_async(data.password)
         if "role_ids" in fields and data.role_ids is not None:
-            await self._require_roles_exist(data.role_ids)
+            role_ids = list(dict.fromkeys(data.role_ids))
+            await self._require_roles_exist(role_ids)
+            await self._guard_admin_role_removal(user, role_ids)
             await self._session.execute(delete(UserRole).where(UserRole.user_id == user_id))
-            self._assign_roles(user_id, data.role_ids)
+            self._assign_roles(user_id, role_ids)
 
         await self._flush()
-        await self._permissions.invalidate_user_permissions(user_id)
-        return await self.get_by_id(user_id)
+        if "password" in fields:
+            # A session opened with the old password must not outlive it: the
+            # change is often made precisely because that password leaked.
+            await self._revoke_all_sessions(user_id)
 
-    async def disable(self, user_id: uuid.UUID) -> UserOut:
+        updated = await self.get_by_id(user_id)
+        await self._record(
+            actor,
+            AuditEvent(
+                action=USER_UPDATED,
+                entity_type=USER_ENTITY_TYPE,
+                entity_id=user_id,
+                changes={"before": before, "after": _snapshot(updated)},
+                # Names only: a password change leaves no trace in the
+                # snapshots, and its value has no place in the trail.
+                metadata={"changedFields": sorted(to_camel(name) for name in fields)},
+            ),
+        )
+        await self._permissions.invalidate_user_permissions(user_id)
+        return updated
+
+    async def disable(self, actor: Actor, user_id: uuid.UUID) -> UserOut:
         """Deactivates an account and ends every session it holds.
 
         Both halves matter: leaving the sessions alive would let an already
         issued refresh token keep minting access tokens for a disabled account.
+        Two accounts are refused: the caller's own, and the last active holder
+        of the admin role. Either would lock administrators out.
         """
         user = await self._require_user(user_id)
+        if user_id == actor.actor_id:
+            raise ConflictError("You cannot disable your own account", CANNOT_DISABLE_SELF)
+        if user.is_active and _holds_admin_role(user):
+            admin_role_id = await self._lock_admin_role()
+            if admin_role_id is not None:
+                await self._require_another_active_admin(admin_role_id, user_id)
+
+        before = _snapshot(to_user_out(user))
         user.is_active = False
-        await self._session.execute(
-            update(SessionRow)
-            .where(SessionRow.user_id == user_id, SessionRow.revoked_at.is_(None))
-            .values(revoked_at=datetime.now(tz=UTC))
-        )
+        await self._revoke_all_sessions(user_id)
         await self._flush()
 
+        disabled = await self.get_by_id(user_id)
+        await self._record(
+            actor,
+            AuditEvent(
+                action=USER_DISABLED,
+                entity_type=USER_ENTITY_TYPE,
+                entity_id=user_id,
+                changes={"before": before, "after": _snapshot(disabled)},
+            ),
+        )
         await self._permissions.invalidate_user_permissions(user_id)
-        return await self.get_by_id(user_id)
+        return disabled
 
     async def _flush(self) -> None:
         """Surfaces a constraint violation as the conflict it represents."""
@@ -221,12 +314,73 @@ class UsersService:
                 "A user with this email already exists", EMAIL_ALREADY_EXISTS
             ) from error
 
+    async def _record(self, actor: Actor, event: AuditEvent) -> None:
+        """Appends an entry attributed to the caller to this transaction."""
+        await self._audit.record(
+            replace(event, actor_id=actor.actor_id, ip_address=actor.ip_address)
+        )
+
+    async def _revoke_all_sessions(self, user_id: uuid.UUID) -> None:
+        await self._session.execute(
+            update(SessionRow)
+            .where(SessionRow.user_id == user_id, SessionRow.revoked_at.is_(None))
+            .values(revoked_at=datetime.now(tz=UTC))
+        )
+
+    async def _guard_admin_role_removal(self, user: User, role_ids: list[uuid.UUID]) -> None:
+        """Refuses a role change that takes the admin role from its last active holder."""
+        if not user.is_active or not _holds_admin_role(user):
+            return
+        admin_role_id = await self._lock_admin_role()
+        if admin_role_id is None or admin_role_id in role_ids:
+            return
+        await self._require_another_active_admin(admin_role_id, user.id)
+
+    async def _lock_admin_role(self) -> uuid.UUID | None:
+        """Locks the admin role row for the rest of the transaction.
+
+        Every change that could leave the role without an active holder takes
+        this lock first, so two administrators disabling each other at the same
+        moment are serialised instead of each seeing the other still active.
+        """
+        admin_role_id: uuid.UUID | None = await self._session.scalar(
+            select(Role.id).where(Role.name == ADMIN_ROLE_NAME).with_for_update()
+        )
+        return admin_role_id
+
+    async def _require_another_active_admin(
+        self, admin_role_id: uuid.UUID, user_id: uuid.UUID
+    ) -> None:
+        others = await self._session.scalar(
+            select(func.count())
+            .select_from(UserRole)
+            .join(User, User.id == UserRole.user_id)
+            .where(
+                UserRole.role_id == admin_role_id,
+                UserRole.user_id != user_id,
+                User.is_active.is_(True),
+            )
+        )
+        if not others:
+            raise ConflictError(
+                "The last active administrator cannot be disabled or lose the admin role",
+                LAST_ACTIVE_ADMIN,
+            )
+
     def _assign_roles(self, user_id: uuid.UUID, role_ids: list[uuid.UUID]) -> None:
         for role_id in dict.fromkeys(role_ids):
             self._session.add(UserRole(user_id=user_id, role_id=role_id))
 
     async def _require_user(self, user_id: uuid.UUID) -> User:
-        result = await self._session.execute(select(User).options(_ROLES).where(User.id == user_id))
+        result = await self._session.execute(
+            select(User)
+            .options(_ROLES)
+            .where(User.id == user_id)
+            # An account already in the session is reloaded, roles included:
+            # a read that follows a change in the same request must see the
+            # change, not the copy that was loaded before it.
+            .execution_options(populate_existing=True)
+        )
         user = result.scalars().unique().one_or_none()
         if user is None:
             raise NotFoundError("User not found", USER_NOT_FOUND)

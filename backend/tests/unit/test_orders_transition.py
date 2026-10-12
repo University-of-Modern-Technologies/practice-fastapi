@@ -84,3 +84,10 @@ class TestEditability:
         assert_order_has_items(OrderStatus.DRAFT, 1)
         # Once the order has left the draft stage the guard no longer applies.
         assert_order_has_items(OrderStatus.CONFIRMED, 0)
+
+    def test_refuses_to_confirm_an_empty_draft_but_lets_it_be_cancelled(self) -> None:
+        with pytest.raises(ConflictError) as error:
+            assert_order_has_items(OrderStatus.DRAFT, 0, OrderStatus.CONFIRMED)
+        assert error.value.code == "ORDER_HAS_NO_ITEMS"
+
+        assert_order_has_items(OrderStatus.DRAFT, 0, OrderStatus.CANCELLED)

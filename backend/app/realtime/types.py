@@ -16,8 +16,15 @@ from typing import Any, Final, Literal, Protocol, runtime_checkable
 #: Close code sent to every client during a graceful shutdown.
 CLOSE_CODE_GOING_AWAY: Final = 1001
 
-#: Close code used when the handshake carries no usable access token.
+#: Close code used when the handshake carries no usable access token. Only sent
+#: by a server that cannot answer a handshake with an HTTP status.
 CLOSE_CODE_UNAUTHORIZED: Final = 1008
+
+#: HTTP status refusing a handshake without a usable access token.
+HANDSHAKE_STATUS_UNAUTHORIZED: Final = 401
+
+#: HTTP status refusing a handshake that arrives during shutdown.
+HANDSHAKE_STATUS_UNAVAILABLE: Final = 503
 
 RealtimeErrorCode = Literal[
     "INVALID_MESSAGE",

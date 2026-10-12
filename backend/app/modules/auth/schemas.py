@@ -3,22 +3,33 @@
 from __future__ import annotations
 
 import uuid
+from typing import Annotated
 
-from pydantic import Field, field_validator
+from pydantic import AfterValidator, Field, field_validator
 
 from app.core.responses import CamelModel
+from app.core.security import ensure_password_fits
 from app.core.validation import EmailAddress
 from app.db.enums import PermissionScope
 
 MIN_PASSWORD_LENGTH = 8
 MAX_PASSWORD_LENGTH = 128
 
+#: A password as every endpoint accepts it. The character limit is what the
+#: contract publishes; the byte limit underneath it is bcrypt's, and a password
+#: over it is refused instead of being hashed with its tail silently dropped.
+Password = Annotated[
+    str,
+    Field(min_length=MIN_PASSWORD_LENGTH, max_length=MAX_PASSWORD_LENGTH),
+    AfterValidator(ensure_password_fits),
+]
+
 
 class LoginRequest(CamelModel):
     """Credentials presented at ``POST /auth/login``."""
 
     email: EmailAddress
-    password: str = Field(min_length=MIN_PASSWORD_LENGTH, max_length=MAX_PASSWORD_LENGTH)
+    password: Password
 
     @field_validator("email", mode="before")
     @classmethod

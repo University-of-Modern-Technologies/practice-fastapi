@@ -261,3 +261,21 @@ def test_several_candidates_are_a_question_for_a_person() -> None:
 
 def test_no_candidate_leaves_the_payment_where_it_started() -> None:
     assert outcome_for([]) is PaymentMatchStatus.UNMATCHED
+
+
+def test_collapse_folds_by_the_same_list_as_the_sibling_backend() -> None:
+    """Exactly the listed whitespace, after plain lower-casing."""
+    no_break, ideographic, byte_order_mark = chr(0xA0), chr(0x3000), chr(0xFEFF)
+
+    assert collapse(f"  ORD{no_break}2026\t{ideographic}0001{byte_order_mark} ") == "ord20260001"
+    # An information separator is not whitespace to the rule, although
+    # ``str.split`` would have dropped it.
+    assert collapse(f"ORD{chr(0x1C)}1") == f"ord{chr(0x1C)}1"
+    # Lower-casing, not case folding: ``casefold`` would turn this into "ss".
+    assert collapse("STRAßE") == "straße"
+
+
+def test_a_blank_order_number_is_never_read_into_a_reference() -> None:
+    """Every string contains the empty one."""
+    assert references_order("Payment for order ORD-2026-0001", "") is False
+    assert references_order("Payment for order ORD-2026-0001", "   ") is False

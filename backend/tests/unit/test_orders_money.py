@@ -104,7 +104,44 @@ class TestOrderTotals:
             "taxTotal": "0.00",
         }
 
-    def test_lets_the_tax_cover_a_discount_that_alone_would_be_too_large(self) -> None:
-        totals = calculate_order_totals(["10.00"], "10.01", "1.00")
+    def test_measures_the_discount_against_the_subtotal_so_a_tax_cannot_hide_it(self) -> None:
+        with pytest.raises(AppError) as error:
+            calculate_order_totals(["10.00"], "15.00", "10.00")
 
-        assert format_scaled_money(totals.total) == "0.99"
+        assert error.value.status_code == 400
+        assert error.value.code == "ORDER_TOTALS_INVALID"
+
+    def test_lowers_an_oversized_discount_to_the_subtotal_when_asked_to_cap_it(self) -> None:
+        totals = calculate_order_totals(["10.00"], "15.00", "2.00", cap_discount=True)
+
+        assert format_scaled_money(totals.subtotal) == "10.00"
+        assert format_scaled_money(totals.discount_total) == "10.00"
+        assert format_scaled_money(totals.tax_total) == "2.00"
+        assert format_scaled_money(totals.total) == "2.00"
+
+
+class TestAmountRange:
+    MAX = "999999999999.99"
+
+    def test_refuses_a_line_total_the_money_column_cannot_hold(self) -> None:
+        with pytest.raises(AppError) as error:
+            calculate_line_total(self.MAX, 2)
+
+        assert error.value.status_code == 400
+        assert error.value.code == "ORDER_AMOUNT_OUT_OF_RANGE"
+        assert error.value.details == {"field": "lineTotal", "max": self.MAX}
+        assert format_scaled_money(calculate_line_total(self.MAX, 1)) == self.MAX
+
+    def test_refuses_a_subtotal_the_column_cannot_hold_even_when_every_line_fits(self) -> None:
+        with pytest.raises(AppError) as error:
+            calculate_order_totals([self.MAX, "0.01"], "0", "0")
+
+        assert error.value.code == "ORDER_AMOUNT_OUT_OF_RANGE"
+        assert error.value.details == {"field": "subtotal", "max": self.MAX}
+
+    def test_refuses_a_total_the_tax_pushes_past_the_column(self) -> None:
+        with pytest.raises(AppError) as error:
+            calculate_order_totals([self.MAX], "0", "0.01")
+
+        assert error.value.code == "ORDER_AMOUNT_OUT_OF_RANGE"
+        assert error.value.details == {"field": "total", "max": self.MAX}

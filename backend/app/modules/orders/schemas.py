@@ -12,7 +12,7 @@ import uuid
 from decimal import Decimal
 from typing import Annotated
 
-from pydantic import Field, StringConstraints, model_validator
+from pydantic import Field, StringConstraints, field_validator, model_validator
 
 from app.core.pagination import ListQuery
 from app.core.responses import CamelModel
@@ -35,6 +35,23 @@ CurrencyCode = Annotated[
 Quantity = Annotated[int, Field(ge=1, le=MAX_ITEM_QUANTITY)]
 Version = Annotated[int, Field(ge=1)]
 Notes = Annotated[str, StringConstraints(strip_whitespace=True, max_length=MAX_NOTES_LENGTH)]
+
+#: Free-text search, trimmed before its length is checked, so a term made of
+#: spaces is refused rather than matching every order.
+SearchTerm = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=64)]
+
+
+def _reject_null(value: object) -> object:
+    """Refuses an explicitly sent ``null``.
+
+    A default is never passed through a validator, so this only ever sees a
+    value the client wrote down. That is what lets a field be omitted freely
+    while ``null`` stays an error on the fields that have no "empty" meaning.
+    """
+    if value is None:
+        message = "Value may not be null"
+        raise ValueError(message)
+    return value
 
 
 class OrderItemOut(CamelModel):
@@ -93,6 +110,23 @@ class CreateOrderRequest(CamelModel):
     notes: Notes | None = None
     items: list[OrderItemRequest] | None = Field(default=None, max_length=MAX_ITEMS_PER_ORDER)
 
+    # Every field may be omitted, none may be sent as null: a new order has
+    # nothing to clear, so a null is a malformed request, not an instruction.
+    @field_validator(
+        "owner_id",
+        "contact_id",
+        "deal_id",
+        "currency",
+        "discount_total",
+        "tax_total",
+        "notes",
+        "items",
+        mode="before",
+    )
+    @classmethod
+    def _refuse_null(cls, value: object) -> object:
+        return _reject_null(value)
+
     @model_validator(mode="after")
     def _reject_repeated_products(self) -> CreateOrderRequest:
         if self.items is not None:
@@ -118,6 +152,14 @@ class UpdateOrderRequest(CamelModel):
     discount_total: MoneyString | None = None
     tax_total: MoneyString | None = None
     notes: Notes | None = None
+
+    # The contact, the deal and the notes may be cleared with null. The owner,
+    # the currency and the amounts always hold a value, so null there is a bad
+    # request rather than a write that silently changes nothing.
+    @field_validator("owner_id", "currency", "discount_total", "tax_total", mode="before")
+    @classmethod
+    def _refuse_null(cls, value: object) -> object:
+        return _reject_null(value)
 
     @model_validator(mode="after")
     def _require_one_field(self) -> UpdateOrderRequest:
@@ -160,6 +202,7 @@ class OrderListParams(ListQuery):
     fields it constrains.
     """
 
+    search: SearchTerm | None = None
     owner_id: uuid.UUID | None = None
     contact_id: uuid.UUID | None = None
     deal_id: uuid.UUID | None = None

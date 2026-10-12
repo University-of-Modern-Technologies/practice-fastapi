@@ -28,4 +28,6 @@ COPY --chown=app:app scripts ./scripts
 COPY --chown=app:app app ./app
 USER app
 EXPOSE 8000
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--no-access-log"]
+# The same entry point as on a developer machine, so HOST, PORT,
+# SHUTDOWN_TIMEOUT_MS and TRUSTED_PROXIES are honoured here as well.
+CMD ["python", "-m", "app.main"]

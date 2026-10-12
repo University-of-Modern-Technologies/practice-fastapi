@@ -38,7 +38,6 @@ from app.modules.finance.types import (
     STATEMENT_DUPLICATE_EXTERNAL_ID,
     STATEMENT_ENTITY_TYPE,
     STATEMENT_IMPORTED,
-    STATEMENT_NOT_FOUND,
     TRANSACTION_ALREADY_MATCHED,
     TRANSACTION_AMOUNT_MISMATCH,
     TRANSACTION_CONCURRENT_MODIFICATION,
@@ -584,12 +583,16 @@ async def test_matching_an_amount_that_cannot_settle_the_order_is_refused() -> N
     session = FakeSession()
     session.execute_queue = [[make_transaction(amount=Decimal("10.00"))], [make_order()]]
 
-    with pytest.raises(ConflictError) as failure:
+    with pytest.raises(AppError) as failure:
         await make_service(session).match(
             ACCESS, TRANSACTION_ID, MatchTransactionRequest(order_id=ORDER_ID, version=1)
         )
 
+    # 422 with both figures, as the endpoint's description promises and
+    # as the sibling backend answers.
+    assert failure.value.status_code == 422
     assert failure.value.code == TRANSACTION_AMOUNT_MISMATCH
+    assert failure.value.details == {"amount": "10.00", "orderTotal": "1800.00"}
 
 
 async def test_matching_an_order_nobody_can_see_is_reported_with_our_own_code() -> None:
@@ -757,16 +760,22 @@ async def test_reading_a_transaction_that_does_not_exist_is_a_not_found() -> Non
 # --- browsing the ledger ---------------------------------------------------
 
 
-async def test_a_filter_naming_a_statement_that_does_not_exist_is_reported() -> None:
-    """Rather than answered with an empty page, which would look like an answer."""
+async def test_a_filter_naming_a_statement_that_does_not_exist_is_an_empty_page() -> None:
+    """A statement filter narrows like every other filter in the API.
+
+    An unknown owner or contact yields an empty page everywhere else, and the
+    endpoint publishes no 404; answering one here alone made the refusals of a
+    list depend on which filter was set.
+    """
     session = FakeSession()
+    session.scalar_queue = [0]
 
-    with pytest.raises(NotFoundError) as failure:
-        await make_service(session).list_transactions(
-            ACCESS, TransactionListParams(statement_id=STATEMENT_ID)
-        )
+    items, total = await make_service(session).list_transactions(
+        ACCESS, TransactionListParams(statement_id=STATEMENT_ID)
+    )
 
-    assert failure.value.code == STATEMENT_NOT_FOUND
+    assert (items, total) == ([], 0)
+    assert all("FROM bank_statements" not in sql_of(item) for item in session.statements)
 
 
 async def test_an_amount_filter_reaches_the_query_as_an_exact_decimal() -> None:
@@ -1050,3 +1059,66 @@ async def test_a_missing_bound_uses_the_shared_default_while_an_explicit_one_win
 
     assert upper_bound_result.from_ == datetime(2026, 1, 1, tzinfo=UTC)
     assert upper_bound_result.to == datetime(2026, 1, 20, tzinfo=UTC)
+
+
+# --- regressions ------------------------------------------------------------
+
+
+async def test_the_ledger_is_searched_by_reference_payer_and_account_alike() -> None:
+    """The same three fields as the sibling backend, none case-sensitive."""
+    session = FakeSession()
+    session.scalar_queue = [0]
+
+    await make_service(session).list_transactions(ACCESS, TransactionListParams(search="acct"))
+
+    criteria = where_of(session.statements[-1])
+    for column in ("reference", "counterparty_name", "counterparty_account"):
+        assert f"bank_transactions.{column} ILIKE" in criteria
+
+
+async def test_the_booking_window_is_half_open() -> None:
+    """``bookedTo`` excludes its end, as every other window does."""
+    session = FakeSession()
+    session.scalar_queue = [0]
+
+    await make_service(session).list_transactions(
+        ACCESS,
+        TransactionListParams.model_validate(
+            {"bookedFrom": "2026-01-01T00:00:00Z", "bookedTo": "2026-02-01T00:00:00Z"}
+        ),
+    )
+
+    criteria = where_of(session.statements[-1])
+    assert "bank_transactions.booked_at >=" in criteria
+    assert "bank_transactions.booked_at <" in criteria
+    assert "bank_transactions.booked_at <=" not in criteria
+
+
+async def test_the_trail_and_the_stream_hear_the_same_account_of_an_import() -> None:
+    """The statement and what this pull did to it, in both places."""
+    session = FakeSession()
+    publisher = RecordingPublisher()
+    queue_for_import(session, known=["stub-txn-2026-01-0001"])
+
+    await make_service(session, publisher=publisher).import_statement(ACCESS)
+
+    entry = next(row for row in session.added if isinstance(row, AuditLog))
+    assert publisher.published[0].payload == entry.changes
+    after = (entry.changes or {})["after"]
+    assert after["externalId"] == stub_statement().external_id
+    assert after["imported"] == STUB_TRANSACTION_COUNT - 1
+    assert after["skipped"] == 1
+
+
+async def test_a_whole_share_is_published_without_a_fraction() -> None:
+    """``1`` as the sibling backend writes it, never ``1.0``."""
+    session = FakeSession()
+    session.execute_queue = [
+        [(TransactionDirection.CREDIT, PaymentMatchStatus.MATCHED, 4, Decimal("1000.00"))]
+    ]
+
+    result = await make_service(session).summary(ACCESS, NAMED_WINDOW)
+
+    rendered = result.model_dump_json(by_alias=True)
+    assert '"status":"MATCHED","count":4,"amount":"1000.00","share":1}' in rendered
+    assert '"status":"UNMATCHED","count":0,"amount":"0.00","share":0}' in rendered

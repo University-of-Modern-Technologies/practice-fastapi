@@ -1,11 +1,14 @@
 """Access token extraction for the WebSocket handshake.
 
-The token is carried by ``Sec-WebSocket-Protocol``, in one of two shapes:
+The token is carried by ``Sec-WebSocket-Protocol: bearer, <jwt>`` — what a
+browser sends when the socket is opened as
+``new WebSocket(url, ["bearer", accessToken])``.
 
-* ``Sec-WebSocket-Protocol: bearer, <jwt>`` — what a browser sends when the
-  socket is opened as ``new WebSocket(url, ["bearer", accessToken])``;
-* ``Sec-WebSocket-Protocol: access_token.<jwt>`` — the single-value form, for
-  clients that cannot send a two-element list.
+There is deliberately no single-value form such as ``access_token.<jwt>``. A
+browser fails any handshake whose response does not echo one of the offered
+subprotocols, and echoing that entry would put the token itself into the
+response headers — so such a form could only ever serve clients that can send
+``Authorization`` anyway.
 
 Native clients that control request headers may instead send a normal
 ``Authorization: Bearer <jwt>`` header.
@@ -24,9 +27,6 @@ from typing import Final
 
 #: Marker subprotocol echoed back on a successful handshake.
 BEARER_SUBPROTOCOL: Final = "bearer"
-
-#: Prefix of the single-value subprotocol form.
-ACCESS_TOKEN_SUBPROTOCOL_PREFIX: Final = "access_token."
 
 SUBPROTOCOL_HEADER: Final = "sec-websocket-protocol"
 AUTHORIZATION_HEADER: Final = "authorization"
@@ -54,11 +54,6 @@ def _from_subprotocol_header(headers: Mapping[str, str]) -> str | None:
     protocols = parse_subprotocols(headers.get(SUBPROTOCOL_HEADER))
 
     for index, entry in enumerate(protocols):
-        if entry.startswith(ACCESS_TOKEN_SUBPROTOCOL_PREFIX):
-            token = entry[len(ACCESS_TOKEN_SUBPROTOCOL_PREFIX) :]
-            if token:
-                return token
-
         if entry.lower() == BEARER_SUBPROTOCOL and index + 1 < len(protocols):
             token = protocols[index + 1]
             if token:

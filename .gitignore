@@ -1,6 +1,6 @@
 # Local configuration: real values stay on the machine, .env.example is tracked
 .env
-.env.local
+.env.*
 !.env.example
 .portainer-password
 

@@ -9,8 +9,11 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
+from typing import Any, cast
 
 import pytest
+from sqlalchemy.dialects import postgresql
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import AppError
 from app.db.enums import StockMovementType
@@ -19,8 +22,11 @@ from app.modules.warehouse.schemas import (
     IssueStockRequest,
     ReceiveStockRequest,
     ReserveStockRequest,
+    WarehouseListParams,
 )
 from app.modules.warehouse.service import (
+    MAX_STOCK_QUANTITY,
+    _WarehousePage,
     adjust_plan,
     issue_plan,
     next_quantities,
@@ -249,3 +255,31 @@ def test_neither_counter_can_be_driven_below_zero() -> None:
         next_quantities(10, 0, plan)
 
     assert error.value.code == INSUFFICIENT_STOCK
+
+
+def test_a_receipt_past_the_integer_column_is_refused_before_any_write() -> None:
+    plan = receive_plan(ReceiveStockRequest.model_validate({**target(), "quantity": 200_000_000}))
+
+    with pytest.raises(AppError) as error:
+        next_quantities(2_000_000_000, 0, plan)
+
+    assert error.value.status_code == 400
+    assert error.value.code == "STOCK_QUANTITY_OUT_OF_RANGE"
+    assert error.value.details == {"field": "quantityOnHand", "max": MAX_STOCK_QUANTITY}
+
+
+def test_a_receipt_that_fills_the_shelf_exactly_to_the_limit_is_accepted() -> None:
+    plan = receive_plan(ReceiveStockRequest.model_validate({**target(), "quantity": 5}))
+
+    assert next_quantities(MAX_STOCK_QUANTITY - 5, 0, plan) == (MAX_STOCK_QUANTITY, 0)
+
+
+def test_a_warehouse_search_is_matched_literally() -> None:
+    page = _WarehousePage(cast(AsyncSession, None))
+    criteria = page._build_filters(WarehouseListParams(search="A_1%"))
+    dialect: Any = postgresql.dialect()  # type: ignore[no-untyped-call]
+
+    compiled = criteria[0].compile(dialect=dialect)
+
+    assert "ESCAPE" in str(compiled)
+    assert set(compiled.params.values()) == {r"%A\_1\%%"}

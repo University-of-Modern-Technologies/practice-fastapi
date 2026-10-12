@@ -35,7 +35,12 @@ PORTS = [
     ("REDIS_PORT", 6379, "Redis"),
     ("MONGO_PORT", 27017, "MongoDB"),
 ]
-ENV_LINE = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$")
+# The rules Docker Compose reads `.env` by, so this script and the stack see
+# the same values: surrounding spaces are trimmed, matching quotes removed, and
+# `#` starts a comment only after a space in an unquoted value.
+ENV_LINE = re.compile(r"^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=(.*)$")
+QUOTED_VALUE = re.compile(r"^(['\"])(.*?)\1(?:\s+#.*)?$")
+INLINE_COMMENT = re.compile(r"\s+#.*$")
 
 
 def paint(code: str, text: str) -> str:
@@ -47,14 +52,24 @@ def fail(message: str, code: int = 1) -> None:
     sys.exit(code)
 
 
+def parse_env_value(raw: str) -> str:
+    text = raw.strip()
+    quoted = QUOTED_VALUE.match(text)
+    return quoted.group(2) if quoted else INLINE_COMMENT.sub("", text).strip()
+
+
 def read_env(path: Path = REPO_ROOT / ".env") -> dict[str, str]:
+    # A blank value is left out, so every caller falls back to its default.
     if not path.exists():
         return {}
     values: dict[str, str] = {}
     for line in path.read_text(encoding="utf-8").splitlines():
         match = ENV_LINE.match(line)
-        if match:
-            values[match.group(1)] = match.group(2).strip("'\"")
+        if not match:
+            continue
+        value = parse_env_value(match.group(2))
+        if value:
+            values[match.group(1)] = value
     return values
 
 
@@ -122,7 +137,18 @@ def write_env_file(source: Path, target: Path, values: dict[str, str]) -> None:
 
 
 def portainer_password() -> str:
-    if not PORTAINER_PASSWORD_FILE.exists():
+    # Docker creates an empty directory in place of a bind-mounted file that is
+    # missing; a stack started that way once leaves it behind.
+    if PORTAINER_PASSWORD_FILE.is_dir():
+        try:
+            PORTAINER_PASSWORD_FILE.rmdir()
+        except OSError:
+            name = PORTAINER_PASSWORD_FILE.name
+            fail(f"{name} is a directory that is not empty. Remove it and try again.")
+    if (
+        not PORTAINER_PASSWORD_FILE.exists()
+        or not PORTAINER_PASSWORD_FILE.read_text(encoding="utf-8").strip()
+    ):
         PORTAINER_PASSWORD_FILE.write_text(secrets.token_urlsafe(12), encoding="utf-8")
     return PORTAINER_PASSWORD_FILE.read_text(encoding="utf-8").strip()
 

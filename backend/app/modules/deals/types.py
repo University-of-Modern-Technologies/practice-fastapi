@@ -14,6 +14,7 @@ __all__ = [
     "DEAL_DELETED",
     "DEAL_ENTITY_TYPE",
     "DEAL_NOT_FOUND",
+    "DEAL_OWNER_NOT_FOUND",
     "DEAL_STAGE_TRANSITIONED",
     "DEAL_UPDATED",
     "DEFAULT_CURRENCY",
@@ -21,6 +22,7 @@ __all__ = [
     "INVALID_DEAL_PROBABILITY",
     "INVALID_DEAL_STAGE_TRANSITION",
     "INVALID_INITIAL_DEAL_STAGE",
+    "MAX_DEAL_PAGE",
     "MAX_SEARCH_LENGTH",
     "MAX_TITLE_LENGTH",
     "DealAccess",
@@ -34,6 +36,7 @@ DEAL_NOT_FOUND = "DEAL_NOT_FOUND"
 #: several records in one workflow it has to re-read.
 DEAL_CONCURRENT_MODIFICATION = "DEAL_CONCURRENT_MODIFICATION"
 CONTACT_NOT_FOUND = "CONTACT_NOT_FOUND"
+DEAL_OWNER_NOT_FOUND = "DEAL_OWNER_NOT_FOUND"
 INVALID_DEAL_AMOUNT = "INVALID_DEAL_AMOUNT"
 INVALID_DEAL_PROBABILITY = "INVALID_DEAL_PROBABILITY"
 INVALID_DEAL_STAGE_TRANSITION = "INVALID_DEAL_STAGE_TRANSITION"
@@ -52,6 +55,10 @@ DEAL_ENTITY_TYPE = "deal"
 DEFAULT_CURRENCY = "USD"
 MAX_TITLE_LENGTH = 160
 MAX_SEARCH_LENGTH = 160
+#: Highest page a list request may ask for: far beyond any real pipeline, and
+#: low enough that the row offset it implies stays a small integer for the
+#: database instead of making the query itself fail.
+MAX_DEAL_PAGE = 1_000_000
 
 #: Sortable columns, named as the client spells them.
 DealSortField = Literal[

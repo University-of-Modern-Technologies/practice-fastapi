@@ -44,6 +44,7 @@ from app.modules.products.types import (
     PRODUCT_DELETED,
     PRODUCT_ENTITY_TYPE,
     PRODUCT_NOT_FOUND,
+    PRODUCT_SKU_RETIRED,
     PRODUCT_SKU_TAKEN,
     PRODUCT_UPDATED,
     ProductAccess,
@@ -293,10 +294,18 @@ class ProductsService:
     async def _require_sku_available(self, sku: str) -> None:
         # Deleted rows are included on purpose: the unique index covers them, so
         # a SKU freed by a soft delete is still taken as far as the database is
-        # concerned, and reporting that as a conflict beats an opaque 500.
-        taken = await self._session.scalar(select(Product.id).where(Product.sku == sku))
-        if taken is not None:
-            raise ConflictError("A product with this SKU already exists", PRODUCT_SKU_TAKEN)
+        # concerned. Which of the two it is decides the code the caller gets.
+        # None: nobody holds it. False: a live product does. True: a deleted one.
+        retired = await self._session.scalar(
+            select(Product.deleted_at.is_not(None)).where(Product.sku == sku)
+        )
+        if retired is None:
+            return
+        if retired:
+            raise ConflictError(
+                "This SKU belongs to a deleted product and cannot be reused", PRODUCT_SKU_RETIRED
+            )
+        raise ConflictError("A product with this SKU already exists", PRODUCT_SKU_TAKEN)
 
     async def _flush_unique_sku(self) -> None:
         """Surfaces the unique index as the conflict it represents.

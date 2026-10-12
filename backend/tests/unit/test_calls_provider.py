@@ -7,6 +7,7 @@ otherwise only be observable against a provider having a bad day.
 
 from __future__ import annotations
 
+import asyncio
 import re
 from collections.abc import Sequence
 from typing import Any
@@ -24,6 +25,8 @@ from app.modules.calls.http_provider import (
 )
 from app.modules.calls.provider import (
     MAX_PROVIDER_BATCH_SIZE,
+    MAX_RETRY_BACKOFF_MS,
+    MAX_RETRY_TOTAL_MS,
     CallProviderFetchRequest,
     ProviderCall,
     RetryableProviderError,
@@ -363,3 +366,93 @@ async def test_a_configured_address_means_the_endpoint_and_the_same_retry_layer(
 
     assert len(transport.requests) == 2
     assert error.value.code == CALL_PROVIDER_UNAVAILABLE
+
+
+# --- regressions ----------------------------------------------------------
+
+
+@pytest.mark.parametrize("link", ["", "   "])
+async def test_an_empty_recording_link_means_no_recording(link: str) -> None:
+    provider, _ = make_http_provider(
+        [CallTransportResponse(status=200, body=[VALID_CALL | {"recordingUrl": link}])]
+    )
+
+    [call] = await provider.fetch_calls(FETCH)
+
+    assert call.recording_url is None
+
+
+@pytest.mark.parametrize(
+    "link", ["javascript:alert(1)", "file:///etc/passwd", "ftp://host/a.mp3", "recordings/1"]
+)
+async def test_only_a_web_address_is_accepted_as_a_recording(link: str) -> None:
+    provider, _ = make_http_provider(
+        [CallTransportResponse(status=200, body=[VALID_CALL | {"recordingUrl": link}])]
+    )
+
+    with pytest.raises(AppError) as error:
+        await provider.fetch_calls(FETCH)
+
+    assert error.value.code == CALL_PROVIDER_UNAVAILABLE
+
+
+async def test_a_batch_longer_than_the_limit_asked_for_is_refused() -> None:
+    batch = [VALID_CALL | {"externalId": f"pbx-{index}"} for index in range(3)]
+    provider, _ = make_http_provider([CallTransportResponse(status=200, body=batch)])
+
+    with pytest.raises(AppError) as error:
+        await provider.fetch_calls(CallProviderFetchRequest(limit=2))
+
+    assert error.value.code == CALL_PROVIDER_UNAVAILABLE
+
+
+async def test_the_timeout_is_one_deadline_for_the_whole_round_trip() -> None:
+    class SlowTransport:
+        async def send(self, request: CallTransportRequest) -> CallTransportResponse:  # noqa: ARG002
+            await asyncio.sleep(5)
+            return CallTransportResponse(status=200, body=[])
+
+    provider = HttpCallProvider(
+        HttpCallProviderOptions(
+            base_url="https://pbx.invalid", timeout_ms=20, transport=SlowTransport()
+        )
+    )
+
+    with pytest.raises(RetryableProviderError):
+        await asyncio.wait_for(provider.fetch_calls(FETCH), timeout=2)
+
+
+async def test_a_single_pause_is_capped() -> None:
+    waited: list[float] = []
+
+    async def record(milliseconds: float) -> None:
+        waited.append(milliseconds)
+
+    inner = ScriptedProvider([RetryableProviderError(call_provider_unavailable_error())])
+    provider = RetryingCallProvider(
+        inner, RetryOptions(max_attempts=4, backoff_ms=4_000, delay=record, now_ms=lambda: 0.0)
+    )
+
+    with pytest.raises(AppError):
+        await provider.fetch_calls(FETCH)
+
+    assert waited == [4_000, MAX_RETRY_BACKOFF_MS, MAX_RETRY_BACKOFF_MS]
+
+
+async def test_retrying_stops_once_the_total_budget_is_spent() -> None:
+    clock = [0.0]
+
+    async def advance(milliseconds: float) -> None:
+        clock[0] += milliseconds
+
+    inner = ScriptedProvider([RetryableProviderError(call_provider_unavailable_error())])
+    provider = RetryingCallProvider(
+        inner,
+        RetryOptions(max_attempts=10, backoff_ms=5_000, delay=advance, now_ms=lambda: clock[0]),
+    )
+
+    with pytest.raises(AppError):
+        await provider.fetch_calls(FETCH)
+
+    assert clock[0] <= MAX_RETRY_TOTAL_MS
+    assert inner.attempts < 10

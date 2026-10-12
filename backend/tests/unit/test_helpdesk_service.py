@@ -281,6 +281,7 @@ async def test_a_narrow_grant_cannot_file_a_ticket_for_somebody_else() -> None:
 
 async def test_a_wide_grant_may_file_a_ticket_for_somebody_else() -> None:
     session = FakeSession()
+    session.scalar_queue = [OTHER_ID]  # the named owner is an active account
     data = CreateTicketRequest.model_validate(MINIMAL_CREATE | {"ownerId": str(OTHER_ID)})
 
     created = await make_service(session).create(ALL_ACCESS, data)
@@ -822,3 +823,31 @@ async def test_a_search_term_cannot_smuggle_a_wildcard_through() -> None:
     _, where_params = where_of(session.statements[0])
     # Left unescaped, `%` would match every row rather than the literal sign.
     assert where_params["subject_1"] == "%100\\%%"
+
+
+async def test_an_owner_that_is_not_an_active_account_is_refused() -> None:
+    session = FakeSession()
+    session.scalar_queue = [None]
+    data = CreateTicketRequest.model_validate(MINIMAL_CREATE | {"ownerId": str(OTHER_ID)})
+
+    with pytest.raises(NotFoundError) as error:
+        await make_service(session).create(ALL_ACCESS, data)
+
+    assert error.value.status_code == 404
+    assert error.value.code == "TICKET_OWNER_NOT_FOUND"
+    where_sql, _ = where_of(session.statements[0])
+    assert "users.is_active IS true" in where_sql
+    assert session.added == []
+
+
+async def test_an_update_naming_an_unknown_owner_writes_nothing() -> None:
+    session = FakeSession()
+    session.execute_queue = [[make_ticket()]]
+    session.scalar_queue = [None]
+    data = UpdateTicketRequest.model_validate({"version": 1, "ownerId": str(OTHER_ID)})
+
+    with pytest.raises(NotFoundError) as error:
+        await make_service(session).update(ALL_ACCESS, TICKET_ID, data)
+
+    assert error.value.code == "TICKET_OWNER_NOT_FOUND"
+    assert len(session.statements) == 2  # the read and the owner lookup, no write

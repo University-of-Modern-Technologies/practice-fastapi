@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from typing import Annotated
 
-from pydantic import ConfigDict, Field, model_validator
+from pydantic import ConfigDict, Field, StringConstraints, model_validator
 
 from app.core.responses import CamelModel
 from app.core.serializers import UtcDatetime
@@ -15,13 +15,30 @@ from app.modules.rbac.types import create_permission_key
 MAX_PERMISSION_PART_LENGTH = 64
 MAX_PERMISSION_KEY_LENGTH = 100
 MAX_PERMISSIONS_PER_ROLE = 100
+MAX_ROLE_NAME_LENGTH = 64
+MAX_ROLE_DESCRIPTION_LENGTH = 255
 
 #: A resource or an action: lowercase, starting with a letter. The two halves
 #: are validated separately so that a colon can never enter either of them and
-#: turn one key into two.
+#: turn one key into two. Surrounding whitespace is dropped first.
 PermissionPart = Annotated[
     str,
-    Field(min_length=1, max_length=MAX_PERMISSION_PART_LENGTH, pattern=r"^[a-z][a-z0-9_-]*$"),
+    StringConstraints(
+        strip_whitespace=True,
+        min_length=1,
+        max_length=MAX_PERMISSION_PART_LENGTH,
+        pattern=r"^[a-z][a-z0-9_-]*$",
+    ),
+]
+
+#: Free text, trimmed before its length is checked: a role named with stray
+#: spaces is the same role, and one named with spaces only has no name.
+RoleName = Annotated[
+    str, StringConstraints(strip_whitespace=True, min_length=1, max_length=MAX_ROLE_NAME_LENGTH)
+]
+RoleDescription = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, min_length=1, max_length=MAX_ROLE_DESCRIPTION_LENGTH),
 ]
 
 
@@ -68,8 +85,8 @@ class CreateRoleRequest(CamelModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    name: str = Field(min_length=1, max_length=64)
-    description: str | None = Field(default=None, min_length=1, max_length=255)
+    name: RoleName
+    description: RoleDescription | None = None
     permissions: PermissionAssignments
 
     @model_validator(mode="after")

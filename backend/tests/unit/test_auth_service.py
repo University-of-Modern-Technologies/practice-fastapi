@@ -7,23 +7,35 @@ rotation and token verification — rather than SQL.
 
 from __future__ import annotations
 
+import threading
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
 import jwt
 import pytest
+from pydantic import ValidationError
+from sqlalchemy import Update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core import security
 from app.core.errors import UnauthorizedError
-from app.core.security import hash_password
+from app.core.security import (
+    BCRYPT_ROUNDS,
+    DUMMY_PASSWORD_HASH,
+    hash_password,
+    hash_password_async,
+    verify_password,
+    verify_password_async,
+)
 from app.db.enums import PermissionScope
 from app.db.models.rbac import Permission, Role, RolePermission, UserRole
 from app.db.models.user import Session as SessionRow
 from app.db.models.user import User
+from app.modules.auth import service as auth_service_module
 from app.modules.auth.schemas import LoginRequest
 from app.modules.auth.service import AuthService, split_refresh_token, to_authenticated_user
-from app.modules.auth.types import AuthConfig
+from app.modules.auth.types import AuthConfig, ClientInfo
 
 PASSWORD = "correct-horse"
 PASSWORD_HASH = hash_password(PASSWORD)
@@ -35,8 +47,9 @@ CONFIG = AuthConfig(
 
 
 class FakeResult:
-    def __init__(self, value: Any = None) -> None:
+    def __init__(self, value: Any = None, rowcount: int = 1) -> None:
         self._value = value
+        self.rowcount = rowcount
 
     def scalar_one_or_none(self) -> Any:
         return self._value
@@ -50,10 +63,13 @@ class FakeSession:
         self.rows: dict[Any, Any] = {}
         self.added: list[Any] = []
         self.statements: list[Any] = []
+        #: Rows an UPDATE reports as matched; zero stands for a row that a
+        #: concurrent request revoked between the read and the write.
+        self.rowcount = 1
 
     async def execute(self, statement: Any) -> FakeResult:
         self.statements.append(statement)
-        return FakeResult(self.found_user)
+        return FakeResult(self.found_user, self.rowcount)
 
     async def get(self, model: Any, primary_key: Any) -> Any:
         return self.rows.get((model, primary_key))
@@ -65,8 +81,22 @@ class FakeSession:
         return None
 
 
-def make_service(session: FakeSession) -> AuthService:
-    return AuthService(cast("AsyncSession", session), CONFIG)
+def make_service(session: FakeSession, client: ClientInfo | None = None) -> AuthService:
+    return AuthService(cast("AsyncSession", session), CONFIG, client)
+
+
+def update_values(statement: Update) -> dict[str, Any]:
+    """The columns an UPDATE sets, by attribute name, with the values it binds."""
+    values: dict[Any, Any] = cast("Any", statement)._values
+    return {column.key: value.value for column, value in values.items()}
+
+
+def session_updates(session: FakeSession) -> list[Update]:
+    return [
+        statement
+        for statement in session.statements
+        if isinstance(statement, Update) and getattr(statement.table, "name", None) == "sessions"
+    ]
 
 
 def make_user(
@@ -150,7 +180,17 @@ def test_refresh_token_splits_into_session_and_secret() -> None:
 
 @pytest.mark.parametrize(
     "token",
-    ["", ".", "no-separator", f"{uuid.uuid4()}.", f".{uuid.uuid4()}", "not-a-uuid.secret"],
+    [
+        "",
+        ".",
+        "no-separator",
+        f"{uuid.uuid4()}.",
+        f".{uuid.uuid4()}",
+        "not-a-uuid.secret",
+        f"{uuid.uuid4().hex}.secret",
+        f"{{{uuid.uuid4()}}}.secret",
+        f"urn:uuid:{uuid.uuid4()}.secret",
+    ],
 )
 def test_malformed_refresh_tokens_are_rejected(token: str) -> None:
     with pytest.raises(UnauthorizedError) as error:
@@ -215,11 +255,40 @@ async def test_refresh_rotates_the_secret_of_the_same_session() -> None:
 
     assert result.refresh_token.startswith(f"{row.id}.")
     assert result.refresh_token != f"{row.id}.{secret}"
-    assert row.token_hash != original_hash
-    assert row.revoked_at is None
-    assert row.expires_at > datetime.now(tz=UTC) + timedelta(days=6)
+    [rotation] = session_updates(session)
+    values = update_values(rotation)
+    assert values["token_hash"] != original_hash
+    assert verify_password(result.refresh_token.split(".", 1)[1], values["token_hash"])
+    assert values["expires_at"] > datetime.now(tz=UTC) + timedelta(days=6)
     # Rotation reuses the row, so a device does not accumulate sessions.
     assert session.added == []
+
+
+# A refresh must never bring a revoked session back.
+async def test_rotation_never_clears_a_revocation_and_is_guarded_on_it() -> None:
+    user = make_user()
+    row = make_session_row(user, "s")
+    session = FakeSession(found_user=user)
+    session.rows[(SessionRow, row.id)] = row
+
+    await make_service(session).refresh(f"{row.id}.s")
+
+    [rotation] = session_updates(session)
+    assert "revoked_at" not in update_values(rotation)
+    assert "sessions.revoked_at IS NULL" in str(rotation.whereclause)
+
+
+async def test_a_session_revoked_while_the_refresh_was_in_flight_stays_revoked() -> None:
+    user = make_user()
+    row = make_session_row(user, "s")
+    session = FakeSession(found_user=user)
+    session.rows[(SessionRow, row.id)] = row
+    session.rowcount = 0  # the guarded write matched nothing
+
+    with pytest.raises(UnauthorizedError) as error:
+        await make_service(session).refresh(f"{row.id}.s")
+
+    assert error.value.code == "INVALID_REFRESH_TOKEN"
 
 
 @pytest.mark.parametrize(
@@ -365,3 +434,131 @@ async def test_me_refuses_a_deactivated_account() -> None:
         await make_service(session).me(uuid.uuid4())
 
     assert error.value.code == "USER_UNAVAILABLE"
+
+
+# Bcrypt reads 72 bytes; a longer password is refused at the boundary.
+@pytest.mark.parametrize("password", ["a" * 73, "ї" * 37])
+def test_a_login_password_over_72_bytes_is_refused(password: str) -> None:
+    with pytest.raises(ValidationError):
+        LoginRequest(email="morgan@example.com", password=password)
+
+
+# Bcrypt runs on a worker thread, never on the event loop.
+async def test_hashing_and_verifying_run_off_the_event_loop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    loop_thread = threading.get_ident()
+    threads: list[int] = []
+
+    def recording_hash(password: str) -> str:
+        threads.append(threading.get_ident())
+        return f"digest-of-{password}"
+
+    def recording_verify(password: str, password_hash: str) -> bool:
+        threads.append(threading.get_ident())
+        return password_hash == f"digest-of-{password}"
+
+    monkeypatch.setattr(security, "hash_password", recording_hash)
+    monkeypatch.setattr(security, "verify_password", recording_verify)
+
+    digest = await hash_password_async("secret")
+    assert await verify_password_async("secret", digest)
+
+    assert len(threads) == 2
+    assert loop_thread not in threads
+
+
+# An unknown address costs a password check like any other failure.
+async def test_an_unknown_address_is_checked_against_a_dummy_digest(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    checked: list[str] = []
+
+    async def recording_verify(password: str, password_hash: str) -> bool:
+        del password
+        checked.append(password_hash)
+        return False
+
+    monkeypatch.setattr(auth_service_module, "verify_password_async", recording_verify)
+
+    with pytest.raises(UnauthorizedError):
+        await make_service(FakeSession(found_user=None)).login(
+            LoginRequest(email="nobody@example.com", password=PASSWORD)
+        )
+
+    assert checked == [DUMMY_PASSWORD_HASH]
+
+
+async def test_a_disabled_account_is_checked_like_an_active_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    checked: list[str] = []
+
+    async def recording_verify(password: str, password_hash: str) -> bool:
+        del password
+        checked.append(password_hash)
+        return True
+
+    monkeypatch.setattr(auth_service_module, "verify_password_async", recording_verify)
+
+    with pytest.raises(UnauthorizedError):
+        await make_service(FakeSession(found_user=make_user(is_active=False))).login(
+            LoginRequest(email="morgan@example.com", password=PASSWORD)
+        )
+
+    assert checked == [PASSWORD_HASH]
+
+
+def test_the_dummy_digest_costs_the_same_as_a_real_one() -> None:
+    assert DUMMY_PASSWORD_HASH.startswith(f"$2b${BCRYPT_ROUNDS:02d}$")
+    assert not verify_password(PASSWORD, DUMMY_PASSWORD_HASH)
+
+
+# The session records where it was opened and last renewed from.
+async def test_login_records_the_client_on_the_new_session() -> None:
+    session = FakeSession(found_user=make_user())
+    client = ClientInfo(ip_address="203.0.113.7", user_agent="probe/1.0")
+
+    await make_service(session, client).login(
+        LoginRequest(email="morgan@example.com", password=PASSWORD)
+    )
+
+    [row] = session.added
+    assert row.ip_address == "203.0.113.7"
+    assert row.user_agent == "probe/1.0"
+
+
+async def test_refresh_records_the_client_on_the_renewed_session() -> None:
+    user = make_user()
+    row = make_session_row(user, "s")
+    session = FakeSession(found_user=user)
+    session.rows[(SessionRow, row.id)] = row
+    client = ClientInfo(ip_address="198.51.100.2", user_agent="probe/2.0")
+
+    await make_service(session, client).refresh(f"{row.id}.s")
+
+    [rotation] = session_updates(session)
+    values = update_values(rotation)
+    assert values["ip_address"] == "198.51.100.2"
+    assert values["user_agent"] == "probe/2.0"
+
+
+@pytest.mark.parametrize(
+    ("host", "expected"),
+    [
+        ("203.0.113.7", "203.0.113.7"),
+        ("::ffff:203.0.113.7", "203.0.113.7"),
+        ("2001:db8::1", "2001:db8::1"),
+        ("testclient", None),
+        (None, None),
+    ],
+)
+def test_the_client_address_is_stored_only_when_it_is_an_address(
+    host: str | None, expected: str | None
+) -> None:
+    assert ClientInfo.of(host, None).ip_address == expected
+
+
+def test_a_long_user_agent_is_cut_to_the_column_width() -> None:
+    assert ClientInfo.of(None, "x" * 600).user_agent == "x" * 512
+    assert ClientInfo.of(None, "").user_agent is None

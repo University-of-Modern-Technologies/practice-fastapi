@@ -81,6 +81,19 @@ class StockMovementOut(CamelModel):
     created_at: UtcDatetime
 
 
+def _reject_null(value: object) -> object:
+    """Refuses an explicitly sent ``null``.
+
+    A default is never passed through a validator, so this only ever sees a
+    value the client wrote down. That is what lets a field be omitted freely
+    while ``null`` stays an error on the fields that have no "empty" meaning.
+    """
+    if value is None:
+        message = "Value may not be null"
+        raise ValueError(message)
+    return value
+
+
 def _normalise_code(value: object) -> object:
     """A code identifies a warehouse in every movement, so its case is fixed."""
     return value.strip().upper() if isinstance(value, str) else value
@@ -97,6 +110,11 @@ class CreateWarehouseRequest(CamelModel):
     @classmethod
     def _fold_code(cls, value: object) -> object:
         return _normalise_code(value)
+
+    @field_validator("is_active", mode="before")
+    @classmethod
+    def _refuse_null(cls, value: object) -> object:
+        return _reject_null(value)
 
 
 class UpdateWarehouseRequest(CamelModel):
@@ -116,7 +134,14 @@ class UpdateWarehouseRequest(CamelModel):
     @field_validator("code", mode="before")
     @classmethod
     def _fold_code(cls, value: object) -> object:
-        return _normalise_code(value)
+        return _normalise_code(_reject_null(value))
+
+    # None of the three can be cleared, so null is a bad request rather than a
+    # write that silently changes nothing.
+    @field_validator("name", "is_active", mode="before")
+    @classmethod
+    def _refuse_null(cls, value: object) -> object:
+        return _reject_null(value)
 
     @model_validator(mode="after")
     def _require_one_field(self) -> Self:
@@ -143,11 +168,23 @@ class ReceiveStockRequest(StockTargetRequest):
     reference_id: uuid.UUID | None = None
     note: str | None = Field(default=None, min_length=1, max_length=MAX_NOTE_LENGTH)
 
+    # Optional, but never null: an absent reference and a null one would
+    # otherwise be two spellings of the same thing.
+    @field_validator("reference_type", "reference_id", "note", mode="before")
+    @classmethod
+    def _refuse_null(cls, value: object) -> object:
+        return _reject_null(value)
+
 
 class IssueStockRequest(ReceiveStockRequest):
     """Body of ``POST /stock/issue``."""
 
     from_reservation: bool = False
+
+    @field_validator("from_reservation", mode="before")
+    @classmethod
+    def _refuse_null_flag(cls, value: object) -> object:
+        return _reject_null(value)
 
     @model_validator(mode="after")
     def _require_reference_for_reservation(self) -> Self:
@@ -171,6 +208,11 @@ class ReserveStockRequest(StockTargetRequest):
     reference_id: uuid.UUID
     note: str | None = Field(default=None, min_length=1, max_length=MAX_NOTE_LENGTH)
 
+    @field_validator("note", mode="before")
+    @classmethod
+    def _refuse_null(cls, value: object) -> object:
+        return _reject_null(value)
+
 
 class ReleaseStockRequest(ReserveStockRequest):
     """Body of ``POST /stock/release`` — the same shape a reservation has."""
@@ -186,6 +228,11 @@ class AdjustStockRequest(StockTargetRequest):
         default=None, min_length=1, max_length=MAX_REFERENCE_TYPE_LENGTH
     )
     reference_id: uuid.UUID | None = None
+
+    @field_validator("reference_type", "reference_id", mode="before")
+    @classmethod
+    def _refuse_null(cls, value: object) -> object:
+        return _reject_null(value)
 
     @field_validator("delta")
     @classmethod
@@ -207,6 +254,13 @@ class WarehouseListParams(CamelModel):
     page_size: int = Field(default=DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE)
     search: str | None = Field(default=None, min_length=1, max_length=MAX_SEARCH_LENGTH)
     is_active: bool | None = None
+
+    @field_validator("search", mode="before")
+    @classmethod
+    def _trim_search(cls, value: object) -> object:
+        # Trimmed before the length check, so a term made of spaces is refused
+        # rather than matching every warehouse.
+        return value.strip() if isinstance(value, str) else value
 
 
 class StockListParams(CamelModel):

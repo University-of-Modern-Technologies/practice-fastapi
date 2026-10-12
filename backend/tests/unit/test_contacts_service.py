@@ -7,6 +7,8 @@ from datetime import UTC, datetime
 from typing import Any, cast
 
 import pytest
+from pydantic import ValidationError
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import AppError, ConflictError, ForbiddenError, NotFoundError
@@ -379,3 +381,102 @@ async def test_deleting_a_contact_of_another_owner_is_a_not_found() -> None:
 
     assert error.value.code == "CONTACT_NOT_FOUND"
     assert audit.events == []
+
+
+async def test_a_patch_locks_the_row_it_is_about_to_read() -> None:
+    actor_id = uuid.uuid4()
+    contact = make_contact(actor_id)
+    session = FakeSession()
+    session.execute_queue = [[contact]]
+    session.scalar_queue = [None]
+    service = make_service(session)
+
+    await service.update(
+        own(actor_id), contact.id, UpdateContactRequest.model_validate({"email": None})
+    )
+
+    # Two edits each clearing a different channel must not both read the
+    # untouched record: the second waits on this lock and then sees the first.
+    assert "FOR UPDATE" in sql(session.statements[0])
+
+
+async def test_an_unknown_or_inactive_owner_is_reported_as_missing_on_create() -> None:
+    session = FakeSession()
+    session.scalar_queue = [None]  # no active user with that id
+    service = make_service(session)
+
+    with pytest.raises(NotFoundError) as error:
+        await service.create(
+            everything(uuid.uuid4()),
+            CreateContactRequest.model_validate(
+                {
+                    "ownerId": str(uuid.uuid4()),
+                    "firstName": "Ada",
+                    "lastName": "Byron",
+                    "email": "ada@example.com",
+                }
+            ),
+        )
+
+    assert error.value.code == "CONTACT_OWNER_NOT_FOUND"
+    assert "users.is_active IS true" in sql(session.statements[0])
+    assert session.added == []
+
+
+async def test_an_unknown_owner_is_reported_as_missing_on_update() -> None:
+    contact = make_contact()
+    session = FakeSession()
+    session.execute_queue = [[contact]]
+    session.scalar_queue = [None]  # no active user with that id
+    service = make_service(session)
+
+    with pytest.raises(NotFoundError) as error:
+        await service.update(
+            everything(uuid.uuid4()),
+            contact.id,
+            UpdateContactRequest.model_validate({"ownerId": str(uuid.uuid4())}),
+        )
+
+    assert error.value.code == "CONTACT_OWNER_NOT_FOUND"
+    assert session.flushes == 0
+
+
+class _ForeignKeyViolationError(Exception):
+    sqlstate = "23503"
+
+
+class _UniqueViolationError(Exception):
+    sqlstate = "23505"
+
+
+class FailingFlushSession(FakeSession):
+    def __init__(self, cause: Exception) -> None:
+        super().__init__()
+        self._cause = cause
+
+    async def flush(self) -> None:
+        raise IntegrityError("INSERT", {}, self._cause)
+
+
+async def test_only_a_unique_violation_is_reported_as_a_duplicate() -> None:
+    request = CreateContactRequest.model_validate(
+        {"firstName": "Ada", "lastName": "Byron", "email": "ada@example.com"}
+    )
+
+    with pytest.raises(ConflictError) as duplicate:
+        await make_service(FailingFlushSession(_UniqueViolationError())).create(
+            everything(uuid.uuid4()), request
+        )
+    assert duplicate.value.code == "CONTACT_DUPLICATE"
+
+    # Any other integrity failure is a fault of its own, not a duplicate.
+    with pytest.raises(IntegrityError):
+        await make_service(FailingFlushSession(_ForeignKeyViolationError())).create(
+            everything(uuid.uuid4()), request
+        )
+
+
+def test_a_page_number_has_an_upper_bound() -> None:
+    assert ContactListParams.model_validate({"page": 1_000_000}).page == 1_000_000
+    with pytest.raises(ValidationError):
+        ContactListParams.model_validate({"page": 1_000_001})

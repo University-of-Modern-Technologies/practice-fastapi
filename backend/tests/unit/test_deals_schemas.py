@@ -177,3 +177,53 @@ def test_an_unknown_query_parameter_is_ignored_rather_than_refused() -> None:
     params = DealListParams.model_validate({"orderBy": "amount", "_": "1754999999"})
 
     assert params.sort_by == "createdAt"
+
+
+@pytest.mark.parametrize("title", ["   ", "\t\n"])
+def test_a_title_made_of_whitespace_is_refused(title: str) -> None:
+    with pytest.raises(ValidationError):
+        CreateDealRequest.model_validate({"title": title, "amount": "1"})
+    with pytest.raises(ValidationError):
+        UpdateDealRequest.model_validate({"version": 1, "title": title})
+
+
+def test_a_title_is_stored_trimmed() -> None:
+    request = CreateDealRequest.model_validate({"title": "  Opportunity  ", "amount": "1"})
+
+    assert request.title == "Opportunity"
+
+
+@pytest.mark.parametrize("field", ["ownerId", "title", "amount", "currency", "probability"])
+def test_an_explicit_null_on_a_required_column_is_refused(field: str) -> None:
+    with pytest.raises(ValidationError):
+        UpdateDealRequest.model_validate({"version": 1, field: None})
+
+
+@pytest.mark.parametrize(
+    "field", ["ownerId", "contactId", "stage", "currency", "probability", "expectedCloseDate"]
+)
+def test_a_new_deal_has_nothing_to_clear(field: str) -> None:
+    with pytest.raises(ValidationError):
+        CreateDealRequest.model_validate({"title": "Opportunity", "amount": "1", field: None})
+
+
+@pytest.mark.parametrize("value", ["3", "", True, False, None])
+def test_a_body_number_must_be_a_json_number(value: object) -> None:
+    with pytest.raises(ValidationError):
+        UpdateDealRequest.model_validate({"version": value, "title": "Renamed"})
+    with pytest.raises(ValidationError):
+        TransitionDealRequest.model_validate({"version": 1, "stage": "WON", "probability": value})
+
+
+def test_a_query_number_is_still_read_from_text() -> None:
+    params = DealListParams.model_validate({"minProbability": "10", "page": "2"})
+
+    assert params.min_probability == 10
+    assert params.page == 2
+
+
+def test_a_search_of_whitespace_is_refused_and_a_page_has_a_ceiling() -> None:
+    with pytest.raises(ValidationError):
+        DealListParams.model_validate({"search": "   "})
+    with pytest.raises(ValidationError):
+        DealListParams.model_validate({"page": 1_000_001})

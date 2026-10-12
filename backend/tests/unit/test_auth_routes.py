@@ -258,3 +258,14 @@ async def test_a_rejected_token_answers_with_the_error_envelope(
 
     assert response.status_code == 401
     assert response.json()["error"]["code"] == "UNAUTHORIZED"
+
+
+async def test_a_password_over_72_bytes_is_a_400(auth_client: AsyncClient) -> None:
+    # Within the character limit, over bcrypt's byte limit: refused rather than
+    # hashed with its tail silently dropped.
+    response = await auth_client.post(
+        "/api/v1/auth/login", json={"email": "morgan@example.com", "password": "ї" * 37}
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "VALIDATION_ERROR"

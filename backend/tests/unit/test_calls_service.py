@@ -775,3 +775,67 @@ async def test_deleting_is_narrowed_by_the_callers_grant() -> None:
     write_sql, params = sql_of(session.statements[1])
     assert "calls.owner_id = " in write_sql
     assert ACTOR_ID in params.values()
+
+
+# --- regressions ----------------------------------------------------------
+
+
+async def test_an_owner_that_is_not_an_active_account_is_refused() -> None:
+    session = FakeSession()
+    session.execute_queue = [[make_call()]]
+    session.scalar_queue = [None]
+
+    with pytest.raises(NotFoundError) as error:
+        await make_service(session).update(
+            ALL_ACCESS,
+            CALL_ID,
+            UpdateCallRequest.model_validate({"version": 1, "ownerId": str(OTHER_ID)}),
+        )
+
+    assert error.value.code == "CALL_OWNER_NOT_FOUND"
+    assert len(session.statements) == 2  # the read and the owner lookup, no write
+
+
+async def test_the_absence_filter_and_a_contact_filter_both_hold() -> None:
+    session = FakeSession()
+
+    await make_service(session).list_calls(
+        ALL_ACCESS, CallListParams(has_contact=False, contact_id=CONTACT_ID)
+    )
+
+    where_sql = sql_of(session.statements[1])[0]
+    assert "calls.contact_id IS NULL" in where_sql
+    assert "calls.contact_id = " in where_sql
+
+
+async def test_the_sync_never_asks_for_more_than_a_provider_may_send() -> None:
+    session = FakeSession()
+    provider = StaticProvider()
+    service = CallsService(cast("AsyncSession", session), provider, None, sync_batch_size=1_000)
+
+    await service.sync(ALL_ACCESS)
+
+    assert provider.requests[0].limit == 500
+
+
+async def test_an_empty_recording_link_is_no_recording() -> None:
+    session = FakeSession()
+    session.execute_queue = [[make_call(recording_url="")]]
+
+    with pytest.raises(NotFoundError) as error:
+        await make_service(session).get_recording(ALL_ACCESS, CALL_ID)
+
+    assert error.value.code == "CALL_RECORDING_UNAVAILABLE"
+
+
+@pytest.mark.parametrize("value", ["2", "", True, None])
+def test_a_body_version_must_be_a_json_number(value: object) -> None:
+    with pytest.raises(ValueError, match=r"integer"):
+        UpdateCallRequest.model_validate({"version": value, "notes": "x"})
+
+
+def test_a_blank_search_is_refused_and_a_page_has_a_ceiling() -> None:
+    with pytest.raises(ValueError, match="at least 1"):
+        CallListParams.model_validate({"search": "   "})
+    with pytest.raises(ValueError, match="less than or equal"):
+        CallListParams.model_validate({"page": 1_000_001})

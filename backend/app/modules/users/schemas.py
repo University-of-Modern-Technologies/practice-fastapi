@@ -7,18 +7,24 @@ never declared cannot be leaked by a future change to a serializer.
 from __future__ import annotations
 
 import uuid
+from typing import Annotated
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, StringConstraints, field_validator, model_validator
 
 from app.core.responses import CamelModel
 from app.core.serializers import UtcDatetime
 from app.core.validation import EmailAddress
+from app.modules.auth.schemas import Password
 
-MIN_PASSWORD_LENGTH = 8
-MAX_PASSWORD_LENGTH = 128
 MAX_NAME_LENGTH = 120
 MIN_ROLES = 1
 MAX_ROLES = 20
+
+#: A display name. Surrounding whitespace is dropped before the length is
+#: checked, so a name of spaces only is refused rather than stored blank.
+UserName = Annotated[
+    str, StringConstraints(strip_whitespace=True, min_length=1, max_length=MAX_NAME_LENGTH)
+]
 
 
 def _normalise_email(value: object) -> object:
@@ -61,8 +67,8 @@ class CreateUserRequest(CamelModel):
     """Body of ``POST /users``."""
 
     email: EmailAddress
-    name: str = Field(min_length=1, max_length=MAX_NAME_LENGTH)
-    password: str = Field(min_length=MIN_PASSWORD_LENGTH, max_length=MAX_PASSWORD_LENGTH)
+    name: UserName
+    password: Password
     role_ids: list[uuid.UUID] = Field(min_length=MIN_ROLES, max_length=MAX_ROLES)
 
     @field_validator("email", mode="before")
@@ -79,10 +85,8 @@ class UpdateUserRequest(CamelModel):
     """
 
     email: EmailAddress | None = None
-    name: str | None = Field(default=None, min_length=1, max_length=MAX_NAME_LENGTH)
-    password: str | None = Field(
-        default=None, min_length=MIN_PASSWORD_LENGTH, max_length=MAX_PASSWORD_LENGTH
-    )
+    name: UserName | None = None
+    password: Password | None = None
     role_ids: list[uuid.UUID] | None = Field(
         default=None, min_length=MIN_ROLES, max_length=MAX_ROLES
     )

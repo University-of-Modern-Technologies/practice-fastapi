@@ -37,7 +37,11 @@ def delivery_timeout_error() -> AppError:
 
 
 def delivery_unavailable_error() -> AppError:
-    """Network failure, 5xx, throttling, or a circuit that is currently open."""
+    """Network failure, 5xx, throttling, an open circuit, or refused credentials.
+
+    The last is a misconfiguration the caller cannot fix by changing the
+    request, so it is reported as the service being unavailable to them.
+    """
     return AppError("The delivery service is temporarily unavailable", 503, DELIVERY_UNAVAILABLE)
 
 

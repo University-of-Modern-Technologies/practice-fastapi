@@ -8,6 +8,7 @@ hand-written fake. No layer above ever learns which one is in use.
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 
@@ -128,14 +129,17 @@ class HttpDeliveryTransport:
             headers["content-type"] = "application/json"
 
         try:
-            response = await client.request(
-                request.method,
-                f"{self._base_url}{request.path}",
-                headers=headers,
-                timeout=request.timeout_ms / 1000.0,
-                **({} if request.body is None else {"json": request.body}),
-            )
-        except httpx.TimeoutException as error:
+            # One deadline for the whole round trip: the client's own timeout
+            # applies per phase, so a slow trickle could otherwise outlast it.
+            async with asyncio.timeout(request.timeout_ms / 1000.0):
+                response = await client.request(
+                    request.method,
+                    f"{self._base_url}{request.path}",
+                    headers=headers,
+                    timeout=request.timeout_ms / 1000.0,
+                    **({} if request.body is None else {"json": request.body}),
+                )
+        except (httpx.TimeoutException, TimeoutError) as error:
             message = "The delivery request exceeded its deadline"
             raise TransportTimeoutError(message) from error
 

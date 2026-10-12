@@ -8,4 +8,5 @@ __pycache__/
 coverage.xml
 htmlcov/
 .env
-.env.local
+.env.*
+!.env.example

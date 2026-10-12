@@ -12,7 +12,7 @@ import uuid
 from decimal import Decimal
 from typing import Annotated
 
-from pydantic import Field, StringConstraints, model_validator
+from pydantic import Field, StringConstraints, field_validator, model_validator
 
 from app.core.pagination import ListQuery
 from app.core.responses import CamelModel
@@ -62,6 +62,25 @@ ProductCategory = Annotated[
     str, StringConstraints(strip_whitespace=True, min_length=1, max_length=MAX_CATEGORY_LENGTH)
 ]
 
+#: Free-text search, trimmed before its length is checked, so a term made of
+#: spaces is refused rather than matching every entry.
+SearchTerm = Annotated[
+    str, StringConstraints(strip_whitespace=True, min_length=1, max_length=MAX_SEARCH_LENGTH)
+]
+
+
+def _reject_null(value: object) -> object:
+    """Refuses an explicitly sent ``null``.
+
+    A default is never passed through a validator, so this only ever sees a
+    value the client wrote down. That is what lets a field be omitted freely
+    while ``null`` stays an error on the fields that have no "empty" meaning.
+    """
+    if value is None:
+        message = "Value may not be null"
+        raise ValueError(message)
+    return value
+
 
 class ProductOut(CamelModel):
     """A catalogue entry as the API publishes it."""
@@ -90,6 +109,12 @@ class CreateProductRequest(CamelModel):
     currency: CurrencyCode = "USD"
     is_active: bool = True
 
+    # A new entry has nothing to clear, so a null is a malformed request.
+    @field_validator("description", "category", mode="before")
+    @classmethod
+    def _refuse_null(cls, value: object) -> object:
+        return _reject_null(value)
+
 
 class UpdateProductRequest(CamelModel):
     """Body of ``PATCH /products/{id}``.
@@ -106,6 +131,14 @@ class UpdateProductRequest(CamelModel):
     unit_price: MoneyAmount | None = None
     currency: CurrencyCode | None = None
     is_active: bool | None = None
+
+    # The description and the category may be cleared with null. The name, the
+    # price, the currency and the flag always hold a value, so null there is a
+    # bad request rather than a write that changes nothing but the version.
+    @field_validator("name", "unit_price", "currency", "is_active", mode="before")
+    @classmethod
+    def _refuse_null(cls, value: object) -> object:
+        return _reject_null(value)
 
     @model_validator(mode="after")
     def _require_one_field(self) -> UpdateProductRequest:
@@ -124,7 +157,7 @@ class ProductListParams(ListQuery):
     FastAPI reads a model as query parameters just as happily.
     """
 
-    search: str | None = Field(default=None, min_length=1, max_length=MAX_SEARCH_LENGTH)
+    search: SearchTerm | None = None
     category: str | None = Field(default=None, min_length=1, max_length=MAX_CATEGORY_LENGTH)
     is_active: bool | None = None
     min_price: MoneyAmount | None = None

@@ -7,6 +7,7 @@ and without a socket.
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 import pytest
@@ -152,3 +153,28 @@ async def test_a_single_attempt_is_honoured() -> None:
 
     assert await code_of(provider_for(transport, max_attempts=1)) == AI_UNAVAILABLE
     assert transport.calls == 1
+
+
+async def test_the_timeout_is_one_deadline_for_the_whole_round_trip() -> None:
+    class SlowTransport:
+        async def send(self, request: AiTransportRequest) -> AiTransportResponse:  # noqa: ARG002
+            await asyncio.sleep(5)
+            return AiTransportResponse(status=200, body={"text": "late"})
+
+    async def no_delay(milliseconds: int) -> None:
+        """The backoff is not what this test is about."""
+
+    provider = create_http_ai_provider(
+        HttpAiProviderOptions(
+            endpoint_url=ENDPOINT,
+            transport=SlowTransport(),
+            timeout_ms=20,
+            max_attempts=1,
+            delay=no_delay,
+        )
+    )
+
+    with pytest.raises(AppError) as failure:
+        await asyncio.wait_for(provider.complete(REQUEST), timeout=2)
+
+    assert failure.value.code == AI_TIMEOUT

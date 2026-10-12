@@ -6,6 +6,7 @@ import json
 import uuid
 from collections import deque
 from dataclasses import dataclass, field
+from decimal import Decimal
 from typing import Any
 
 from fastapi import FastAPI
@@ -358,7 +359,11 @@ class _WebSocketDriver:
 
 
 async def _handshake(
-    app: FastAPI, *, subprotocol_header: str | None, inbound: list[Message] | None = None
+    app: FastAPI,
+    *,
+    subprotocol_header: str | None,
+    inbound: list[Message] | None = None,
+    denial_response: bool = False,
 ) -> _WebSocketDriver:
     headers: list[tuple[bytes, bytes]] = []
     if subprotocol_header is not None:
@@ -378,6 +383,10 @@ async def _handshake(
         "server": ("testserver", 80),
         "subprotocols": [],
     }
+    if denial_response:
+        # What the production ASGI server advertises: the application may
+        # answer the handshake with a plain HTTP response.
+        scope["extensions"] = {"websocket.http.response": {}}
     driver = _WebSocketDriver([{"type": "websocket.connect"}, *(inbound or [])])
     await app(scope, driver.receive, driver.send)
     return driver
@@ -427,3 +436,142 @@ async def test_handshake_with_an_invalid_token_is_refused(settings: Settings) ->
 
     assert driver.sent[0]["type"] == "websocket.close"
     assert driver.frames() == []
+
+
+def _denial_status(driver: _WebSocketDriver) -> int | None:
+    for message in driver.sent:
+        if message["type"] == "websocket.http.response.start":
+            return int(message["status"])
+    return None
+
+
+async def test_handshake_without_a_token_is_refused_with_401(settings: Settings) -> None:
+    """The same status the sibling deployment answers, not the generic 403 an
+    ASGI server substitutes when an unaccepted socket is merely closed."""
+    app = _build_app(settings, _gateway())
+
+    driver = await _handshake(app, subprotocol_header=None, denial_response=True)
+
+    assert _denial_status(driver) == 401
+    assert all(message["type"] != "websocket.accept" for message in driver.sent)
+
+
+async def test_handshake_with_an_invalid_token_is_refused_with_401(settings: Settings) -> None:
+    gateway = RealtimeGateway(
+        ws_path=WS_PATH, verify_access_token=_verify_fail, can_subscribe=_allow_all
+    )
+    app = _build_app(settings, gateway)
+
+    driver = await _handshake(
+        app, subprotocol_header=f"{BEARER_SUBPROTOCOL}, jwt-value", denial_response=True
+    )
+
+    assert _denial_status(driver) == 401
+
+
+async def test_single_value_access_token_subprotocol_is_refused(settings: Settings) -> None:
+    app = _build_app(settings, _gateway())
+
+    driver = await _handshake(
+        app, subprotocol_header="access_token.jwt-value", denial_response=True
+    )
+
+    assert _denial_status(driver) == 401
+
+
+async def test_handshake_during_shutdown_is_refused_with_503(settings: Settings) -> None:
+    gateway = _gateway()
+    await gateway.close()
+    app = _build_app(settings, gateway)
+
+    driver = await _handshake(
+        app, subprotocol_header=f"{BEARER_SUBPROTOCOL}, jwt-value", denial_response=True
+    )
+
+    assert _denial_status(driver) == 503
+
+
+async def test_shutdown_during_token_verification_refuses_the_handshake(
+    settings: Settings,
+) -> None:
+    """Verification awaits the database; a socket accepted after `close` swept
+    the registry would stay open with nothing left to close it."""
+    gateway: RealtimeGateway
+
+    async def verify_then_shut_down(token: str) -> AuthContextLike:
+        await gateway.close()
+        return await _verify_ok(token)
+
+    gateway = RealtimeGateway(
+        ws_path=WS_PATH, verify_access_token=verify_then_shut_down, can_subscribe=_allow_all
+    )
+    app = _build_app(settings, gateway)
+
+    driver = await _handshake(
+        app, subprotocol_header=f"{BEARER_SUBPROTOCOL}, jwt-value", denial_response=True
+    )
+
+    assert _denial_status(driver) == 503
+    assert all(message["type"] != "websocket.accept" for message in driver.sent)
+    assert gateway.stats().connections == 0
+
+
+async def test_published_payload_is_redacted_like_the_event_log() -> None:
+    gateway = _gateway()
+    socket = FakeSocket()
+    connection = await gateway.register(socket, FakeAuth())
+    await gateway.handle_frame(connection, '{"type":"subscribe","topic":"deals"}')
+
+    await gateway.publish(
+        "deals",
+        {
+            "eventType": "deal.updated",
+            "payload": {
+                "name": "Big deal",
+                "apiKey": "k-1",
+                "nested": [{"password": "p", "credential": "c"}],
+            },
+        },
+    )
+
+    assert socket.sent[-1] == {
+        "type": "event",
+        "topic": "deals",
+        "payload": {
+            "eventType": "deal.updated",
+            "payload": {
+                "name": "Big deal",
+                "apiKey": "[REDACTED]",
+                "nested": [{"password": "[REDACTED]", "credential": "[REDACTED]"}],
+            },
+        },
+    }
+
+
+async def test_a_payload_with_non_json_values_still_reaches_the_client() -> None:
+    """Plain `json.dumps` refused a UUID or a Decimal, and the event was lost."""
+    gateway = _gateway()
+    socket = FakeSocket()
+    connection = await gateway.register(socket, FakeAuth())
+    await gateway.handle_frame(connection, '{"type":"subscribe","topic":"deals"}')
+    entity_id = uuid.UUID("44444444-4444-4444-8444-444444444444")
+
+    await gateway.publish("deals", {"payload": {"id": entity_id, "amount": Decimal("10.50")}})
+
+    assert socket.sent[-1]["payload"] == {"payload": {"id": str(entity_id), "amount": "10.5"}}
+
+
+async def test_the_socket_stays_open_after_an_oversized_frame() -> None:
+    """An oversized frame is a malformed frame: answered, never a disconnect.
+    The sibling deployment behaves the same; only its transport ceiling, far
+    above this limit, closes with 1009."""
+    gateway = _gateway(options=RealtimeGatewayOptions(max_inbound_message_bytes=16))
+    socket = FakeSocket()
+    connection = await gateway.register(socket, FakeAuth())
+
+    await gateway.handle_frame(connection, "x" * 64)
+    await gateway.handle_frame(connection, '{"type":"ping"}')
+
+    assert socket.closed is None
+    assert socket.sent[-1] == {"type": "pong"}
+    assert gateway.stats().connections == 1

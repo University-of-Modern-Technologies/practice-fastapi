@@ -18,6 +18,7 @@ from app.core.responses import Envelope, Page
 from app.db.enums import PermissionScope
 from app.modules.auth.dependencies import CurrentAuth, SessionDep
 from app.modules.rbac.dependencies import (
+    CurrentActor,
     RbacServiceDep,
     ensure_scope_all,
     ensure_scope_covers,
@@ -69,10 +70,13 @@ def create_users_router() -> APIRouter:
         responses=refusals(401, 403, 404, 409),
     )
     async def create_user(
-        payload: CreateUserRequest, scope: CreateScope, service: UsersServiceDep
+        payload: CreateUserRequest,
+        scope: CreateScope,
+        actor: CurrentActor,
+        service: UsersServiceDep,
     ) -> Envelope[UserOut]:
         ensure_scope_all(scope)
-        return Envelope(data=await service.create(payload))
+        return Envelope(data=await service.create(actor, payload))
 
     @router.get(
         "/{id}", tags=["Users"], summary="Отримати користувача", responses=refusals(401, 403, 404)
@@ -96,24 +100,26 @@ def create_users_router() -> APIRouter:
         id: uuid.UUID,  # noqa: A002
         payload: UpdateUserRequest,
         scope: UpdateScope,
+        actor: CurrentActor,
         service: UsersServiceDep,
     ) -> Envelope[UserOut]:
         ensure_scope_all(scope)
-        return Envelope(data=await service.update(id, payload))
+        return Envelope(data=await service.update(actor, id, payload))
 
     @router.post(
         "/{id}/disable",
         tags=["Users"],
         summary="Деактивувати користувача",
-        responses=refusals(401, 403, 404),
+        responses=refusals(401, 403, 404, 409),
     )
     async def disable_user(
         id: uuid.UUID,  # noqa: A002
         scope: DisableScope,
+        actor: CurrentActor,
         service: UsersServiceDep,
     ) -> Envelope[UserOut]:
         ensure_scope_all(scope)
-        return Envelope(data=await service.disable(id))
+        return Envelope(data=await service.disable(actor, id))
 
     @router.get(
         "/{id}/sessions",
@@ -138,15 +144,16 @@ def create_users_router() -> APIRouter:
         summary="Відкликати сесію користувача",
         responses=refusals(401, 403, 404),
     )
-    async def revoke_user_session(
+    async def revoke_user_session(  # noqa: PLR0913, PLR0917
         id: uuid.UUID,  # noqa: A002
         session_id: SessionId,
         auth: CurrentAuth,
         scope: UpdateScope,
+        actor: CurrentActor,
         service: UsersServiceDep,
     ) -> Response:
         ensure_scope_covers(scope, auth, id)
-        await service.revoke_session(id, session_id)
+        await service.revoke_session(actor, id, session_id)
         return Response(status_code=status.HTTP_204_NO_CONTENT)
 
     return router

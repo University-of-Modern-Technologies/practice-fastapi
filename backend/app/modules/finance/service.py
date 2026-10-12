@@ -37,10 +37,9 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import InstrumentedAttribute
 
-from app.core.errors import ConflictError, NotFoundError, VersionConflictError
+from app.core.errors import AppError, ConflictError, NotFoundError, VersionConflictError
 from app.core.filters import FilterBuilder
 from app.core.paged_query import PagedQuery
-from app.core.reporting import DEFAULT_REPORT_WINDOW_FROM, default_report_window_to
 from app.core.serializers import format_scaled_money
 from app.db.enums import PaymentMatchStatus, TransactionDirection
 from app.db.models.contact import Contact
@@ -83,7 +82,6 @@ from app.modules.finance.types import (
     STATEMENT_DUPLICATE_EXTERNAL_ID,
     STATEMENT_ENTITY_TYPE,
     STATEMENT_IMPORTED,
-    STATEMENT_NOT_FOUND,
     TRANSACTION_ALREADY_MATCHED,
     TRANSACTION_AMOUNT_MISMATCH,
     TRANSACTION_CONCURRENT_MODIFICATION,
@@ -249,14 +247,27 @@ class _TransactionPage(PagedQuery[BankTransaction, TransactionListParams, BankTr
             .equals(BankTransaction.statement_id, params.statement_id)
             .equals(BankTransaction.match_status, params.match_status)
             .equals(BankTransaction.direction, params.direction)
-            # What a payer wrote and who they said they were: the two things
-            # anybody actually searches a ledger by when hunting a payment.
+            # What the payer wrote, who they said they were and the account
+            # they paid from — the three things a ledger is searched by when
+            # hunting a payment, all without regard to case.
             .search(
                 params.search,
-                [BankTransaction.reference, BankTransaction.counterparty_name],
+                [
+                    BankTransaction.reference,
+                    BankTransaction.counterparty_name,
+                    BankTransaction.counterparty_account,
+                ],
                 escape=True,
             )
-            .range(BankTransaction.booked_at, params.booked_from, params.booked_to)
+            # Half-open, as every window in this codebase is: the shared range
+            # verb closes both ends, which is right for an amount and wrong for
+            # an instant, so the end is excluded here explicitly.
+            .range(BankTransaction.booked_at, params.booked_from)
+            .add(
+                BankTransaction.booked_at < params.booked_to
+                if params.booked_to is not None
+                else None
+            )
             .range(
                 BankTransaction.amount,
                 Decimal(params.min_amount) if params.min_amount is not None else None,
@@ -307,13 +318,13 @@ class FinanceService:
     ) -> tuple[list[BankTransactionOut], int]:
         """One page of the ledger, plus the size of the whole filtered set.
 
-        A ``statementId`` that names nothing is reported rather than answered
-        with an empty page: a caller filtering by a statement they believe in
-        has asked a question about it, and "no rows" would look like an answer.
+        A ``statementId`` is a filter like every other one, and a filter that
+        matches nothing yields an empty page — the way an unknown owner or
+        contact narrows any other list in this API. Answering 404 here alone
+        would make the list's refusals depend on which filter was set, and the
+        endpoint does not publish a 404 at all.
         """
         del access
-        if params.statement_id is not None:
-            await self._require_statement(params.statement_id)
         return await _TransactionPage(self._session).run(params)
 
     async def get_transaction(
@@ -414,16 +425,14 @@ class FinanceService:
     async def _resolve_summary_window(
         self, params: FinanceSummaryParams
     ) -> tuple[datetime, datetime]:
-        """Fills in whichever bound the caller left out from the shared default.
+        """The window the parameters resolved, defaults included.
 
         The default is a fixed reporting window rather than a fact inferred
         from imported rows. This keeps the same request stable before and after
         an import and ensures every report module describes the same period.
+        It is applied, and checked, while the parameters are validated.
         """
-        return (
-            params.range_from if params.range_from is not None else DEFAULT_REPORT_WINDOW_FROM,
-            params.range_to if params.range_to is not None else default_report_window_to(),
-        )
+        return params.range_from, params.range_to
 
     # --- importing ---------------------------------------------------------
 
@@ -463,8 +472,17 @@ class FinanceService:
             if await self._insert_transaction(statement.id, item):
                 imported += 1
 
+        skipped = len(feed.transactions) - imported
         if created or imported:
-            changes = {"after": _snapshot(to_statement_out(statement))}
+            # The statement and what this pull did to it: the trail and the
+            # stream carry the same document, and the counts are part of it.
+            changes = {
+                "after": {
+                    **_snapshot(to_statement_out(statement)),
+                    "imported": imported,
+                    "skipped": skipped,
+                }
+            }
             await self._record(
                 access, STATEMENT_IMPORTED, STATEMENT_ENTITY_TYPE, statement.id, changes
             )
@@ -473,7 +491,7 @@ class FinanceService:
         return ImportStatementOut(
             statement_id=statement.id,
             imported=imported,
-            skipped=len(feed.transactions) - imported,
+            skipped=skipped,
         )
 
     # --- reconciling -------------------------------------------------------
@@ -501,9 +519,18 @@ class FinanceService:
 
         order = await self._require_order(data.order_id)
         if not amounts_match(existing.amount, order.total):
-            raise ConflictError(
+            # 422 with both figures, as the endpoint's description promises:
+            # nothing about the request is in conflict with the record — the
+            # two amounts simply do not settle each other, and a client
+            # showing the refusal needs both of them to say why.
+            raise AppError(
                 "The transaction amount does not match the order total",
+                422,
                 TRANSACTION_AMOUNT_MISMATCH,
+                {
+                    "amount": format_scaled_money(existing.amount),
+                    "orderTotal": format_scaled_money(order.total),
+                },
             )
 
         before = to_transaction_out(existing)
@@ -882,14 +909,6 @@ class FinanceService:
         if transaction is None:
             raise NotFoundError("Transaction not found", TRANSACTION_NOT_FOUND)
         return transaction
-
-    async def _require_statement(self, statement_id: uuid.UUID) -> uuid.UUID:
-        found = await self._session.scalar(
-            select(BankStatement.id).where(BankStatement.id == statement_id)
-        )
-        if found is None:
-            raise NotFoundError("Statement not found", STATEMENT_NOT_FOUND)
-        return statement_id
 
     async def _require_order(self, order_id: uuid.UUID) -> Order:
         """The order a person is attributing a payment to.

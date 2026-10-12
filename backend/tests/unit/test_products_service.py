@@ -241,7 +241,7 @@ async def test_a_missing_or_deleted_entry_is_a_not_found() -> None:
 
 async def test_creating_a_product_with_a_taken_sku_is_a_conflict() -> None:
     session = FakeSession()
-    session.scalar_queue = [uuid.uuid4()]  # the SKU is already in use
+    session.scalar_queue = [False]  # a live product already holds the SKU
     service = make_service(session)
 
     with pytest.raises(ConflictError) as error:
@@ -372,3 +372,37 @@ async def test_deleting_a_stale_version_is_a_conflict() -> None:
         await service.delete(ACCESS, product.id, 1)
 
     assert product.deleted_at is None
+
+
+async def test_a_sku_held_by_a_deleted_product_is_reported_as_retired() -> None:
+    session = FakeSession()
+    session.scalar_queue = [True]  # the holder of the SKU was deleted
+    service = make_service(session)
+
+    with pytest.raises(ConflictError) as error:
+        await service.create(ACCESS, create_request())
+
+    assert error.value.status_code == 409
+    assert error.value.code == "PRODUCT_SKU_RETIRED"
+    assert session.products == []
+
+
+@pytest.mark.parametrize("field", ["description", "category"])
+def test_a_create_request_refuses_an_explicit_null(field: str) -> None:
+    with pytest.raises(ValidationError):
+        CreateProductRequest.model_validate(
+            {"sku": "W-1", "name": "Widget", "unitPrice": "1.00", field: None}
+        )
+
+
+@pytest.mark.parametrize("field", ["name", "unitPrice", "currency", "isActive"])
+def test_an_update_refuses_null_on_a_field_that_cannot_be_cleared(field: str) -> None:
+    # Accepted, the request would change nothing but still bump the version.
+    with pytest.raises(ValidationError):
+        UpdateProductRequest.model_validate({"version": 1, field: None})
+
+
+def test_a_search_term_is_trimmed_and_a_blank_one_refused() -> None:
+    assert ProductListParams.model_validate({"search": "  widget "}).search == "widget"
+    with pytest.raises(ValidationError):
+        ProductListParams.model_validate({"search": "   "})

@@ -15,6 +15,7 @@ attempts to spend on it.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any, Protocol
@@ -174,9 +175,14 @@ class HttpAiProvider:
 
     async def _send(self, request: AiCompletionRequest) -> AiTransportResponse:
         try:
-            return await self._transport.send(
-                AiTransportRequest(body=self._request_body(request), timeout_ms=self._timeout_ms)
-            )
+            # One deadline for the whole round trip, as the HTTP client's own
+            # timeout applies per phase and a slow trickle could outlast it.
+            async with asyncio.timeout(self._timeout_ms / _MILLISECONDS_PER_SECOND):
+                return await self._transport.send(
+                    AiTransportRequest(
+                        body=self._request_body(request), timeout_ms=self._timeout_ms
+                    )
+                )
         except Exception as error:
             failure = AiTimeoutError() if _is_timeout_error(error) else AiUnavailableError()
             if self._logger is not None:

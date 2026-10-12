@@ -172,7 +172,9 @@ async def test_a_session_is_revoked_for_the_user_the_path_names(
 ) -> None:
     await client.delete(f"/api/v1/users/{FIRST}/sessions/{SECOND}")
 
-    assert service.calls == [("revoke_session", (FIRST, SECOND))]
+    # The first argument is the caller, recorded on the audit entry.
+    [(name, args)] = service.calls
+    assert (name, args[1:]) == ("revoke_session", (FIRST, SECOND))
 
 
 async def test_an_order_item_is_addressed_within_its_order(

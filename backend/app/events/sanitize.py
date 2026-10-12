@@ -28,6 +28,7 @@ _SENSITIVE_KEYS = frozenset(
         "apikey",
         "authorization",
         "cookie",
+        "credential",
         "password",
         "passwordhash",
         "refreshtoken",

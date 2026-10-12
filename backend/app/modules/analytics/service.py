@@ -131,7 +131,20 @@ def sales_summary_statement(query: SalesSummaryQuery) -> Select[Any]:
     dated = func.coalesce(Order.placed_at, Order.created_at)
     # The bucket width is a bound parameter like everything else: it arrives as
     # a validated enum member, and it still never becomes SQL text.
-    bucket = func.date_trunc(query.period.value, dated).label("bucket_start")
+    #
+    # Buckets are cut on the UTC calendar, named explicitly. Truncating a
+    # timestamptz on its own uses the session's time zone, so the same orders
+    # would fall into different days depending on how the connection happened
+    # to be configured. Converting to UTC wall time, truncating, and converting
+    # back pins every bucket to a UTC midnight.
+    #
+    # The first bucket starts where its calendar unit starts, which may be
+    # before ``from`` (a week asked for from a Wednesday starts on the Monday).
+    # Its figures still cover only the window: the bounds below filter the
+    # orders, the truncation only labels them.
+    bucket = func.timezone(
+        "UTC", func.date_trunc(query.period.value, func.timezone("UTC", dated))
+    ).label("bucket_start")
 
     criteria: list[ColumnElement[bool]] = [
         Order.deleted_at.is_(None),
@@ -195,7 +208,10 @@ def top_products_statement(query: TopProductsQuery) -> Select[Any]:
             order_date_window(query.from_, query.to),
         )
         .group_by(OrderItem.product_id)
-        .order_by(revenue.desc())
+        # Equal revenue is broken by the product id, in the query itself: the
+        # cut to ``limit`` happens here, and without a total order two products
+        # tied at the edge would trade places from one run to the next.
+        .order_by(revenue.desc(), OrderItem.product_id.asc())
         .limit(query.limit)
     )
 
@@ -249,6 +265,9 @@ def stock_health_statement(query: StockHealthQuery) -> Select[Any]:
     criteria: list[ColumnElement[bool]] = [
         Product.deleted_at.is_(None),
         Product.is_active.is_(True),
+        # A closed warehouse sells nothing, so its shelves are not a shortage
+        # anybody can act on.
+        Warehouse.is_active.is_(True),
         available <= query.threshold,
     ]
     if query.warehouse_id is not None:
@@ -473,8 +492,13 @@ class AnalyticsService:
             )
 
         # Ranked by order revenue as exact integers, then cut to the page: the
-        # ranking is over every owner, not over an arbitrary first slice.
-        ranked = sorted(items, key=lambda row: to_scaled_integer(row.order_revenue), reverse=True)
+        # ranking is over every owner, not over an arbitrary first slice. Equal
+        # revenue is broken by the owner id, so neither the ranking nor the cut
+        # depends on the order the groups came back in. The id rather than the
+        # name: names repeat and may be absent.
+        ranked = sorted(
+            items, key=lambda row: (-to_scaled_integer(row.order_revenue), str(row.owner_id))
+        )
         return OwnerPerformanceReport(from_=query.from_, to=query.to, items=ranked[: query.limit])
 
     async def _stock_health(self, query: StockHealthQuery) -> StockHealthReport:

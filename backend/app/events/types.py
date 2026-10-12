@@ -18,6 +18,10 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Protocol
 
+from app.core.logging import get_logger
+
+_logger = get_logger("events")
+
 #: Anything that survives a round trip through the document store.
 EventJsonValue = (
     str | int | float | bool | None | list["EventJsonValue"] | dict[str, "EventJsonValue"]
@@ -126,14 +130,15 @@ class DomainEventSubscriber(Protocol):
 class DomainEventSubject:
     """Fans a published event out to whatever subscribers are registered.
 
-    Subscribers are notified in registration order, sequentially rather than
-    concurrently: some deployments rely on that order (a slow secondary
-    consumer must not delay a faster one that was registered ahead of it), so
-    dispatch stays a simple loop instead of ``gather``. Each subscriber is
-    wrapped in its own ``suppress`` so a failure never stops the rest, and
-    ``publish`` itself never raises: the operation that produced the event has
-    already committed and must be reported as successful regardless of what
-    its secondary consumers do.
+    Every subscriber gets a delivery of its own, started in registration order
+    and then left to run independently: no subscriber waits for another one to
+    finish. A slow consumer — a WebSocket peer that has stopped reading, a
+    degraded document store — therefore delays nothing but itself, which is
+    the guarantee the sibling deployment gives by never awaiting a subscriber.
+    A failure is contained and logged per subscriber, so it never stops the
+    rest and never goes unnoticed, and ``publish`` itself never raises: the
+    operation that produced the event has already committed and must be
+    reported as successful regardless of what its secondary consumers do.
     """
 
     _subscribers: list[DomainEventSubscriber] = field(default_factory=list)
@@ -159,14 +164,22 @@ class DomainEventSubject:
             # secondary consumers are optional, so this is not an error.
             return
 
-        task = loop.create_task(self._deliver(event))
-        self._pending.add(task)
-        task.add_done_callback(self._pending.discard)
-
-    async def _deliver(self, event: DomainEvent) -> None:
         for subscriber in list(self._subscribers):
-            with contextlib.suppress(Exception):
-                await subscriber.notify(event)
+            task = loop.create_task(self._deliver(subscriber, event))
+            self._pending.add(task)
+            task.add_done_callback(self._pending.discard)
+
+    @staticmethod
+    async def _deliver(subscriber: DomainEventSubscriber, event: DomainEvent) -> None:
+        try:
+            await subscriber.notify(event)
+        except Exception as error:
+            _logger.error(
+                "Domain event subscriber failed",
+                subscriber=subscriber.name,
+                eventType=event.event_type,
+                err=repr(error),
+            )
 
     async def drain(self) -> None:
         """Waits for in-flight deliveries so shutdown does not cut them short."""

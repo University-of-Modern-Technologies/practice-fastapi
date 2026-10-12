@@ -10,7 +10,9 @@ the backend's own ``.env``, and the repository's shared ``.env`` one level up.
 
 from __future__ import annotations
 
+import ipaddress
 import json
+import math
 from functools import lru_cache
 from pathlib import Path
 from typing import Annotated, Any, Literal
@@ -120,6 +122,12 @@ class Settings(BaseSettings):
         default_factory=lambda: ["http://localhost:3000"]
     )
     json_body_limit_bytes: int = Field(default=1_048_576, ge=1_024, le=67_108_864)
+    # Addresses or CIDR networks of the reverse proxies in front of the API.
+    # Only a request that arrives from one of them has its X-Forwarded-For
+    # believed; empty means the peer address is the client, whatever it says.
+    trusted_proxies: Annotated[list[str], NoDecode] = Field(default_factory=list)
+    # Logs every SQL statement together with its parameters; never in production.
+    log_sql: bool = False
 
     database_url: str
     jwt_access_secret: str = Field(min_length=_MIN_SECRET_LENGTH)
@@ -169,7 +177,7 @@ class Settings(BaseSettings):
     call_provider_timeout_ms: int = Field(default=5_000, ge=100, le=120_000)
     call_provider_max_attempts: int = Field(default=3, ge=1, le=10)
     call_provider_backoff_ms: int = Field(default=200, ge=0, le=60_000)
-    call_sync_batch_size: int = Field(default=100, ge=1, le=1_000)
+    call_sync_batch_size: int = Field(default=100, ge=1, le=500)
 
     # Absent means the scrape endpoint is not exposed at all.
     metrics_token: str | None = Field(default=None, min_length=16)
@@ -214,7 +222,15 @@ class Settings(BaseSettings):
         if not isinstance(data, dict):
             return data
 
-        values: dict[str, Any] = dict(data)
+        # A blank value means "not set", so the field's default applies: `KEY=`
+        # behaves like a commented-out line, as it does in the sibling backend.
+        # It still outranks the layers below it, which is how a blank variable
+        # in the process clears a value one of the files sets.
+        values: dict[str, Any] = {
+            key: value
+            for key, value in data.items()
+            if not (isinstance(value, str) and not value.strip())
+        }
         if _part(values, "port") is None and _part(values, "api_port") is not None:
             values["port"] = values["api_port"]
 
@@ -269,6 +285,27 @@ class Settings(BaseSettings):
 
         return [origin.strip() for origin in text.split(",") if origin.strip()]
 
+    @field_validator("trusted_proxies", mode="before")
+    @classmethod
+    def _split_trusted_proxies(cls, value: object) -> object:
+        """A comma-separated list of addresses or networks; nothing else.
+
+        A wildcard is refused on purpose: believing every peer would let any
+        client name its own address and so its own rate-limit budget.
+        """
+        if not isinstance(value, str):
+            return value
+        entries = [entry.strip() for entry in value.split(",") if entry.strip()]
+        for entry in entries:
+            try:
+                ipaddress.ip_network(entry, strict=False)
+            except ValueError as error:
+                message = (
+                    "trusted_proxies must be a comma-separated list of addresses or CIDR networks"
+                )
+                raise ValueError(message) from error
+        return entries
+
     @field_validator("database_url")
     @classmethod
     def _normalise_database_url(cls, value: str) -> str:
@@ -308,6 +345,20 @@ class Settings(BaseSettings):
     @property
     def allows_any_origin(self) -> bool:
         return "*" in self.cors_origins
+
+    @property
+    def logs_sql(self) -> bool:
+        """Whether every statement is logged; never in production."""
+        return self.log_sql and not self.is_production
+
+    @property
+    def graceful_shutdown_seconds(self) -> int:
+        """`SHUTDOWN_TIMEOUT_MS` in the whole seconds the server counts in.
+
+        Rounded up, never down to zero: a timeout under a second would
+        otherwise cut every in-flight request off the moment a stop begins.
+        """
+        return max(1, math.ceil(self.shutdown_timeout_ms / 1000))
 
 
 @lru_cache(maxsize=1)

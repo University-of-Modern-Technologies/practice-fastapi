@@ -24,9 +24,17 @@ State machine
   all other calls are refused, so recovery is tested with one request, not with
   a thundering herd.
 
-Only *transient* failures (network errors, timeouts, 429, 5xx) are reported as
-failures. A 4xx answer proves the service is alive and is reported as a success —
-a stream of bad requests from us must never trip the breaker.
+Only failures of the dependency (network errors, timeouts, 429, 5xx, and a
+refusal of our credentials) are reported as failures. Any other 4xx answer proves
+the service is alive and is reported as a success — a stream of bad requests
+from us must never trip the breaker.
+
+Every admitted call carries a permit naming the period it was admitted in.
+Opening the circuit starts a new period, so a call that was already in flight
+when the circuit opened reports into a period that is over: its result is
+ignored instead of closing the circuit, or extending it, behind the probe's
+back. A call that never reports at all — cancelled on its way — gives its permit
+back, so an abandoned probe cannot leave the circuit refusing everything.
 """
 
 from __future__ import annotations
@@ -42,6 +50,7 @@ __all__ = [
     "DEFAULT_FAILURE_THRESHOLD",
     "CircuitBreaker",
     "CircuitBreakerSnapshot",
+    "CircuitPermit",
     "default_now_ms",
 ]
 
@@ -71,6 +80,16 @@ class CircuitBreakerSnapshot:
     opened_at_ms: float | None
 
 
+@dataclass(frozen=True, slots=True)
+class CircuitPermit:
+    """What an admitted call reports back with."""
+
+    #: The period the call was admitted in; a new one starts each time it opens.
+    generation: int
+    #: Whether this is the single call admitted to test a half-open circuit.
+    probe: bool
+
+
 class CircuitBreaker:
     """Tracks the health of one dependency and refuses calls when it is down."""
 
@@ -89,40 +108,65 @@ class CircuitBreaker:
         self._last_error_at_ms: float | None = None
         self._opened_at_ms: float | None = None
         self._probe_in_flight = False
+        self._generation = 0
 
     def _open(self) -> None:
         self._state = CircuitState.OPEN
         self._opened_at_ms = self._now_ms()
         self._probe_in_flight = False
+        self._generation += 1
 
-    def try_acquire(self) -> bool:
-        """True when a call may proceed; admits exactly one probe in half-open."""
+    def _is_late(self, permit: CircuitPermit | None) -> bool:
+        """A result from a period that is over changes nothing."""
+        return permit is not None and permit.generation != self._generation
+
+    def acquire(self) -> CircuitPermit | None:
+        """A permit when a call may proceed, ``None`` when it is refused."""
         if self._state is CircuitState.OPEN:
             if (
                 self._opened_at_ms is None
                 or self._now_ms() - self._opened_at_ms < self._cooldown_ms
             ):
-                return False
+                return None
             self._state = CircuitState.HALF_OPEN
             self._probe_in_flight = True
-            return True
+            return CircuitPermit(self._generation, probe=True)
 
         if self._state is CircuitState.HALF_OPEN:
             # A probe is already being evaluated; nobody else gets through.
             if self._probe_in_flight:
-                return False
+                return None
             self._probe_in_flight = True
-            return True
+            return CircuitPermit(self._generation, probe=True)
 
-        return True
+        return CircuitPermit(self._generation, probe=False)
 
-    def on_success(self) -> None:
+    def try_acquire(self) -> bool:
+        """True when a call may proceed; admits exactly one probe in half-open."""
+        return self.acquire() is not None
+
+    def release(self, permit: CircuitPermit) -> None:
+        """Gives back a permit whose call ended without an outcome.
+
+        A probe that is cancelled never reports success or failure; unless its
+        slot is freed, the half-open circuit would wait for it forever and
+        refuse every call in the meantime.
+        """
+        if permit.probe and not self._is_late(permit) and self._state is CircuitState.HALF_OPEN:
+            self._probe_in_flight = False
+
+    def on_success(self, permit: CircuitPermit | None = None) -> None:
+        """Without a permit the result is taken to belong to the current period."""
+        if self._is_late(permit):
+            return
         self._state = CircuitState.CLOSED
         self._consecutive_failures = 0
         self._opened_at_ms = None
         self._probe_in_flight = False
 
-    def on_failure(self) -> None:
+    def on_failure(self, permit: CircuitPermit | None = None) -> None:
+        if self._is_late(permit):
+            return
         self._consecutive_failures += 1
         self._last_error_at_ms = self._now_ms()
 

@@ -24,7 +24,12 @@ from starlette.responses import Response
 from app.core.errors import AppError
 from app.core.logging import get_logger
 from app.core.settings import Settings
-from app.middleware.request_id import get_request_id
+from app.middleware.request_id import (
+    REQUEST_ID_HEADER,
+    bound_request_id,
+    get_request_id,
+    request_id_of,
+)
 
 logger = get_logger(__name__)
 
@@ -144,16 +149,26 @@ async def handle_http_exception(request: Request, exc: Exception) -> Response:
 def build_unhandled_handler(settings: Settings):  # type: ignore[no-untyped-def]
     """Creates the last-resort handler for anything that is not an `AppError`."""
 
-    async def handle_unhandled(_request: Request, exc: Exception) -> Response:
-        logger.error("Unhandled request error", exc_info=exc)
-        return error_response(
-            status_code=500,
-            code="INTERNAL_SERVER_ERROR",
-            # An unexpected exception message can carry internals — a table
-            # name, a file path, part of a query — so it is only echoed where a
-            # developer, not a user, is reading it.
-            message="Internal server error" if settings.is_production else str(exc),
-        )
+    async def handle_unhandled(request: Request, exc: Exception) -> Response:
+        # Starlette runs this handler outside every user middleware, after the
+        # request id middleware has unwound and reset its context variable. The
+        # id is rebound from the request for the log line and the envelope.
+        request_id = get_request_id() or request_id_of(request.scope)
+        with bound_request_id(request_id):
+            logger.error("Unhandled request error", exc_info=exc)
+            response = error_response(
+                status_code=500,
+                code="INTERNAL_SERVER_ERROR",
+                # An unexpected exception message can carry internals — a table
+                # name, a file path, part of a query — so it is only echoed
+                # where a developer, not a user, is reading it.
+                message="Internal server error" if settings.is_production else str(exc),
+            )
+        # Nor does this response pass back through that middleware, so the
+        # header it adds to every other response is set here.
+        if request_id is not None:
+            response.headers[REQUEST_ID_HEADER] = request_id
+        return response
 
     return handle_unhandled
 

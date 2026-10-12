@@ -7,7 +7,6 @@ __pycache__/
 .coverage
 htmlcov/
 .env
-.env.local
+.env.*
+!.env.example
 tests/
-README.md
-docker-compose.yml

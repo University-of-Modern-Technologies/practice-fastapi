@@ -487,3 +487,44 @@ async def test_every_change_is_written_on_the_session_that_carries_it() -> None:
     assert entry.changes is not None
     assert entry.changes["before"]["title"] == "Opportunity"
     assert entry.changes["after"]["title"] == "Renamed"
+
+
+async def test_an_unknown_or_inactive_owner_is_reported_as_missing() -> None:
+    session = FakeSession()
+    session.scalar_queue = [None]  # no active user with that id
+    data = CreateDealRequest.model_validate(
+        {"title": "Opportunity", "amount": "1", "ownerId": str(uuid.uuid4())}
+    )
+
+    with pytest.raises(NotFoundError) as error:
+        await make_service(session).create(ALL_ACCESS, data)
+
+    assert error.value.code == "DEAL_OWNER_NOT_FOUND"
+    assert error.value.status_code == 404
+    assert session.added == []
+
+
+async def test_an_update_naming_an_unknown_owner_writes_nothing() -> None:
+    session = FakeSession()
+    session.execute_queue = [[make_deal()]]
+    session.scalar_queue = [None]
+    data = UpdateDealRequest.model_validate({"version": 1, "ownerId": str(uuid.uuid4())})
+
+    with pytest.raises(NotFoundError) as error:
+        await make_service(session).update(ALL_ACCESS, DEAL_ID, data)
+
+    assert error.value.code == "DEAL_OWNER_NOT_FOUND"
+    assert len(session.statements) == 2  # the read and the owner lookup, no write
+
+
+async def test_a_wildcard_in_a_deal_search_is_escaped() -> None:
+    session = FakeSession()
+    session.scalar_queue = [0]
+    session.execute_queue = [[]]
+
+    await make_service(session).list_deals(
+        ALL_ACCESS, DealListParams.model_validate({"search": "100%"})
+    )
+
+    _, params = where_of(session.statements[1])
+    assert "%100\\%%" in params.values()

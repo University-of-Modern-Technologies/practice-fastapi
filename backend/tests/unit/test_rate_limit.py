@@ -8,6 +8,7 @@ from typing import Any
 import pytest
 from httpx import ASGITransport, AsyncClient
 from starlette.types import Receive, Scope, Send
+from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
 from app.core.security import create_access_token
 from app.core.settings import Settings
@@ -17,6 +18,7 @@ from app.middleware.rate_limit import (
     RATE_LIMIT_NAMESPACE,
     RateLimitMiddleware,
     client_identity,
+    is_auth_budget_exempt,
 )
 
 WINDOW_MS = 60_000
@@ -216,6 +218,40 @@ async def test_ordinary_paths_use_the_general_namespace(limited_settings: Settin
     assert AUTH_RATE_LIMIT_NAMESPACE not in redis.keys[0]
 
 
+@pytest.mark.parametrize(
+    ("method", "path"),
+    [("GET", "/api/v1/auth/me"), ("POST", "/api/v1/auth/logout"), ("GET", "/api/v1/auth/me/")],
+)
+async def test_reading_or_ending_a_session_spends_the_general_budget_only(
+    limited_settings: Settings, method: str, path: str
+) -> None:
+    redis = ScriptedRedis([[1, 4, WINDOW_MS]])
+
+    async with _client(redis, limited_settings) as client:
+        await client.request(method, path)
+
+    assert len(redis.keys) == 1
+    assert AUTH_RATE_LIMIT_NAMESPACE not in redis.keys[0]
+
+
+@pytest.mark.parametrize("path", ["/api/v1/auth/login", "/api/v1/auth/refresh"])
+async def test_credential_endpoints_keep_the_strict_budget(
+    limited_settings: Settings, path: str
+) -> None:
+    redis = ScriptedRedis([[1, 4, WINDOW_MS], [1, 1, WINDOW_MS]])
+
+    async with _client(redis, limited_settings) as client:
+        await client.post(path)
+
+    assert len(redis.keys) == 2
+    assert AUTH_RATE_LIMIT_NAMESPACE in redis.keys[1]
+
+
+def test_the_exemption_ignores_case_and_a_trailing_slash() -> None:
+    assert is_auth_budget_exempt("/API/v1/auth/ME/")
+    assert not is_auth_budget_exempt("/api/v1/auth/login")
+
+
 async def test_the_window_is_taken_from_configuration(limited_settings: Settings) -> None:
     redis = ScriptedRedis([[1, 4, WINDOW_MS]])
 
@@ -270,3 +306,39 @@ def test_the_budget_follows_the_caller(host: str, expected: str) -> None:
 
 def test_an_unknown_peer_shares_one_budget() -> None:
     assert client_identity({"type": "http", "client": None}) == "unknown"
+
+
+def _proxied_client(redis: Any, settings: Settings) -> AsyncClient:
+    """The limiter behind the server's proxy-header handling, as `run()` sets it up."""
+    # The two frameworks type the ASGI callable differently; at runtime it is one.
+    limited: Any = RateLimitMiddleware(_endpoint, redis=redis, settings=settings)
+    app: Any = ProxyHeadersMiddleware(limited, trusted_hosts=settings.trusted_proxies)
+    return AsyncClient(
+        transport=ASGITransport(app=app, raise_app_exceptions=False),
+        base_url="http://testserver",
+    )
+
+
+async def test_behind_a_trusted_proxy_the_budget_follows_the_forwarded_client(
+    limited_settings: Settings,
+) -> None:
+    # The in-process transport connects from 127.0.0.1, inside the network.
+    settings = limited_settings.model_copy(update={"trusted_proxies": ["127.0.0.0/8"]})
+    redis = ScriptedRedis([[1, 4, WINDOW_MS]])
+
+    async with _proxied_client(redis, settings) as client:
+        await client.get("/api/v1/contacts", headers={"x-forwarded-for": "203.0.113.7"})
+
+    assert redis.keys[0].endswith(":203.0.113.7")
+
+
+async def test_a_forwarded_address_from_an_untrusted_peer_is_ignored(
+    limited_settings: Settings,
+) -> None:
+    settings = limited_settings.model_copy(update={"trusted_proxies": ["10.0.0.0/8"]})
+    redis = ScriptedRedis([[1, 4, WINDOW_MS]])
+
+    async with _proxied_client(redis, settings) as client:
+        await client.get("/api/v1/contacts", headers={"x-forwarded-for": "203.0.113.7"})
+
+    assert redis.keys[0].endswith(":127.0.0.1")

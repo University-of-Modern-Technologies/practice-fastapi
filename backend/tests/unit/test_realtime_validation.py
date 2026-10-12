@@ -7,7 +7,6 @@ import json
 import pytest
 
 from app.realtime.auth import (
-    ACCESS_TOKEN_SUBPROTOCOL_PREFIX,
     BEARER_SUBPROTOCOL,
     extract_access_token,
     select_subprotocol,
@@ -108,11 +107,12 @@ def test_token_is_read_from_the_paired_subprotocol_form() -> None:
     assert select_subprotocol(headers) == BEARER_SUBPROTOCOL
 
 
-def test_token_is_read_from_the_single_value_subprotocol_form() -> None:
-    headers = {"sec-websocket-protocol": f"{ACCESS_TOKEN_SUBPROTOCOL_PREFIX}jwt-value"}
+def test_a_single_value_access_token_subprotocol_is_not_accepted() -> None:
+    # A browser can never complete such a handshake: it needs the offered entry
+    # echoed, and echoing it would put the token into the response headers.
+    headers = {"sec-websocket-protocol": "access_token.jwt-value"}
 
-    assert extract_access_token(headers) == "jwt-value"
-    # Nothing is echoed back: the offer never contained the marker.
+    assert extract_access_token(headers) is None
     assert select_subprotocol(headers) is None
 
 

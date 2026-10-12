@@ -77,8 +77,16 @@ def assert_order_editable(status: OrderStatus) -> None:
         )
 
 
-def assert_order_has_items(status: OrderStatus, item_count: int) -> None:
-    """An empty order carries no value, so it may never leave the draft stage."""
+def assert_order_has_items(
+    status: OrderStatus, item_count: int, to_status: OrderStatus | None = None
+) -> None:
+    """An empty order carries no value, so it may never move forward from draft.
+
+    Abandoning it is another matter: cancelling an empty draft promises nothing
+    and moves no stock, so a move to ``CANCELLED`` is always let through.
+    """
+    if to_status == OrderStatus.CANCELLED:
+        return
     if order_state(status).requires_items and item_count == 0:
         raise ConflictError(
             "An order without items cannot leave the draft stage",

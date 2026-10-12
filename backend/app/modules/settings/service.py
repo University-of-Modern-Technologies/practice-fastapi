@@ -16,24 +16,28 @@ import uuid
 from typing import Any
 
 from pydantic import ValidationError
-from sqlalchemy import select
+from sqlalchemy import func, select
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.errors import NotFoundError
+from app.core.errors import AppError, NotFoundError
 from app.core.serializers import format_datetime
 from app.db.models.setting import OrganizationSetting
+from app.db.models.warehouse import Warehouse
 from app.modules.audit import AuditEvent, AuditService
 from app.modules.settings.cache_keys import setting_value_key, settings_list_key
 from app.modules.settings.registry import (
     SETTING_KEYS,
     ensure_setting_key,
     parse_setting_value,
-    read_stored_value,
+    read_stored_setting,
     setting_definition,
 )
 from app.modules.settings.schemas import SettingOut, UpsertSettingRequest
 from app.modules.settings.types import (
     DEFAULT_SETTINGS_TTL_SECONDS,
+    DEFAULT_WAREHOUSE_SETTING,
+    INVALID_SETTING_VALUE,
     SETTING_AUDIT_ENTITY_TYPE,
     SETTING_DELETED,
     SETTING_NOT_FOUND,
@@ -56,13 +60,17 @@ def to_setting_out(key: str, row: OrganizationSetting | None) -> SettingOut:
             updated_at=None,
             source="default",
         )
+    value, valid = read_stored_setting(key, row.value)
     return SettingOut(
         key=key,
-        value=read_stored_value(key, row.value),
+        value=value,
+        # An empty description is no description: the declared one is shown.
         description=row.description or definition.description,
         updated_by_id=row.updated_by_id,
         updated_at=format_datetime(row.updated_at),
-        source="database",
+        # A stored value that no longer fits its schema is replaced by the
+        # default on the way out, so the default is what the source has to say.
+        source="database" if valid else "default",
     )
 
 
@@ -142,19 +150,40 @@ class SettingsService:
         key = ensure_setting_key(raw_key)
         definition = setting_definition(key)
         value = parse_setting_value(key, data.value)
-        # A description of `null` means "use the declared one" rather than
-        # "store an empty description".
+        # `null`, an absent field and a blank one all mean "use the declared
+        # one" rather than "store an empty description".
         description = data.description or definition.description
+        if key == DEFAULT_WAREHOUSE_SETTING:
+            await self._require_active_warehouse(key, value)
 
-        row = await self._find_row(key)
-        before = to_setting_out(key, row) if row is not None else None
-        if row is None:
-            row = OrganizationSetting(id=uuid.uuid4(), key=key)
-            self._session.add(row)
-        row.value = value
-        row.description = description
-        row.updated_by_id = access.actor_id
-        await self._session.flush()
+        existing = await self._find_row(key)
+        before = to_setting_out(key, existing) if existing is not None else None
+        # One statement for both cases: two first writes racing on the same key
+        # must end as one row, not as a unique violation for whoever is second.
+        statement = (
+            insert(OrganizationSetting)
+            .values(
+                id=uuid.uuid4(),
+                key=key,
+                value=value,
+                description=description,
+                updated_by_id=access.actor_id,
+            )
+            .on_conflict_do_update(
+                index_elements=[OrganizationSetting.key],
+                set_={
+                    "value": value,
+                    "description": description,
+                    "updated_by_id": access.actor_id,
+                    "updated_at": func.now(),
+                },
+            )
+            .returning(OrganizationSetting)
+            # The row read above may already sit in the identity map; without
+            # this the ORM would hand that stale instance back.
+            .execution_options(populate_existing=True)
+        )
+        row = (await self._session.execute(statement)).scalar_one()
 
         after = to_setting_out(key, row)
         await self._audit.record(
@@ -202,6 +231,23 @@ class SettingsService:
             )
         )
         await self._invalidate(key)
+
+    async def _require_active_warehouse(self, key: str, code: Any) -> None:
+        """Refuses a default warehouse code that names no working warehouse.
+
+        Orders draw on this warehouse, so a typo would otherwise surface much
+        later, as every order failing to reserve stock.
+        """
+        statement = select(Warehouse.id).where(
+            Warehouse.code == code, Warehouse.is_active.is_(True)
+        )
+        if await self._session.scalar(statement) is None:
+            raise AppError(
+                f"No active warehouse has the code {code}",
+                400,
+                INVALID_SETTING_VALUE,
+                {"key": key},
+            )
 
     async def _find_row(self, key: str) -> OrganizationSetting | None:
         result = await self._session.execute(

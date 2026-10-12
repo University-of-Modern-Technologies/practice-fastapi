@@ -38,6 +38,7 @@ from app.db.models.contact import Contact
 from app.db.models.deal import Deal
 from app.db.models.order import Order, OrderItem
 from app.db.models.product import Product
+from app.db.models.user import User
 from app.events.dispatch import announcer, publish_after_commit
 from app.events.types import DomainEvent, DomainEventPublisher, NoopPublisher
 from app.modules.audit import AuditEvent, AuditService
@@ -81,6 +82,7 @@ from app.modules.orders.types import (
     ORDER_ITEM_NOT_FOUND,
     ORDER_NOT_FOUND,
     ORDER_NUMBER_UNAVAILABLE,
+    ORDER_OWNER_NOT_FOUND,
     PRODUCT_INACTIVE,
     PRODUCT_NOT_FOUND,
     WAREHOUSE_NOT_CONFIGURED,
@@ -188,6 +190,22 @@ def _is_order_number_conflict(error: IntegrityError) -> bool:
     return "order_number" in str(error.orig).lower()
 
 
+def _persistence_error(error: IntegrityError) -> AppError | None:
+    """Names the integrity failures that are the caller's doing.
+
+    Only the one-product-per-order index means a duplicate line, and a foreign
+    key on the owner means the account vanished between the check and the
+    write. Anything else is not a payload problem: ``None`` tells the caller to
+    let the original failure surface as it is.
+    """
+    text = str(error.orig or error).lower()
+    if "product_id" in text and ("unique" in text or "duplicate key" in text):
+        return ConflictError("This product is already on the order", ORDER_ITEM_DUPLICATE)
+    if "foreign key" in text and "owner" in text:
+        return NotFoundError("Owner not found", ORDER_OWNER_NOT_FOUND)
+    return None
+
+
 def _owner_criteria(access: OrderAccess) -> Criteria:
     """A caller holding ``OWN`` only ever addresses their own orders."""
     if access.scope == PermissionScope.OWN:
@@ -218,7 +236,7 @@ class _OrderListPage(PagedQuery[Order, OrderListParams, OrderOut]):
             .equals(Order.contact_id, params.contact_id)
             .equals(Order.deal_id, params.deal_id)
             .equals(Order.status, params.status)
-            .search(params.search, [Order.order_number])
+            .search(params.search, [Order.order_number], escape=True)
             .range(
                 Order.total,
                 Decimal(params.min_total) if params.min_total is not None else None,
@@ -280,6 +298,10 @@ class OrdersService:
         _ensure_owner_access(access, owner_id)
         currency = data.currency if data.currency is not None else DEFAULT_CURRENCY
 
+        # The caller's own account is already known to be active; anybody else
+        # named as the owner has to be checked.
+        if owner_id != access.actor_id:
+            await self._require_owner(owner_id)
         await self._require_contact(access, data.contact_id)
         await self._require_deal(access, data.deal_id)
         lines = await self._resolve_lines(currency, data.items or [])
@@ -308,13 +330,16 @@ class OrdersService:
         source = await self._require_order(access, order_id)
         data = CreateOrderRequest(
             owner_id=source.owner_id,
-            contact_id=source.contact_id,
             currency=source.currency,
             items=[
                 OrderItemRequest(product_id=item.product_id, quantity=item.quantity)
                 for item in source.items
             ],
         )
+        # A create request refuses an explicit null, so a source without a
+        # contact simply leaves the field unset.
+        if source.contact_id is not None:
+            data = data.model_copy(update={"contact_id": source.contact_id})
         return await self.create(access, data)
 
     async def update(
@@ -325,6 +350,8 @@ class OrdersService:
         fields = data.model_fields_set
         owner_id = data.owner_id if data.owner_id is not None else order.owner_id
         _ensure_owner_access(access, owner_id)
+        if owner_id != order.owner_id:
+            await self._require_owner(owner_id)
 
         self._assert_update_allowed(order, data, fields)
         await self._require_contact(access, data.contact_id)
@@ -341,11 +368,14 @@ class OrdersService:
         if "notes" in fields:
             values["notes"] = data.notes
 
-        # Totals are always derived, never taken from the request body.
+        # Totals are always derived, never taken from the request body. A
+        # discount the caller sends is checked as sent; one carried over from
+        # the stored order is only kept within the subtotal.
         totals = calculate_order_totals(
             [item.line_total for item in order.items],
             data.discount_total if data.discount_total is not None else order.discount_total,
             data.tax_total if data.tax_total is not None else order.tax_total,
+            cap_discount=data.discount_total is None,
         )
         before = to_order_out(order)
         after = to_order_out(await self._apply_update(access, order, values | _totals(totals)))
@@ -361,6 +391,10 @@ class OrdersService:
         order = await self._require_order(access, order_id)
         _assert_version(order.version, data.version)
         assert_order_editable(order.status)
+        # Checked against the order before the catalogue is consulted, so a
+        # product already on the order is reported as a duplicate whatever has
+        # happened to it in the catalogue since. The unique index stays the
+        # backstop for a concurrent add.
         if any(item.product_id == data.product_id for item in order.items):
             raise ConflictError("This product is already on the order", ORDER_ITEM_DUPLICATE)
 
@@ -442,7 +476,7 @@ class OrdersService:
         order = await self._require_order(access, order_id)
         _assert_version(order.version, data.version)
         assert_order_status_transition(order.status, data.status)
-        assert_order_has_items(order.status, len(order.items))
+        assert_order_has_items(order.status, len(order.items), data.status)
 
         effect = stock_effect_for_transition(order.status, data.status)
         before = to_order_out(order)
@@ -514,6 +548,16 @@ class OrdersService:
             # missing: a narrower scope must not become a way to probe for ids.
             raise NotFoundError("Order not found", ORDER_NOT_FOUND)
         return order
+
+    async def _require_owner(self, owner_id: uuid.UUID) -> None:
+        """Refuses to hand an order to an account that cannot hold it.
+
+        An owner is a colleague, not a record the caller owns, so the caller's
+        scope does not narrow this: the account has to exist and be active.
+        """
+        statement = select(User.id).where(User.id == owner_id, User.is_active.is_(True))
+        if await self._session.scalar(statement) is None:
+            raise NotFoundError("Owner not found", ORDER_OWNER_NOT_FOUND)
 
     async def _require_contact(self, access: OrderAccess, contact_id: uuid.UUID | None) -> None:
         if contact_id is None:
@@ -620,9 +664,10 @@ class OrdersService:
                     await self._session.flush()
             except IntegrityError as error:
                 if not _is_order_number_conflict(error):
-                    raise ConflictError(
-                        "This product is already on the order", ORDER_ITEM_DUPLICATE
-                    ) from error
+                    mapped = _persistence_error(error)
+                    if mapped is None:
+                        raise
+                    raise mapped from error
                 if attempt == ORDER_NUMBER_ATTEMPTS:
                     raise ConflictError(
                         "Could not allocate an order number", ORDER_NUMBER_UNAVAILABLE
@@ -636,9 +681,10 @@ class OrdersService:
         try:
             await self._session.flush()
         except IntegrityError as error:
-            raise ConflictError(
-                "This product is already on the order", ORDER_ITEM_DUPLICATE
-            ) from error
+            mapped = _persistence_error(error)
+            if mapped is None:
+                raise
+            raise mapped from error
 
     async def _apply_update(
         self,
@@ -677,8 +723,14 @@ class OrdersService:
     async def _rewrite_totals(
         self, access: OrderAccess, order: Order, line_totals: Sequence[Decimal]
     ) -> Order:
-        """Shared tail of every line mutation: recompute totals, bump the order."""
-        totals = calculate_order_totals(line_totals, order.discount_total, order.tax_total)
+        """Shared tail of every line mutation: recompute totals, bump the order.
+
+        The discount is not part of a line edit, so one the edit would leave
+        larger than the new subtotal is lowered to it instead of blocking it.
+        """
+        totals = calculate_order_totals(
+            line_totals, order.discount_total, order.tax_total, cap_discount=True
+        )
         return await self._apply_update(access, order, _totals(totals))
 
     def _assert_update_allowed(

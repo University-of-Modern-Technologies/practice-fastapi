@@ -125,3 +125,20 @@ def test_the_snapshot_records_when_the_last_failure_happened(clock: FakeClock) -
 
     assert breaker.snapshot().last_error_at_ms == 4_200
     assert breaker.snapshot().opened_at_ms is None
+
+
+def test_a_result_from_before_the_circuit_opened_is_ignored() -> None:
+    now = [0.0]
+    breaker = CircuitBreaker(failure_threshold=1, cooldown_ms=1_000, now_ms=lambda: now[0])
+    early = breaker.acquire()
+    breaker.on_failure(breaker.acquire())
+    now[0] = 1_000.0
+    probe = breaker.acquire()
+    assert probe is not None
+    assert probe.probe is True
+
+    breaker.on_success(early)
+    assert breaker.snapshot().state == "half-open"
+
+    breaker.on_success(probe)
+    assert breaker.snapshot().state == "closed"

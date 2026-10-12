@@ -17,7 +17,7 @@ from app.core.errors import UnauthorizedError
 from app.core.settings import Settings, get_settings
 from app.db.session import get_session
 from app.modules.auth.service import AuthService
-from app.modules.auth.types import AuthConfig, AuthContext, auth_config_from_settings
+from app.modules.auth.types import AuthConfig, AuthContext, ClientInfo, auth_config_from_settings
 
 #: ``auto_error`` is off because the framework's own rejection would be a 403
 #: with a ``detail`` body — neither the status nor the shape this API promises.
@@ -55,8 +55,24 @@ def get_auth_config(settings: SettingsDep) -> AuthConfig:
 AuthConfigDep = Annotated[AuthConfig, Depends(get_auth_config)]
 
 
-def get_auth_service(session: SessionDep, config: AuthConfigDep) -> AuthService:
-    return AuthService(session, config)
+def get_client_info(request: Request) -> ClientInfo:
+    """The caller's address and user agent.
+
+    The address is the peer of the connection rather than a forwarded header:
+    the header is whatever the client chose to send, and a session record that
+    repeats a claim is worse than one that records nothing.
+    """
+    client = request.client
+    return ClientInfo.of(client.host if client else None, request.headers.get("user-agent"))
+
+
+ClientInfoDep = Annotated[ClientInfo, Depends(get_client_info)]
+
+
+def get_auth_service(
+    session: SessionDep, config: AuthConfigDep, client: ClientInfoDep
+) -> AuthService:
+    return AuthService(session, config, client)
 
 
 AuthServiceDep = Annotated[AuthService, Depends(get_auth_service)]

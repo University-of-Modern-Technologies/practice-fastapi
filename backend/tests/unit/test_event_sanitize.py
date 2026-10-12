@@ -9,7 +9,9 @@ from uuid import UUID
 
 import pytest
 
+from app.events import sanitize as event_sanitize
 from app.events.sanitize import CIRCULAR, REDACTED, is_sensitive_event_field, sanitize_event_payload
+from app.modules.audit.sanitize import SENSITIVE_KEYS, is_sensitive_audit_field, normalise_key
 
 
 @pytest.mark.parametrize(
@@ -104,3 +106,33 @@ def test_primitives_pass_through_untouched() -> None:
 def test_tuples_and_sets_become_lists() -> None:
     assert sanitize_event_payload(("a", "b")) == ["a", "b"]
     assert sanitize_event_payload(frozenset({"a"})) == ["a"]
+
+
+#: The one redacted vocabulary. The audit trail, the event log and the realtime
+#: channel all redact this exact set, in this base and in its sibling.
+REDACTED_KEYS = (
+    "accessToken",
+    "apiKey",
+    "authorization",
+    "cookie",
+    "credential",
+    "password",
+    "passwordHash",
+    "refreshToken",
+    "secret",
+    "sessionToken",
+    "token",
+    "tokenHash",
+)
+
+
+@pytest.mark.parametrize("key", REDACTED_KEYS)
+def test_event_and_audit_redaction_share_one_vocabulary(key: str) -> None:
+    assert is_sensitive_event_field(key)
+    assert is_sensitive_audit_field(key)
+
+
+def test_neither_sanitiser_redacts_beyond_the_shared_vocabulary() -> None:
+    expected = {normalise_key(key) for key in REDACTED_KEYS}
+    assert expected == SENSITIVE_KEYS
+    assert expected == event_sanitize._SENSITIVE_KEYS
