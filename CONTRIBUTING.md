@@ -158,9 +158,9 @@ gh pr create --draft --repo <твій-логін>/<назва-репозитор
 
 ## 7. Що перевіряє CI
 
-Workflow **CI** (`.github/workflows/ci.yml`) запускається на кожен pull request і
-на кожен новий push у його гілку. Новий push скасовує попередній незакінчений
-прогін.
+Workflow **CI** (`.github/workflows/ci.yml`) запускається на кожен pull request у
+`master` чи `develop`, на кожен новий push у його гілку і на push у `develop`.
+Новий push скасовує попередній незакінчений прогін.
 
 | Завдання | Що робить | Як відтворити на машині |
 |---|---|---|
